@@ -1,0 +1,64 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User account and profile details registered through Firebase Auth",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique Firebase Auth UID" },
+        "email": { "type": "string", "description": "User email address" },
+        "displayName": { "type": "string", "description": "Display name of the user" },
+        "photoURL": { "type": "string", "description": "Profile picture URL" },
+        "firstLoginAt": { "type": "string", "description": "ISO string of first login date" },
+        "lastLoginAt": { "type": "string", "description": "ISO string of latest login date" },
+        "totalLogins": { "type": "number", "description": "Number of times user logged in" },
+        "totalEssaysCorrected": { "type": "number", "description": "Total essays submitted by user" },
+        "bestScore": { "type": "number", "description": "Highest score achieved by user" }
+      },
+      "required": ["uid"]
+    },
+    "Essay": {
+      "title": "Essay Correction Record",
+      "description": "Persisted correction results, scores, and analytical breakdown for a user's essay",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the essay correction" },
+        "userId": { "type": "string", "description": "Owner user UID" },
+        "theme": { "type": "string", "description": "Essay prompt theme" },
+        "text": { "type": "string", "description": "Full text of the essay submitted" },
+        "totalScore": { "type": "number", "description": "Total score out of 1000" },
+        "competencies": { "type": "object", "description": "Scores and breakdown for C1 to C5" },
+        "feedback": { "type": "string", "description": "Detailed pedagogical feedback" },
+        "strengths": { "type": "array", "description": "List of strong points identified" },
+        "weaknesses": { "type": "array", "description": "List of improvement areas" },
+        "top3Problems": { "type": "array", "description": "Top 3 priority fix items" },
+        "createdAt": { "type": "string", "description": "ISO date string when corrected" }
+      },
+      "required": ["id", "userId", "theme", "totalScore"]
+    },
+    "GlobalStats": {
+      "title": "Application Global Telemetry",
+      "description": "Aggregated application-wide statistics including total registered users and logins",
+      "type": "object",
+      "properties": {
+        "totalUniqueUsers": { "type": "number", "description": "Total unique registered users" },
+        "totalLoginEvents": { "type": "number", "description": "Total login events occurred" },
+        "totalEssaysSubmitted": { "type": "number", "description": "Total essays submitted across all users" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile document owned by the respective authenticated user"
+    },
+    "/users/{userId}/essays/{essayId}": {
+      "schema": "Essay",
+      "description": "Subcollection of essay corrections owned by the parent user"
+    },
+    "/app_metadata/{docId}": {
+      "schema": "GlobalStats",
+      "description": "Public read-only global platform telemetry stats"
+    }
+  }
+}

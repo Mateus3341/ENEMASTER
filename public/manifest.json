@@ -1,0 +1,17 @@
+{
+  "short_name": "Enemaster",
+  "name": "Enemaster - Redação ENEM Nota 1000",
+  "description": "Plataforma completa de correção criteriosa, gerador de temas INEP, ensino das 5 competências e redações Nota 1000.",
+  "icons": [
+    {
+      "src": "/app-favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#4f46e5",
+  "background_color": "#0f172a"
+}

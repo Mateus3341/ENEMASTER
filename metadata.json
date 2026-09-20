@@ -1,0 +1,6 @@
+{
+  "name": "Enemaster - Redação ENEM Nota 1000",
+  "description": "Plataforma completa de correção criteriosa, gerador de temas INEP, ensino das 5 competências, criador com IA e análise de redações nota 1000 com o mascote Mestre Corujito.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
