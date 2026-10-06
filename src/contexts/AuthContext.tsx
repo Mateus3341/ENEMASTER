@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, onAuthStateChanged } from 'firebase/auth';
+import { User, onAuthStateChanged, getRedirectResult } from 'firebase/auth';
 import { 
   auth, 
   loginWithGoogle, 
@@ -53,26 +53,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     lastActiveAt: null,
   });
 
-  // Listen to Auth State
+  // Listen to Auth State and process any Redirect result
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setIsLoading(true);
-      if (currentUser) {
-        setUser(currentUser);
-        try {
-          const userProf = await recordUserLogin(currentUser);
-          setProfile(userProf);
-        } catch (err) {
-          console.error('Error fetching user profile:', err);
-        }
-      } else {
-        setUser(null);
-        setProfile(null);
-      }
-      setIsLoading(false);
-    });
+    let isMounted = true;
 
-    return () => unsubscribe();
+    // Check redirect sign-in result on boot (crucial for iPhones, Safari, and browsers that block popups)
+    getRedirectResult(auth)
+      .then((result) => {
+        if (!isMounted) return;
+        if (result?.user) {
+          setUser(result.user);
+          setIsLoading(false);
+          recordUserLogin(result.user)
+            .then((prof) => {
+              if (isMounted) setProfile(prof);
+            })
+            .catch((e) => console.debug('Redirect profile note:', e));
+        }
+      })
+      .catch((err: any) => {
+        const code = err?.code || '';
+        if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+          console.debug('Redirect result check note:', err?.message || err);
+        }
+      });
+
+    // Safety timeout: prevents infinite loading spinner on iOS WebKit, Safari Private Mode, or slow mobile data
+    const safetyTimeout = setTimeout(() => {
+      if (isMounted) {
+        setIsLoading(false);
+      }
+    }, 2000);
+
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async (currentUser) => {
+        if (!isMounted) return;
+        clearTimeout(safetyTimeout);
+
+        if (currentUser) {
+          setUser(currentUser);
+          setIsLoading(false); // Immediate unblock so UI renders smoothly
+          try {
+            const userProf = await recordUserLogin(currentUser);
+            if (isMounted) {
+              setProfile(userProf);
+            }
+          } catch (err) {
+            console.debug('Profile load note:', err);
+          }
+        } else {
+          setUser(null);
+          setProfile(null);
+          setIsLoading(false);
+        }
+      },
+      (error) => {
+        if (!isMounted) return;
+        clearTimeout(safetyTimeout);
+        console.warn('onAuthStateChanged error fallback:', error);
+        setIsLoading(false);
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimeout);
+      unsubscribe();
+    };
   }, []);
 
   // Listen to Global Application Stats in Real-Time

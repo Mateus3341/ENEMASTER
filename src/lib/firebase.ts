@@ -1,8 +1,14 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { 
   getAuth, 
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
+  inMemoryPersistence,
   GoogleAuthProvider, 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   signOut, 
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -53,6 +59,15 @@ export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
+
+// Configure resilient auth persistence for Safari / iOS WebKit / Private Mode / Firefox
+if (typeof window !== 'undefined') {
+  setPersistence(auth, browserLocalPersistence).catch(() => {
+    setPersistence(auth, browserSessionPersistence).catch(() => {
+      setPersistence(auth, inMemoryPersistence).catch(() => {});
+    });
+  });
+}
 
 // Test connection on boot
 export async function testFirebaseConnection() {
@@ -180,7 +195,12 @@ export function getFriendlyAuthErrorMessage(errorCode: string): string {
     case 'auth/cancelled-popup-request':
       return '';
     case 'auth/popup-blocked':
-      return 'A janela de autenticação foi bloqueada pelo navegador. Permita pop-ups para continuar.';
+      return 'A janela de autenticação foi bloqueada pelo navegador. Redirecionando para login seguro...';
+    case 'auth/network-request-failed':
+      return 'Falha de comunicação temporária. Verifique sua conexão e tente novamente.';
+    case 'auth/operation-not-supported-in-this-environment':
+    case 'auth/web-storage-unsupported':
+      return 'O armazenamento seguro do seu navegador está restrito. Conectando em modo compatível...';
     case 'auth/too-many-requests':
       return 'Muitas tentativas sem sucesso. Aguarde alguns instantes antes de tentar novamente.';
     default:
@@ -189,91 +209,125 @@ export function getFriendlyAuthErrorMessage(errorCode: string): string {
 }
 
 /**
- * Registers / Updates User Login in Firestore and updates Global User Count
+ * Registers / Updates User Login in Firestore and updates Global User Count safely
  */
 export async function recordUserLogin(user: User): Promise<AppUserProfile> {
-  const userRef = doc(db, 'users', user.uid);
-  const globalStatsRef = doc(db, 'app_metadata', 'global_stats');
+  const defaultProfile: AppUserProfile = {
+    uid: user.uid,
+    email: user.email,
+    displayName: user.displayName || (user.email ? user.email.split('@')[0] : 'Estudante ENEM'),
+    photoURL: user.photoURL,
+    firstLoginAt: new Date().toISOString(),
+    lastLoginAt: new Date().toISOString(),
+    totalLogins: 1,
+    totalEssaysCorrected: 0,
+    bestScore: 0,
+  };
 
-  const userSnap = await getDoc(userRef);
-  const now = new Date();
+  try {
+    const userRef = doc(db, 'users', user.uid);
+    const globalStatsRef = doc(db, 'app_metadata', 'global_stats');
 
-  if (!userSnap.exists()) {
-    // Brand new user
-    const newProfile: AppUserProfile = {
-      uid: user.uid,
-      email: user.email,
-      displayName: user.displayName || (user.email ? user.email.split('@')[0] : 'Estudante ENEM'),
-      photoURL: user.photoURL,
-      firstLoginAt: now.toISOString(),
-      lastLoginAt: now.toISOString(),
-      totalLogins: 1,
-      totalEssaysCorrected: 0,
-      bestScore: 0,
-    };
+    const userSnap = await getDoc(userRef);
+    const now = new Date();
 
-    await setDoc(userRef, {
-      ...newProfile,
-      firstLoginTimestamp: serverTimestamp(),
-      lastLoginTimestamp: serverTimestamp(),
-    });
+    if (!userSnap.exists()) {
+      // Brand new user
+      const newProfile: AppUserProfile = {
+        ...defaultProfile,
+        firstLoginAt: now.toISOString(),
+        lastLoginAt: now.toISOString(),
+      };
 
-    // Increment global unique user count safely
-    try {
-      await setDoc(globalStatsRef, {
-        totalUniqueUsers: increment(1),
-        totalLoginEvents: increment(1),
-        lastActiveAt: serverTimestamp(),
-      }, { merge: true });
-    } catch (e) {
-      console.warn('Error updating global stats:', e);
+      await setDoc(userRef, {
+        ...newProfile,
+        firstLoginTimestamp: serverTimestamp(),
+        lastLoginTimestamp: serverTimestamp(),
+      });
+
+      // Increment global unique user count safely
+      try {
+        await setDoc(globalStatsRef, {
+          totalUniqueUsers: increment(1),
+          totalLoginEvents: increment(1),
+          lastActiveAt: serverTimestamp(),
+        }, { merge: true });
+      } catch (e) {
+        console.debug('Global stats increment note:', e);
+      }
+
+      return newProfile;
+    } else {
+      // Existing user returning
+      const data = userSnap.data();
+      const updatedProfile: AppUserProfile = {
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName || data.displayName || defaultProfile.displayName,
+        photoURL: user.photoURL || data.photoURL,
+        firstLoginAt: data.firstLoginAt || now.toISOString(),
+        lastLoginAt: now.toISOString(),
+        totalLogins: (data.totalLogins || 1) + 1,
+        totalEssaysCorrected: data.totalEssaysCorrected || 0,
+        bestScore: data.bestScore || 0,
+      };
+
+      await updateDoc(userRef, {
+        displayName: updatedProfile.displayName,
+        photoURL: updatedProfile.photoURL,
+        lastLoginAt: updatedProfile.lastLoginAt,
+        lastLoginTimestamp: serverTimestamp(),
+        totalLogins: increment(1),
+      });
+
+      try {
+        await setDoc(globalStatsRef, {
+          totalLoginEvents: increment(1),
+          lastActiveAt: serverTimestamp(),
+        }, { merge: true });
+      } catch (e) {
+        console.debug('Login event increment note:', e);
+      }
+
+      return updatedProfile;
     }
-
-    return newProfile;
-  } else {
-    // Existing user returning
-    const data = userSnap.data();
-    const updatedProfile: AppUserProfile = {
-      uid: user.uid,
-      email: user.email,
-      displayName: user.displayName || data.displayName || (user.email ? user.email.split('@')[0] : 'Estudante ENEM'),
-      photoURL: user.photoURL || data.photoURL,
-      firstLoginAt: data.firstLoginAt || now.toISOString(),
-      lastLoginAt: now.toISOString(),
-      totalLogins: (data.totalLogins || 1) + 1,
-      totalEssaysCorrected: data.totalEssaysCorrected || 0,
-      bestScore: data.bestScore || 0,
-    };
-
-    await updateDoc(userRef, {
-      displayName: updatedProfile.displayName,
-      photoURL: updatedProfile.photoURL,
-      lastLoginAt: updatedProfile.lastLoginAt,
-      lastLoginTimestamp: serverTimestamp(),
-      totalLogins: increment(1),
-    });
-
-    try {
-      await setDoc(globalStatsRef, {
-        totalLoginEvents: increment(1),
-        lastActiveAt: serverTimestamp(),
-      }, { merge: true });
-    } catch (e) {
-      console.warn('Error updating login event count:', e);
-    }
-
-    return updatedProfile;
+  } catch (error) {
+    console.warn('recordUserLogin offline or non-blocking fallback:', error);
+    return defaultProfile;
   }
 }
 
 /**
- * Sign in with Google Popup
+ * Sign in with Google (supports Popup with automatic Redirect fallback for iPhones, Safari, and Firefox)
  */
 export async function loginWithGoogle(): Promise<User | null> {
+  const isMobile = typeof window !== 'undefined' && (
+    /iPad|iPhone|iPod|Android/i.test(navigator.userAgent || '') ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+
+  // On iOS / Android mobile devices, signInWithRedirect is the recommended standard
+  // to avoid blank popup tabs, strict popup blocking and context drops.
+  if (isMobile) {
+    try {
+      await signInWithRedirect(auth, googleProvider);
+      return null;
+    } catch (e: any) {
+      console.warn('Mobile redirect flow unavailable (e.g. inside strict iframe), attempting popup:', e);
+      const result = await signInWithPopup(auth, googleProvider);
+      if (result.user) {
+        recordUserLogin(result.user).catch(() => {});
+        return result.user;
+      }
+      return null;
+    }
+  }
+
+  // On desktop browsers, try popup first for fast in-place auth
   try {
     const result = await signInWithPopup(auth, googleProvider);
     if (result.user) {
-      await recordUserLogin(result.user);
+      recordUserLogin(result.user).catch(() => {});
       return result.user;
     }
     return null;
@@ -283,18 +337,38 @@ export async function loginWithGoogle(): Promise<User | null> {
       console.info('Google login popup was closed by the user.');
       return null;
     }
+
+    // In browsers that block popups or restrict third-party storage (Safari, Firefox, Brave):
+    // Fall back to redirect seamlessly
+    if (
+      code === 'auth/popup-blocked' ||
+      code === 'auth/operation-not-supported-in-this-environment' ||
+      code === 'auth/internal-error' ||
+      code === 'auth/network-request-failed' ||
+      code === 'auth/web-storage-unsupported'
+    ) {
+      console.info('Desktop popup blocked or restricted. Redirecting to Google login...');
+      try {
+        await signInWithRedirect(auth, googleProvider);
+        return null;
+      } catch (redirectErr: any) {
+        console.warn('Redirect login attempt error:', redirectErr);
+        throw redirectErr;
+      }
+    }
+
     console.warn('Google login issue:', error?.message || error);
     throw error;
   }
 }
 
 /**
- * Sign in with Email and Password
+ * Sign in with Email and Password (resilient and non-blocking profile sync)
  */
 export async function loginWithEmailPassword(email: string, pass: string): Promise<User> {
   const result = await signInWithEmailAndPassword(auth, email.trim(), pass);
   if (result.user) {
-    await recordUserLogin(result.user);
+    recordUserLogin(result.user).catch((e) => console.debug('Non-blocking login record note:', e));
     return result.user;
   }
   throw new Error('Falha ao autenticar.');
@@ -313,7 +387,7 @@ export async function registerWithEmailPassword(email: string, pass: string, dis
         console.warn('Could not update display name:', err);
       }
     }
-    await recordUserLogin(result.user);
+    recordUserLogin(result.user).catch((e) => console.debug('Non-blocking register record note:', e));
     return result.user;
   }
   throw new Error('Falha ao criar conta.');
