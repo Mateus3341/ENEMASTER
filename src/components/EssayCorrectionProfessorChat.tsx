@@ -46,13 +46,23 @@ export const EssayCorrectionProfessorChat: React.FC<EssayCorrectionProfessorChat
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [persona, setPersona] = useState<'professor' | 'corretor' | 'escritor'>('professor');
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollContainerRef = useRef<HTMLDivElement>(null);
+  const isInitialMount = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto scroll to bottom when messages change
+  // Scroll internally within the chat box ONLY when user actively sends messages or replies arrive.
+  // Never scroll the page/window itself, and never scroll on initial mount or when only the initial welcome message is present.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+    // If only the welcome message is present, do not scroll anything
+    if (messages.length <= 1) return;
+
+    if (chatScrollContainerRef.current) {
+      chatScrollContainerRef.current.scrollTo({
+        top: chatScrollContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [messages.length, isLoading]);
 
   // Build the strict evaluation context string
   const buildAnalysisContext = (): string => {
@@ -309,7 +319,10 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
       </div>
 
       {/* Scrollable Conversation Thread */}
-      <div className="p-5 sm:p-6 space-y-5 max-h-[480px] min-h-[260px] overflow-y-auto bg-slate-50/50 dark:bg-slate-950/40">
+      <div 
+        ref={chatScrollContainerRef}
+        className="p-5 sm:p-6 space-y-5 max-h-[480px] min-h-[260px] overflow-y-auto bg-slate-50/50 dark:bg-slate-950/40"
+      >
         {messages.map((msg) => {
           const isAssistant = msg.role === 'assistant';
           return (
@@ -406,8 +419,6 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
             </div>
           </div>
         )}
-
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Chat Input Bar */}

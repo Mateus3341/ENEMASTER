@@ -40,7 +40,10 @@ import {
   Target,
   TrendingUp,
   History,
-  Calendar
+  Calendar,
+  MessageSquare,
+  Eye,
+  BookOpen
 } from 'lucide-react';
 import { 
   EssayCorrectionResult, 
@@ -633,6 +636,28 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   // UI accordion state
   const [expandedComp, setExpandedComp] = useState<number | null>(1);
   const [copySuccess, setCopySuccess] = useState<boolean>(false);
+  const [isEssayTextExpanded, setIsEssayTextExpanded] = useState<boolean>(true);
+  const [copiedEssayText, setCopiedEssayText] = useState<boolean>(false);
+
+  // Guarantee that after grading completes or when viewing a correction result,
+  // the viewport stays firmly at the top of the evaluation report and NEVER jumps automatically
+  // to the bottom of the page where the AI chatbot is located.
+  useEffect(() => {
+    if (correctionResult && !isGrading) {
+      window.scrollTo(0, 0);
+
+      const timer = setTimeout(() => {
+        const scoreBanner = document.getElementById('correction-score-banner') || document.getElementById('correction-view-top');
+        if (scoreBanner) {
+          scoreBanner.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }, 60);
+
+      return () => clearTimeout(timer);
+    }
+  }, [correctionResult?.id, isGrading]);
   const [isAuditProgressExpanded, setIsAuditProgressExpanded] = useState<boolean>(false);
   const [isAuditLogExpanded, setIsAuditLogExpanded] = useState<boolean>(true);
   const [selectedAuditTab, setSelectedAuditTab] = useState<'all' | 'c1' | 'c2' | 'c3' | 'c4' | 'c5'>('all');
@@ -953,6 +978,11 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
       setActiveCorrection(result);
       setIsSaved(true);
       completeTask(taskId, result);
+
+      // Keep user at the top of the evaluation result to view the overall score and overview
+      if (typeof window !== 'undefined') {
+        window.scrollTo(0, 0);
+      }
       
       // Persist active correction in LocalStorage so user can immediately see it again anytime
       try {
@@ -1629,7 +1659,23 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const chatEl = document.getElementById('essay-correction-professor-chat-section');
+                    if (chatEl) {
+                      chatEl.scrollIntoView({ behavior: 'smooth' });
+                    }
+                  }}
+                  className="px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  title="Ir diretamente para o Professor AI no rodapé da avaliação"
+                >
+                  <MessageSquare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <span className="hidden sm:inline">Perguntar ao Professor AI</span>
+                  <span className="sm:hidden">Professor AI</span>
+                </button>
+
                 <button
                   id="btn-save-evolution"
                   onClick={handleSave}
@@ -1882,6 +1928,116 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
               </p>
             </div>
           </div>
+
+          {/* ========================================================================= */}
+          {/* TEXTO DA REDAÇÃO AVALIADA (REVER REDAÇÃO ENVIADA) */}
+          {/* ========================================================================= */}
+          {correctionResult.essayText && (
+            <div 
+              id="correction-essay-text-card"
+              className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-md overflow-hidden transition-all"
+            >
+              <div className="p-5 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50/70 dark:bg-slate-800/40">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="p-1.5 rounded-lg bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300">
+                      <FileText className="w-4 h-4" />
+                    </span>
+                    <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-slate-100">
+                      Sua Redação Enviada
+                    </h3>
+                    {correctionResult.isHandwrittenOcr && (
+                      <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
+                        Transcrição OCR
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Texto original submetido para avaliação pelos corretores oficiais da banca.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Badges: Parágrafos, Palavras, Linhas */}
+                  <div className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
+                    <span className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 font-bold border border-slate-200 dark:border-slate-700 shadow-2xs">
+                      {correctionResult.essayText.trim().split(/\n\s*\n+/).filter(Boolean).length} parágrafos
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 font-bold border border-slate-200 dark:border-slate-700 shadow-2xs">
+                      {correctionResult.essayText.trim().split(/\s+/).filter(Boolean).length} palavras
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!correctionResult.essayText) return;
+                      navigator.clipboard.writeText(correctionResult.essayText);
+                      setCopiedEssayText(true);
+                      setTimeout(() => setCopiedEssayText(false), 2000);
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    {copiedEssayText ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="text-emerald-600 dark:text-emerald-400">Copiada!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copiar Texto</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsEssayTextExpanded(!isEssayTextExpanded)}
+                    className="p-1.5 rounded-xl text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                    title={isEssayTextExpanded ? 'Recolher redação' : 'Expandir redação'}
+                  >
+                    {isEssayTextExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+                  </button>
+                </div>
+              </div>
+
+              {isEssayTextExpanded && (
+                <div className="p-5 sm:p-8 space-y-5 bg-white dark:bg-slate-900 font-serif">
+                  {correctionResult.essayText
+                    .trim()
+                    .split(/\n\s*\n+/)
+                    .filter(Boolean)
+                    .map((paragraph, pIdx, arr) => {
+                      const paragraphLabel = 
+                        arr.length === 4
+                          ? (pIdx === 0 ? 'Parágrafo 1 • Introdução & Tese' :
+                             pIdx === 1 ? 'Parágrafo 2 • Desenvolvimento 1 (D1)' :
+                             pIdx === 2 ? 'Parágrafo 3 • Desenvolvimento 2 (D2)' :
+                             'Parágrafo 4 • Conclusão & Proposta (C5)')
+                          : (pIdx === 0 ? 'Parágrafo 1 • Introdução' :
+                             pIdx === arr.length - 1 ? `Parágrafo ${pIdx + 1} • Conclusão` :
+                             `Parágrafo ${pIdx + 1} • Desenvolvimento ${pIdx}`);
+
+                      return (
+                        <div 
+                          key={pIdx} 
+                          className="group relative pl-4 sm:pl-6 border-l-2 border-indigo-200 dark:border-indigo-900 hover:border-indigo-500 dark:hover:border-indigo-400 transition-colors"
+                        >
+                          <div className="font-sans text-[11px] uppercase font-bold tracking-wider text-indigo-600 dark:text-indigo-400 mb-1.5 select-none flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                            <span>{paragraphLabel}</span>
+                          </div>
+                          <p className="text-sm sm:text-base leading-relaxed text-slate-800 dark:text-slate-100 whitespace-pre-line text-justify">
+                            {paragraph}
+                          </p>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Detailed Competencies Accordion (C1 to C5) */}
           <div className="space-y-4">
@@ -3059,7 +3215,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
           )}
 
           {/* Professor AI Dedicado Exclusivamente à Redação Avaliada */}
-          <div className="pt-2">
+          <div id="essay-correction-professor-chat-section" className="pt-2">
             <EssayCorrectionProfessorChat 
               correctionResult={correctionResult}
               onNavigateToFullChat={() => {

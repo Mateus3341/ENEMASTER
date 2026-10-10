@@ -16,7 +16,9 @@ import {
   ArrowDownRight,
   Target,
   Trophy,
-  History
+  History,
+  FileText,
+  Eye
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -35,6 +37,7 @@ import { calculateAchievements } from '../data/achievements';
 import { useAuth } from '../contexts/AuthContext';
 import { Cloud, ShieldCheck } from 'lucide-react';
 import { EvolutionSkeleton } from './SavedDataSkeleton';
+import { EssayReaderModal } from './EssayReaderModal';
 
 interface StudentEvolutionViewProps {
   savedEssays: EssayCorrectionResult[];
@@ -61,6 +64,7 @@ export const StudentEvolutionView: React.FC<StudentEvolutionViewProps> = ({
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<EvolutionTab>('overview');
   const [chartMode, setChartMode] = useState<ChartViewMode>('total');
+  const [viewingEssayModal, setViewingEssayModal] = useState<EssayCorrectionResult | null>(null);
   const total = savedEssays.length;
 
   const badges = useMemo(() => calculateAchievements(savedEssays), [savedEssays]);
@@ -309,23 +313,46 @@ export const StudentEvolutionView: React.FC<StudentEvolutionViewProps> = ({
                       </span>
                     </div>
 
-                    {essay.essayText && (
-                      <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 pt-1 font-serif italic">
-                        "{essay.essayText.substring(0, 140)}..."
-                      </p>
-                    )}
+                    {essay.essayText ? (
+                      <div 
+                        onClick={() => setViewingEssayModal(essay)}
+                        className="cursor-pointer group/snippet bg-slate-50/70 dark:bg-slate-800/40 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all"
+                        title="Clique para ler a redação completa"
+                      >
+                        <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2 font-serif italic">
+                          "{essay.essayText.substring(0, 150)}..."
+                        </p>
+                        <div className="flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 group-hover/snippet:underline mt-1.5">
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Ler redação completa</span>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
-                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                    <button
-                      onClick={() => onSelectEssay(essay)}
-                      className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
-                    >
-                      <span>Ver Relatório Completo</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </button>
+                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setViewingEssayModal(essay)}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                        <span>Ler Redação</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => onSelectEssay(essay)}
+                        className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>Relatório Completo</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
 
                     <button
+                      type="button"
                       onClick={() => onDeleteEssay(essay.id)}
                       className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors cursor-pointer"
                       title="Excluir do histórico"
@@ -670,6 +697,14 @@ export const StudentEvolutionView: React.FC<StudentEvolutionViewProps> = ({
           )}
         </>
       )}
+
+      {/* Modal Interativo para Ler Redação Completa */}
+      <EssayReaderModal 
+        essay={viewingEssayModal}
+        isOpen={!!viewingEssayModal}
+        onClose={() => setViewingEssayModal(null)}
+        onOpenFullReport={onSelectEssay}
+      />
     </div>
   );
 };
