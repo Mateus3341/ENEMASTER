@@ -2,6 +2,19 @@ import { Nota1000Sample, RepertoireItem, PracticeSnippetQuiz, CompetencyGuideInf
 import { NOTA_1000_SAMPLES, isOfficialNota1000Benchmark, findMatchingOfficialSample } from './officialSamples';
 
 export { NOTA_1000_SAMPLES, isOfficialNota1000Benchmark, findMatchingOfficialSample };
+export {
+  CARTILHA_METADATA,
+  CARTILHA_COMPETENCIES,
+  CARTILHA_ZERO_SITUATIONS,
+  CARTILHA_SCORE_PROFILES,
+  getCartilhaBenchmarkForScore,
+} from './cartilhaOficial2025';
+export type {
+  CartilhaCompetencyRule,
+  CartilhaCompetencyLevel,
+  CartilhaZeroSituation,
+  CartilhaScoreProfile,
+} from './cartilhaOficial2025';
 
 export const HISTORICAL_THEMES = [
   {

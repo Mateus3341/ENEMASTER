@@ -91,6 +91,20 @@ export interface CartilhaBenchmark {
   commonPatternIdentified: string;
   keyDifferenceTo900Plus: string;
   cartilhaReferenceQuote?: string;
+  edition?: string;
+  officialMatrixAdherence?: {
+    c1Status: string;
+    c2Status: string;
+    c3Status: string;
+    c4Status: string;
+    c5Status: string;
+  };
+  sampleComparison?: {
+    sampleAuthor: string;
+    sampleTheme: string;
+    keyAnalyticInsight: string;
+  };
+  inepDirectivesFollowed?: string[];
 }
 
 export interface PedagogicalRewrite {

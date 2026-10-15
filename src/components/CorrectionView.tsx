@@ -43,7 +43,8 @@ import {
   Calendar,
   MessageSquare,
   Eye,
-  BookOpen
+  BookOpen,
+  X
 } from 'lucide-react';
 import { 
   EssayCorrectionResult, 
@@ -53,7 +54,14 @@ import {
   ReviewerCompetencyCheck,
   StructuredAiAnalysisLog
 } from '../types';
-import { HISTORICAL_THEMES } from '../data/officialData';
+import { 
+  HISTORICAL_THEMES,
+  CARTILHA_METADATA,
+  CARTILHA_COMPETENCIES,
+  CARTILHA_ZERO_SITUATIONS,
+  CARTILHA_SCORE_PROFILES,
+  getCartilhaBenchmarkForScore
+} from '../data/officialData';
 import { AiProgressBar } from './AiProgressBar';
 import { useAiProgress } from '../hooks/useAiProgress';
 import { validateAndAuditEssayScore } from '../utils/scoreValidator';
@@ -595,6 +603,9 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [isSaved, setIsSaved] = useState<boolean>(!!initialCorrectionResult || !!savedWork.activeCorrection);
   const [showHistoryDropdown, setShowHistoryDropdown] = useState<boolean>(false);
+  const [showCartilhaModal, setShowCartilhaModal] = useState<boolean>(false);
+  const [cartilhaModalTab, setCartilhaModalTab] = useState<'matrix' | 'zero' | 'rules'>('matrix');
+  const [selectedCartilhaComp, setSelectedCartilhaComp] = useState<1 | 2 | 3 | 4 | 5>(1);
 
   // Sync if initialCorrectionResult prop changes
   useEffect(() => {
@@ -946,12 +957,24 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
         LOG_CONFIG.salvarLog(aiAnalysisLog);
       }
 
+      // A nota final oficial a considerar (Média INEP) é a média aritmética dos dois corretores (soma das médias das competências)
+      const simA = data.dualEvaluatorSimulation?.evaluatorA;
+      const simB = data.dualEvaluatorSimulation?.evaluatorB;
+      let finalOfficialScore = validatedTotalScore;
+      if (simA && simB) {
+        const sumA = ((simA.c1 ?? 0) + (simA.c2 ?? 0) + (simA.c3 ?? 0) + (simA.c4 ?? 0) + (simA.c5 ?? 0)) || simA.total || 0;
+        const sumB = ((simB.c1 ?? 0) + (simB.c2 ?? 0) + (simB.c3 ?? 0) + (simB.c4 ?? 0) + (simB.c5 ?? 0)) || simB.total || 0;
+        if (sumA > 0 && sumB > 0) {
+          finalOfficialScore = Math.round((sumA + sumB) / 2);
+        }
+      }
+
       const result: EssayCorrectionResult = {
         id: aiAnalysisLog.id_analise,
         date: new Date().toLocaleDateString('pt-BR'),
         theme: activeTheme,
         essayText: essayText.trim(),
-        totalScore: validatedTotalScore,
+        totalScore: finalOfficialScore,
         competencies: validatedCompetencies,
         reviewerReport: reviewerAuditData,
         aiAnalysisLog: aiAnalysisLog,
@@ -1008,7 +1031,11 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
 
   const handleSave = () => {
     if (correctionResult) {
-      onSaveEssay(correctionResult);
+      const updatedResult: EssayCorrectionResult = {
+        ...correctionResult,
+        totalScore: officialMeanScore,
+      };
+      onSaveEssay(updatedResult);
       setIsSaved(true);
     }
   };
@@ -1017,7 +1044,7 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
     if (!correctionResult) return;
     const logData = correctionResult.aiAnalysisLog || LOG_CONFIG.gerarLogEstruturado({
       correctionResultId: correctionResult.id,
-      totalScore: correctionResult.totalScore,
+      totalScore: officialMeanScore,
       competencies: correctionResult.competencies,
       essayText: essayText.trim(),
       theme: theme,
@@ -1029,24 +1056,6 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
     setIsLogCopied(true);
     setTimeout(() => setIsLogCopied(false), 2500);
   };
-
-  const preliminaryEstimatedScore =
-    correctionResult?.dualEvaluatorSimulation?.evaluatorA?.total ??
-    correctionResult?.reviewerReport?.initialTotalScore ??
-    correctionResult?.validationReport?.rawSum ??
-    correctionResult?.totalScore ?? 0;
-
-  const strictAuditedScore =
-    correctionResult?.dualEvaluatorSimulation?.evaluatorB?.total ??
-    correctionResult?.reviewerReport?.finalAuditedTotalScore ??
-    correctionResult?.validationReport?.validatedTotal ??
-    correctionResult?.totalScore ?? 0;
-
-  const officialMeanScore = correctionResult?.totalScore ?? Math.round((preliminaryEstimatedScore + strictAuditedScore) / 2);
-  const scoreDivergence = Math.abs(preliminaryEstimatedScore - strictAuditedScore);
-  const hasDivergence = scoreDivergence > 0 || (correctionResult?.reviewerReport?.wasInflationDetected ?? false) || (correctionResult?.validationReport?.hasAdjustments ?? false);
-  const minScoreRange = Math.min(preliminaryEstimatedScore, strictAuditedScore);
-  const maxScoreRange = Math.max(preliminaryEstimatedScore, strictAuditedScore);
 
   const competencyDivergences = correctionResult ? (['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((k, idx) => {
     const num = (idx + 1) as CompetencyNumber;
@@ -1060,11 +1069,11 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
 
     const scoreA = correctionResult.dualEvaluatorSimulation?.evaluatorA?.[k] ?? 
                    correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.initialScore ??
-                   correctionResult.competencies[k].score;
+                   correctionResult.competencies[k]?.score ?? 0;
 
     const scoreB = correctionResult.dualEvaluatorSimulation?.evaluatorB?.[k] ?? 
                    correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.reviewedScore ??
-                   correctionResult.competencies[k].score;
+                   correctionResult.competencies[k]?.score ?? 0;
 
     const officialCompMean = (scoreA + scoreB) / 2;
     const diff = Math.abs(scoreA - scoreB);
@@ -1081,6 +1090,39 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
     };
   }) : [];
 
+  // Soma rigorosa das notas por competência para cada avaliador e média oficial
+  const evalACompetenciesSum = competencyDivergences.reduce((acc, curr) => acc + curr.scoreA, 0);
+  const evalBCompetenciesSum = competencyDivergences.reduce((acc, curr) => acc + curr.scoreB, 0);
+  const sumOfCompetencyMeans = competencyDivergences.reduce((acc, curr) => acc + curr.officialCompMean, 0);
+
+  const preliminaryEstimatedScore = evalACompetenciesSum > 0
+    ? evalACompetenciesSum
+    : (correctionResult?.dualEvaluatorSimulation?.evaluatorA?.total ??
+       correctionResult?.reviewerReport?.initialTotalScore ??
+       correctionResult?.validationReport?.rawSum ??
+       correctionResult?.totalScore ?? 0);
+
+  const strictAuditedScore = evalBCompetenciesSum > 0
+    ? evalBCompetenciesSum
+    : (correctionResult?.dualEvaluatorSimulation?.evaluatorB?.total ??
+       correctionResult?.reviewerReport?.finalAuditedTotalScore ??
+       correctionResult?.validationReport?.validatedTotal ??
+       correctionResult?.totalScore ?? 0);
+
+  // NOTA OFICIAL A CONSIDERAR (MÉDIA INEP):
+  // Regra oficial do ENEM: A nota final é a média aritmética calculada entre os dois corretores,
+  // correspondendo exatamente à soma das médias de cada uma das 5 competências.
+  // Ela nunca fica abaixo da média dos corretores e garante a soma correta das médias sem qualquer discrepância.
+  const evaluatorsAverageScore = Math.round((preliminaryEstimatedScore + strictAuditedScore) / 2);
+  const officialMeanScore = competencyDivergences.length > 0 
+    ? Math.round(sumOfCompetencyMeans) 
+    : evaluatorsAverageScore;
+
+  const scoreDivergence = Math.abs(preliminaryEstimatedScore - strictAuditedScore);
+  const hasDivergence = scoreDivergence > 0 || (correctionResult?.reviewerReport?.wasInflationDetected ?? false) || (correctionResult?.validationReport?.hasAdjustments ?? false);
+  const minScoreRange = Math.min(preliminaryEstimatedScore, strictAuditedScore);
+  const maxScoreRange = Math.max(preliminaryEstimatedScore, strictAuditedScore);
+
   const handleCopyReport = () => {
     if (!correctionResult) return;
     const reportText = `================================================
@@ -1092,11 +1134,11 @@ Data: ${correctionResult.date}
 ${hasDivergence ? `[1º Olhar (Nota Estimada): ${preliminaryEstimatedScore} pts | Banca Revisora (Nota Auditada): ${strictAuditedScore} pts | Faixa Realista no ENEM: ${minScoreRange} a ${maxScoreRange} pts]` : ''}
 
 PONTUAÇÃO POR COMPETÊNCIAS (MÉDIA OFICIAL):
-- C1 (Norma Culta): ${correctionResult.competencies.c1.score} / 200
-- C2 (Tema e Repertório): ${correctionResult.competencies.c2.score} / 200
-- C3 (Projeto de Texto): ${correctionResult.competencies.c3.score} / 200
-- C4 (Coesão Textual): ${correctionResult.competencies.c4.score} / 200
-- C5 (Proposta Intervenção): ${correctionResult.competencies.c5.score} / 200
+- C1 (Norma Culta): ${competencyDivergences[0]?.officialCompMean ?? correctionResult.competencies.c1.score} / 200
+- C2 (Tema e Repertório): ${competencyDivergences[1]?.officialCompMean ?? correctionResult.competencies.c2.score} / 200
+- C3 (Projeto de Texto): ${competencyDivergences[2]?.officialCompMean ?? correctionResult.competencies.c3.score} / 200
+- C4 (Coesão Textual): ${competencyDivergences[3]?.officialCompMean ?? correctionResult.competencies.c4.score} / 200
+- C5 (Proposta Intervenção): ${competencyDivergences[4]?.officialCompMean ?? correctionResult.competencies.c5.score} / 200
 
 DIAGNÓSTICO GERAL:
 ${correctionResult.generalDiagnostic}
@@ -3047,26 +3089,41 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
             </div>
           )}
 
-          {/* Cartilha 800+ Benchmark & Comparative Profiler */}
+          {/* Cartilha Benchmark & Comparative Profiler */}
           {correctionResult.cartilhaBenchmark && (
-            <div className="bg-white dark:bg-slate-900 p-6 sm:p-7 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-4 transition-colors">
+            <div className="bg-white dark:bg-slate-900 p-6 sm:p-7 rounded-2xl border border-amber-200/80 dark:border-amber-900/50 shadow-xs space-y-4 transition-colors">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 flex items-center justify-center font-black">
-                    📚
+                    <Award className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                   </div>
                   <div>
-                    <h4 className="font-extrabold text-base text-slate-900 dark:text-slate-100">
-                      Benchmark Oficial: Cartilha 800+ & Padrões do ENEM
-                    </h4>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className="font-extrabold text-base text-slate-900 dark:text-slate-100">
+                        Benchmark Oficial: {correctionResult.cartilhaBenchmark.edition || 'Cartilha Oficial do Participante INEP 2024/2025'}
+                      </h4>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                        INEP / MEC
+                      </span>
+                    </div>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Cruzamento de dados estatísticos com redações reais catalogadas pelo INEP
+                      {correctionResult.cartilhaBenchmark.cartilhaReferenceQuote || 'Cruzamento de dados estatísticos com redações reais catalogadas pelo INEP'}
                     </p>
                   </div>
                 </div>
-                <span className="px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 self-start sm:self-auto">
-                  {correctionResult.cartilhaBenchmark.tier}
-                </span>
+                <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setShowCartilhaModal(true)}
+                    className="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                    <span>Consultar Normas da Cartilha</span>
+                  </button>
+                  <span className="px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                    {correctionResult.cartilhaBenchmark.tier}
+                  </span>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
@@ -3089,6 +3146,49 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                   <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-medium">
                     {correctionResult.cartilhaBenchmark.keyDifferenceTo900Plus}
                   </p>
+                </div>
+              </div>
+
+              {/* Status de Aderência da Matriz Oficial (C1 a C5) */}
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Enquadramento na Matriz de 5 Competências da Cartilha:
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                  {(['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((compKey, cIdx) => {
+                    const compNum = (cIdx + 1) as 1 | 2 | 3 | 4 | 5;
+                    const cScore = correctionResult.competencies[compKey].score;
+                    const is200 = cScore === 200;
+                    return (
+                      <div 
+                        key={compKey}
+                        onClick={() => {
+                          setSelectedCartilhaComp(compNum);
+                          setCartilhaModalTab('matrix');
+                          setShowCartilhaModal(true);
+                        }}
+                        className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all hover:scale-102 ${
+                          is200 
+                            ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-200' 
+                            : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200'
+                        }`}
+                        title="Clique para ver o descritor deste nível na Cartilha Oficial"
+                      >
+                        <div className="flex items-center justify-between text-[10px] font-extrabold mb-1">
+                          <span>C{compNum}</span>
+                          <span className={is200 ? 'text-emerald-700 dark:text-emerald-400' : 'text-indigo-600 dark:text-indigo-400'}>
+                            {cScore} pts
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-bold line-clamp-1">
+                          Nível {Math.floor(cScore / 40)}
+                        </p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
+                          {is200 ? 'Nota Máxima Oficial' : `${200 - cScore} pts da faixa 200`}
+                        </p>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -3226,6 +3326,239 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 );
               }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Modal Interativo da Cartilha Oficial do Participante (INEP 2024/2025) */}
+      {showCartilhaModal && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-sm animate-fadeIn"
+          onClick={() => setShowCartilhaModal(false)}
+        >
+          <div 
+            className="bg-white dark:bg-slate-900 w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-5 sm:p-6 bg-gradient-to-r from-amber-600 to-indigo-800 text-white flex items-center justify-between gap-4 shrink-0">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-white/20 border border-white/30">
+                    INEP / MEC
+                  </span>
+                  <span className="text-xs font-bold text-amber-200">
+                    Edição Atualizada 2024 / 2025
+                  </span>
+                </div>
+                <h3 className="text-lg sm:text-xl font-black">
+                  {CARTILHA_METADATA.edition}
+                </h3>
+                <p className="text-xs text-amber-100 max-w-xl">
+                  Normas canônicas e critérios de correção oficiais utilizados pelos avaliadores do ENEM
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCartilhaModal(false)}
+                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="flex items-center gap-1 p-2 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 overflow-x-auto shrink-0 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setCartilhaModalTab('matrix')}
+                className={`px-4 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  cartilhaModalTab === 'matrix'
+                    ? 'bg-white dark:bg-slate-700 text-amber-700 dark:text-amber-300 shadow-2xs font-black'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Award className="w-4 h-4 text-amber-500" />
+                <span>Matriz das 5 Competências</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCartilhaModalTab('zero')}
+                className={`px-4 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  cartilhaModalTab === 'zero'
+                    ? 'bg-white dark:bg-slate-700 text-rose-700 dark:text-rose-300 shadow-2xs font-black'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <ShieldAlert className="w-4 h-4 text-rose-500" />
+                <span>Situações de Nota Zero</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCartilhaModalTab('rules')}
+                className={`px-4 py-2 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  cartilhaModalTab === 'rules'
+                    ? 'bg-white dark:bg-slate-700 text-indigo-700 dark:text-indigo-300 shadow-2xs font-black'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Sparkles className="w-4 h-4 text-indigo-500" />
+                <span>Regras de Ouro dos Corretores</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 sm:p-6 overflow-y-auto space-y-5 text-slate-800 dark:text-slate-200">
+              {cartilhaModalTab === 'matrix' && (
+                <div className="space-y-5">
+                  {/* Competency Pill Selector */}
+                  <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl overflow-x-auto">
+                    {[1, 2, 3, 4, 5].map((num) => (
+                      <button
+                        key={num}
+                        type="button"
+                        onClick={() => setSelectedCartilhaComp(num as 1|2|3|4|5)}
+                        className={`flex-1 min-w-[70px] py-2 px-3 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                          selectedCartilhaComp === num
+                            ? 'bg-amber-500 text-white shadow-xs'
+                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        Comp {num}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Selected Competency Header */}
+                  <div className="p-4 rounded-2xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/80 space-y-1">
+                    <span className="text-[10px] font-black uppercase text-amber-800 dark:text-amber-300">
+                      Competência {selectedCartilhaComp}
+                    </span>
+                    <h4 className="text-base font-black text-slate-900 dark:text-white">
+                      {CARTILHA_COMPETENCIES[selectedCartilhaComp].name}
+                    </h4>
+                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                      {CARTILHA_COMPETENCIES[selectedCartilhaComp].officialDefinition}
+                    </p>
+                  </div>
+
+                  {/* 6 Levels of Cartilha */}
+                  <div className="space-y-2.5">
+                    {([5, 4, 3, 2, 1, 0] as const).map((lvl) => {
+                      const lvlData = CARTILHA_COMPETENCIES[selectedCartilhaComp].levels[lvl];
+                      const is200 = lvl === 5;
+                      return (
+                        <div
+                          key={lvl}
+                          className={`p-3.5 rounded-xl border text-xs ${
+                            is200 
+                              ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700' 
+                              : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className={`px-2 py-0.5 rounded font-black text-[11px] ${
+                              is200 ? 'bg-emerald-600 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200'
+                            }`}>
+                              Nível {lvlData.level} — {lvlData.score} pontos
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                              {lvlData.tolerancesAndLimits}
+                            </span>
+                          </div>
+                          <p className="font-semibold text-slate-900 dark:text-slate-100">
+                            "{lvlData.officialDescriptor}"
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 italic">
+                            Orientação INEP: {lvlData.evaluatorGuidance}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {cartilhaModalTab === 'zero' && (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60 space-y-1">
+                    <h4 className="text-sm font-black text-red-900 dark:text-red-200">
+                      Critérios Oficiais de Anulação e Nota Zero no ENEM
+                    </h4>
+                    <p className="text-xs text-red-700 dark:text-red-400">
+                      Segundo o Edital do Exame e a Cartilha do Participante, as ocorrências abaixo anulam a prova sumariamente:
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                    {CARTILHA_ZERO_SITUATIONS.map((sit) => (
+                      <div 
+                        key={sit.code}
+                        className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-red-200/80 dark:border-red-900/40 space-y-1.5"
+                      >
+                        <span className="font-black text-red-700 dark:text-red-400 block text-xs">
+                          {sit.title}
+                        </span>
+                        <p className="text-slate-700 dark:text-slate-300 text-xs">
+                          {sit.description}
+                        </p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 italic pt-1 border-t border-slate-200 dark:border-slate-700">
+                          {sit.inepModuleRule}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {cartilhaModalTab === 'rules' && (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 space-y-1">
+                    <h4 className="text-sm font-black text-indigo-900 dark:text-indigo-200">
+                      Regras de Ouro dos Módulos Oficiais de Avaliação
+                    </h4>
+                    <p className="text-xs text-indigo-700 dark:text-indigo-400">
+                      Orientações transmitidas nos cursos de capacitação de corretores contratados pelo INEP:
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    {[1, 2, 3, 4, 5].map((compNum) => {
+                      const comp = CARTILHA_COMPETENCIES[compNum as 1|2|3|4|5];
+                      return (
+                        <div key={compNum} className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
+                          <span className="font-black text-amber-700 dark:text-amber-400 uppercase text-[11px] block">
+                            Competência {compNum}: {comp.name}
+                          </span>
+                          <ul className="space-y-1.5">
+                            {comp.pedagogicalGoldenRules.map((r, rIdx) => (
+                              <li key={rIdx} className="flex items-start gap-2 text-slate-700 dark:text-slate-300">
+                                <span className="text-indigo-500 font-bold shrink-0">•</span>
+                                <span>{r}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 text-xs">
+              <span className="text-slate-500 dark:text-slate-400 font-medium">
+                Matriz Homologada conforme a Cartilha do Participante INEP / MEC.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowCartilhaModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer transition-colors"
+              >
+                Fechar Consulta
+              </button>
+            </div>
           </div>
         </div>
       )}

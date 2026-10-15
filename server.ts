@@ -3,7 +3,19 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
-import { CURATED_THEME_PROPOSALS, PRACTICE_SNIPPETS, NOTA_1000_SAMPLES, REPERTOIRE_DATABASE, isOfficialNota1000Benchmark, findMatchingOfficialSample } from "./src/data/officialData";
+import { 
+  CURATED_THEME_PROPOSALS, 
+  PRACTICE_SNIPPETS, 
+  NOTA_1000_SAMPLES, 
+  REPERTOIRE_DATABASE, 
+  isOfficialNota1000Benchmark, 
+  findMatchingOfficialSample,
+  CARTILHA_METADATA,
+  CARTILHA_COMPETENCIES,
+  CARTILHA_ZERO_SITUATIONS,
+  CARTILHA_SCORE_PROFILES,
+  getCartilhaBenchmarkForScore
+} from "./src/data/officialData";
 import { OFFICIAL_ENEM_TIPS } from "./src/data/officialTips";
 
 dotenv.config();
@@ -593,22 +605,22 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
   let commonPatternIdentified = "Macroestrutura em 4 parágrafos e repertório institucional legítimo (CF/88 Art. 5º e PNPCT), porém com desvios ortográficos (C1), anacronismo histórico pontual (C2), uso anafórico de 'o mesmo' (C4) e ausência de detalhamento na C5.";
   let keyDifferenceTo900Plus = "1. Corrigir desvios ortográficos/concordância; 2. Evitar o uso de 'o mesmo' para retomar pessoas; 3. Inserir detalhamento com aposto ou exemplo na C5.";
 
-  if (totalScore >= 980) {
+  if (officialTotal >= 980) {
     tier = 'Faixa 1000 (Perfeição)';
     closestProfileTitle = "Redação Nota 1000 Oficial (Padrão Lucas Moraes / Ana Clara)";
     commonPatternIdentified = "Perfeição sintática, autoria marcante com projeto de texto impecável e intervenção detalhada em todos os 5 elementos.";
     keyDifferenceTo900Plus = "Manter a consistência em diferentes eixos temáticos.";
-  } else if (totalScore >= 920) {
+  } else if (officialTotal >= 920) {
     tier = 'Faixa 940-960 (Excelente)';
     closestProfileTitle = "Padrão 960 da Cartilha (Similar às Redações #11 Julie Anne e #14 Beatriz Santana)";
     commonPatternIdentified = "Vocabulário culto, operadores argumentativos diversificados e 5 elementos completos na C5.";
     keyDifferenceTo900Plus = "Ajustar pontuações milimétricas na C1 ou aprofundar ainda mais o repertório na C2 para o 1000.";
-  } else if (totalScore >= 840) {
+  } else if (officialTotal >= 840) {
     tier = 'Faixa 880-920 (Bom)';
     closestProfileTitle = "Padrão 880 da Cartilha (Similar à Redação #6 Wallison)";
     commonPatternIdentified = "Boa fluidez e poucos desvios, com perdas leves em C3 (argumentação pouco aprofundada) ou C5 (falta de detalhamento).";
     keyDifferenceTo900Plus = "Adicionar o elemento de detalhamento na C5 e refinar a causalidade na C3.";
-  } else if (totalScore < 760) {
+  } else if (officialTotal < 760) {
     tier = 'Abaixo de 700';
     closestProfileTitle = "Estrutura Básica em Desenvolvimento";
     commonPatternIdentified = "Dificuldade na articulação de repertórios e estruturação dos períodos.";
@@ -616,7 +628,7 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
   }
 
   return {
-    totalScore,
+    totalScore: officialTotal,
     competencies: {
       c1: {
         score: c1Score,
@@ -969,11 +981,18 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
         : `Divergência tolerada pela Matriz Oficial do ENEM (diferença de ${totalDisc} pontos no total e máxima de ${Math.max(discC1, discC2, discC3, discC4, discC5)} pontos em uma competência). A nota final é a média aritmética calculada.`
     },
     cartilhaBenchmark: {
+      ...getCartilhaBenchmarkForScore(totalScore, {
+        c1: { score: c1Score },
+        c2: { score: c2Score },
+        c3: { score: c3Score },
+        c4: { score: c4Score },
+        c5: { score: c5Score },
+      }),
       tier,
       closestProfileTitle,
       commonPatternIdentified,
       keyDifferenceTo900Plus,
-      cartilhaReferenceQuote: "Esta análise correlaciona o texto com o corpus das 18 redações analisadas nas cartilhas oficiais do ENEM (faixas 800+, 880+, 920+, 960+ e 1000)."
+      cartilhaReferenceQuote: `Enquadramento homologado com base na ${CARTILHA_METADATA.edition} e no corpus de redações nota 1000 analisadas pelo INEP.`
     },
     c1Deviations: c1DeviationsFound.length > 0 ? c1DeviationsFound : [
       {
@@ -1756,6 +1775,11 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
         scoreGateSummary = 'Não atingiu os requisitos de excelência afirmativa para notas superiores a 900. Pontuação fixada em 880/900 pts.';
         c1s = 160; c2s = 200; c3s = 160; c4s = 180; c5s = 180;
         finalTotal = 880;
+        evalA_c1 = 160; evalB_c1 = 160;
+        evalA_c2 = 200; evalB_c2 = 200;
+        evalA_c3 = 160; evalB_c3 = 160;
+        evalA_c4 = 160; evalB_c4 = 200;
+        evalA_c5 = 160; evalB_c5 = 200;
       }
     } else if (finalTotal === 900) {
       curveTier = 'Faixa 900';
@@ -1763,6 +1787,11 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       rigorVerdict = 'Pontuação 900 validada pela média de duplo avaliador com bom domínio dissertativo.';
       scoreGateSummary = 'Desempenho equilibrado com consolidação na faixa de 900 pontos.';
     }
+
+    const finalEvaluatorATotal = evalA_c1 + evalA_c2 + evalA_c3 + evalA_c4 + evalA_c5;
+    const finalEvaluatorBTotal = evalB_c1 + evalB_c2 + evalB_c3 + evalB_c4 + evalB_c5;
+    // A nota oficial a considerar é rigorosamente a média aritmética dos corretores (soma das médias das competências)
+    finalTotal = Math.round((finalEvaluatorATotal + finalEvaluatorBTotal) / 2);
 
     parsed.competencies.c1.score = c1s;
     parsed.competencies.c2.score = c2s;
@@ -1783,8 +1812,8 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       penaltiesApplied,
       requiredExcellenceEvidence,
       dualEvaluatorBreakdown: {
-        evaluatorA_total: evalA_c1 + evalA_c2 + evalA_c3 + evalA_c4 + evalA_c5,
-        evaluatorB_total: evalB_c1 + evalB_c2 + evalB_c3 + evalB_c4 + evalB_c5,
+        evaluatorA_total: finalEvaluatorATotal,
+        evaluatorB_total: finalEvaluatorBTotal,
         calculatedArithmeticMean: finalTotal,
         evaluatorA_scores: { c1: evalA_c1, c2: evalA_c2, c3: evalA_c3, c4: evalA_c4, c5: evalA_c5 },
         evaluatorB_scores: { c1: evalB_c1, c2: evalB_c2, c3: evalB_c3, c4: evalB_c4, c5: evalB_c5 },
@@ -1807,7 +1836,7 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
         c3: evalA_c3,
         c4: evalA_c4,
         c5: evalA_c5,
-        total: totalA,
+        total: finalEvaluatorATotal,
         evaluatorProfile: "Avaliador 1 (Perfil Normativo e Sintático)",
         notes: simA?.notes || (discC1 > 0 
           ? `Auditoria estrita de convenções formais. C1 atribuída em ${evalA_c1} pts e C4 em ${evalA_c4} pts com escrutínio minucioso de desvios e coesão.`
@@ -1819,7 +1848,7 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
         c3: evalB_c3,
         c4: evalB_c4,
         c5: evalB_c5,
-        total: totalB,
+        total: finalEvaluatorBTotal,
         evaluatorProfile: "Avaliador 2 (Perfil Estrutural e Temático)",
         notes: simB?.notes || (discC2 > 0 || discC3 > 0
           ? `Auditoria de macroestrutura e densidade argumentativa. C2 em ${evalB_c2} pts e C3 em ${evalB_c3} pts avaliando a produtividade do repertório e projeto de texto.`
@@ -1962,11 +1991,23 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       }
 
       parsed.cartilhaBenchmark = {
+        ...getCartilhaBenchmarkForScore(finalTotal, parsed.competencies),
         tier,
         closestProfileTitle,
         commonPatternIdentified,
         keyDifferenceTo900Plus,
-        cartilhaReferenceQuote: "Esta análise correlaciona o texto com o corpus das 18 redações analisadas nas cartilhas oficiais do ENEM."
+        edition: CARTILHA_METADATA.edition,
+        cartilhaReferenceQuote: `Enquadramento homologado com base na ${CARTILHA_METADATA.edition} e no corpus de redações nota 1000 analisadas pelo INEP.`
+      };
+    } else {
+      const officialBenchmark = getCartilhaBenchmarkForScore(finalTotal, parsed.competencies);
+      parsed.cartilhaBenchmark = {
+        ...officialBenchmark,
+        ...parsed.cartilhaBenchmark,
+        edition: CARTILHA_METADATA.edition,
+        officialMatrixAdherence: officialBenchmark.officialMatrixAdherence,
+        inepDirectivesFollowed: officialBenchmark.inepDirectivesFollowed,
+        cartilhaReferenceQuote: parsed.cartilhaBenchmark.cartilhaReferenceQuote || officialBenchmark.cartilhaReferenceQuote
       };
     }
 
@@ -1976,6 +2017,18 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
     const fallbackGrade = evaluateEssayByEvidence(req.body?.essayText || "", req.body?.theme || "");
     return res.json(fallbackGrade);
   }
+});
+
+// -------------------------------------------------------------
+// API 1.2: Base Oficial da Cartilha do Participante INEP / MEC (Edição Atualizada 2024/2025)
+// -------------------------------------------------------------
+app.get("/api/cartilha-oficial", (req, res) => {
+  return res.json({
+    metadata: CARTILHA_METADATA,
+    competencies: CARTILHA_COMPETENCIES,
+    zeroSituations: CARTILHA_ZERO_SITUATIONS,
+    scoreProfiles: CARTILHA_SCORE_PROFILES,
+  });
 });
 
 // -------------------------------------------------------------
