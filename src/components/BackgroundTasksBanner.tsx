@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Sparkles, X, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useBackgroundTasks, BackgroundTask } from '../contexts/BackgroundTasksContext';
 
@@ -13,6 +13,20 @@ export const BackgroundTasksBanner: React.FC<BackgroundTasksBannerProps> = ({
 }) => {
   const { tasks, clearTask } = useBackgroundTasks();
   const allTasks = Object.values(tasks);
+
+  // Automatically clear finished task notifications when the user is viewing the task's tab
+  useEffect(() => {
+    const finishedInCurrentTab = allTasks.filter(
+      (task) => task.tabId === activeTab && (task.status === 'completed' || task.status === 'error')
+    );
+    if (finishedInCurrentTab.length === 0) return;
+
+    const timer = setTimeout(() => {
+      finishedInCurrentTab.forEach((task) => clearTask(task.id));
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [activeTab, allTasks, clearTask]);
 
   // We only show banner for tasks that are currently running OR just completed and NOT in the current active tab
   const visibleTasks = allTasks.filter(task => {

@@ -3,6 +3,7 @@ import {
   BarChart3, 
   PenTool, 
   Sparkles, 
+  FileEdit,
   GraduationCap, 
   Grid, 
   Compass, 
@@ -43,16 +44,23 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const isDark = theme === 'dark';
 
-  // Primary 4 actions in the bottom thumb bar
+  // Primary actions in the bottom thumb bar
   const primaryTabs = [
     { id: 'dashboard', label: 'Início', icon: BarChart3 },
     { id: 'correction', label: 'Corretor', icon: PenTool, badge: 'Oficial' },
+    { id: 'snippet_writing', label: 'Trecho', icon: FileEdit },
     { id: 'creation', label: 'Criador', icon: Sparkles },
-    { id: 'professor', label: 'Professor', icon: GraduationCap },
   ];
 
   // Secondary tools presented in the "Mais" Bottom Sheet
   const moreTools = [
+    { 
+      id: 'professor', 
+      label: 'Professor IA (Mestre Corujito)', 
+      desc: 'Tire dúvidas em tempo real sobre gramática, estrutura e repertórios',
+      icon: GraduationCap, 
+      color: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800/60'
+    },
     { 
       id: 'themes', 
       label: 'Gerador de Temas', 
@@ -76,7 +84,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     },
     { 
       id: 'practice', 
-      label: 'Treino de Trechos', 
+      label: 'Quiz do Trecho', 
       desc: 'Exercícios práticos de introdução, D1, D2 e proposta C5',
       icon: Target, 
       color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60'

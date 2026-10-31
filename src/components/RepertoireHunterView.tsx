@@ -226,6 +226,11 @@ export const RepertoireHunterView: React.FC<RepertoireHunterViewProps> = ({
     }
   }, [initialTheme]);
 
+  // Persist themeInput as user types or selects a theme
+  useEffect(() => {
+    setPersistedHuntResult(huntResult, themeInput);
+  }, [themeInput, huntResult, setPersistedHuntResult]);
+
   // Sync state if background task completed while user was on another tab
   useEffect(() => {
     if (savedWork.huntResult && (!huntResult || savedWork.huntResult.theme !== huntResult.theme)) {
@@ -1140,7 +1145,7 @@ export const RepertoireHunterView: React.FC<RepertoireHunterViewProps> = ({
                           title="Treinar a redação de um parágrafo com este repertório"
                         >
                           <Target className="w-3.5 h-3.5 text-amber-500" />
-                          <span>Treinar Trecho</span>
+                          <span>Quiz do Trecho</span>
                         </button>
                       )}
 

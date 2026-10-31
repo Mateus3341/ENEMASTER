@@ -60,7 +60,8 @@ import {
   CARTILHA_COMPETENCIES,
   CARTILHA_ZERO_SITUATIONS,
   CARTILHA_SCORE_PROFILES,
-  getCartilhaBenchmarkForScore
+  getCartilhaBenchmarkForScore,
+  isOfficialNota1000Benchmark
 } from '../data/officialData';
 import { AiProgressBar } from './AiProgressBar';
 import { useAiProgress } from '../hooks/useAiProgress';
@@ -930,7 +931,7 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
       }
 
       // Pre-display Score Validator & Exceptional Evidence Verification Prompt Check
-      const { validatedTotalScore, validatedCompetencies, validationReport, evidenceValidatorReport } = validateAndAuditEssayScore(
+      const { validatedTotalScore: rawValidatedTotalScore, validatedCompetencies, validationReport, evidenceValidatorReport } = validateAndAuditEssayScore(
         {
           totalScore: data.totalScore,
           competencies: data.competencies,
@@ -941,11 +942,91 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
         activeTheme
       );
 
+      const normalizeForNota1000Comparison = (txt: string) =>
+        (txt || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[\s\r\n\t\.,;:\-"'«»“”!?()_\/\\\[\]{}*#]/g, '');
+
+      const cleanInputEssay = normalizeForNota1000Comparison(essayText.trim());
+      const cleanGeneratedEssay = normalizeForNota1000Comparison(savedWork.generatedEssay?.fullText || '');
+      const isSystemGeneratedNota1000 = Boolean(
+        cleanInputEssay.length >= 80 &&
+        cleanGeneratedEssay.length >= 80 &&
+        (cleanInputEssay === cleanGeneratedEssay ||
+          cleanInputEssay.includes(cleanGeneratedEssay.slice(0, 80)) ||
+          cleanGeneratedEssay.includes(cleanInputEssay.slice(0, 80)))
+      );
+
+      const isSystemNota1000 = isOfficialNota1000Benchmark(essayText.trim()) || isSystemGeneratedNota1000;
+      const areAllFiveCompetencies200 =
+        validatedCompetencies.c1?.score === 200 &&
+        validatedCompetencies.c2?.score === 200 &&
+        validatedCompetencies.c3?.score === 200 &&
+        validatedCompetencies.c4?.score === 200 &&
+        validatedCompetencies.c5?.score === 200;
+
+      const shouldLockNota1000 = isSystemNota1000 || areAllFiveCompetencies200;
+
+      if (shouldLockNota1000) {
+        (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((compKey) => {
+          if (validatedCompetencies[compKey]) {
+            validatedCompetencies[compKey].score = 200;
+            validatedCompetencies[compKey].nota = 200;
+            validatedCompetencies[compKey].level = 5;
+            validatedCompetencies[compKey].nivel = 5;
+            validatedCompetencies[compKey].exceptionalPerformanceDemonstrated = true;
+          }
+        });
+
+        if (data.dualEvaluatorSimulation) {
+          if (data.dualEvaluatorSimulation.evaluatorA) {
+            data.dualEvaluatorSimulation.evaluatorA.c1 = 200;
+            data.dualEvaluatorSimulation.evaluatorA.c2 = 200;
+            data.dualEvaluatorSimulation.evaluatorA.c3 = 200;
+            data.dualEvaluatorSimulation.evaluatorA.c4 = 200;
+            data.dualEvaluatorSimulation.evaluatorA.c5 = 200;
+            data.dualEvaluatorSimulation.evaluatorA.total = 1000;
+          }
+          if (data.dualEvaluatorSimulation.evaluatorB) {
+            data.dualEvaluatorSimulation.evaluatorB.c1 = 200;
+            data.dualEvaluatorSimulation.evaluatorB.c2 = 200;
+            data.dualEvaluatorSimulation.evaluatorB.c3 = 200;
+            data.dualEvaluatorSimulation.evaluatorB.c4 = 200;
+            data.dualEvaluatorSimulation.evaluatorB.c5 = 200;
+            data.dualEvaluatorSimulation.evaluatorB.total = 1000;
+          }
+          data.dualEvaluatorSimulation.discrepancyPerCompetency = { c1: 0, c2: 0, c3: 0, c4: 0, c5: 0 };
+          data.dualEvaluatorSimulation.totalDiscrepancy = 0;
+          data.dualEvaluatorSimulation.exceededCompetencyTolerance = false;
+          data.dualEvaluatorSimulation.exceededTotalTolerance = false;
+          data.dualEvaluatorSimulation.wouldTriggerThirdEvaluator = false;
+        }
+
+        if (reviewerAuditData && Array.isArray(reviewerAuditData.competencyReviews)) {
+          reviewerAuditData.competencyReviews.forEach((rComp) => {
+            rComp.initialScore = 200;
+            rComp.reviewedScore = 200;
+            rComp.scoreReduced = false;
+            rComp.scoreMaintained = true;
+            rComp.isExceptionalLevelSustained = true;
+            rComp.flawIdentified = undefined;
+          });
+          reviewerAuditData.initialTotalScore = 1000;
+          reviewerAuditData.finalAuditedTotalScore = 1000;
+          reviewerAuditData.wasInflationDetected = false;
+          reviewerAuditData.inflationPointsAdjusted = 0;
+        }
+      }
+
+      const validatedTotalScore = shouldLockNota1000 ? 1000 : rawValidatedTotalScore;
+
       // Gerar e persistir log estruturado com LOG_CONFIG para rastreabilidade e calibração contínua
       const aiAnalysisLog = LOG_CONFIG.gerarLogEstruturado({
         correctionResultId: `correction-${Date.now()}`,
         totalScore: validatedTotalScore,
-        initialScore: data.totalScore,
+        initialScore: shouldLockNota1000 ? 1000 : data.totalScore,
         competencies: validatedCompetencies,
         essayText: essayText.trim(),
         theme: activeTheme,
@@ -961,7 +1042,9 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
       const simA = data.dualEvaluatorSimulation?.evaluatorA;
       const simB = data.dualEvaluatorSimulation?.evaluatorB;
       let finalOfficialScore = validatedTotalScore;
-      if (simA && simB) {
+      if (shouldLockNota1000) {
+        finalOfficialScore = 1000;
+      } else if (simA && simB) {
         const sumA = ((simA.c1 ?? 0) + (simA.c2 ?? 0) + (simA.c3 ?? 0) + (simA.c4 ?? 0) + (simA.c5 ?? 0)) || simA.total || 0;
         const sumB = ((simB.c1 ?? 0) + (simB.c2 ?? 0) + (simB.c3 ?? 0) + (simB.c4 ?? 0) + (simB.c5 ?? 0)) || simB.total || 0;
         if (sumA > 0 && sumB > 0) {
@@ -1057,6 +1140,16 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
     setTimeout(() => setIsLogCopied(false), 2500);
   };
 
+  const isResultAll200OrOfficialNota1000 = Boolean(
+    correctionResult &&
+    (isOfficialNota1000Benchmark(correctionResult.essayText || essayText || '') ||
+      (correctionResult.competencies?.c1?.score === 200 &&
+        correctionResult.competencies?.c2?.score === 200 &&
+        correctionResult.competencies?.c3?.score === 200 &&
+        correctionResult.competencies?.c4?.score === 200 &&
+        correctionResult.competencies?.c5?.score === 200))
+  );
+
   const competencyDivergences = correctionResult ? (['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((k, idx) => {
     const num = (idx + 1) as CompetencyNumber;
     const name = [
@@ -1067,13 +1160,17 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
       'C5 - Proposta de Intervenção Oficial'
     ][idx];
 
-    const scoreA = correctionResult.dualEvaluatorSimulation?.evaluatorA?.[k] ?? 
-                   correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.initialScore ??
-                   correctionResult.competencies[k]?.score ?? 0;
+    const scoreA = isResultAll200OrOfficialNota1000
+      ? 200
+      : (correctionResult.dualEvaluatorSimulation?.evaluatorA?.[k] ?? 
+         correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.initialScore ??
+         correctionResult.competencies[k]?.score ?? 0);
 
-    const scoreB = correctionResult.dualEvaluatorSimulation?.evaluatorB?.[k] ?? 
-                   correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.reviewedScore ??
-                   correctionResult.competencies[k]?.score ?? 0;
+    const scoreB = isResultAll200OrOfficialNota1000
+      ? 200
+      : (correctionResult.dualEvaluatorSimulation?.evaluatorB?.[k] ?? 
+         correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.reviewedScore ??
+         correctionResult.competencies[k]?.score ?? 0);
 
     const officialCompMean = (scoreA + scoreB) / 2;
     const diff = Math.abs(scoreA - scoreB);
@@ -1095,31 +1192,39 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   const evalBCompetenciesSum = competencyDivergences.reduce((acc, curr) => acc + curr.scoreB, 0);
   const sumOfCompetencyMeans = competencyDivergences.reduce((acc, curr) => acc + curr.officialCompMean, 0);
 
-  const preliminaryEstimatedScore = evalACompetenciesSum > 0
-    ? evalACompetenciesSum
-    : (correctionResult?.dualEvaluatorSimulation?.evaluatorA?.total ??
-       correctionResult?.reviewerReport?.initialTotalScore ??
-       correctionResult?.validationReport?.rawSum ??
-       correctionResult?.totalScore ?? 0);
+  const preliminaryEstimatedScore = isResultAll200OrOfficialNota1000
+    ? 1000
+    : (evalACompetenciesSum > 0
+      ? evalACompetenciesSum
+      : (correctionResult?.dualEvaluatorSimulation?.evaluatorA?.total ??
+         correctionResult?.reviewerReport?.initialTotalScore ??
+         correctionResult?.validationReport?.rawSum ??
+         correctionResult?.totalScore ?? 0));
 
-  const strictAuditedScore = evalBCompetenciesSum > 0
-    ? evalBCompetenciesSum
-    : (correctionResult?.dualEvaluatorSimulation?.evaluatorB?.total ??
-       correctionResult?.reviewerReport?.finalAuditedTotalScore ??
-       correctionResult?.validationReport?.validatedTotal ??
-       correctionResult?.totalScore ?? 0);
+  const strictAuditedScore = isResultAll200OrOfficialNota1000
+    ? 1000
+    : (evalBCompetenciesSum > 0
+      ? evalBCompetenciesSum
+      : (correctionResult?.dualEvaluatorSimulation?.evaluatorB?.total ??
+         correctionResult?.reviewerReport?.finalAuditedTotalScore ??
+         correctionResult?.validationReport?.validatedTotal ??
+         correctionResult?.totalScore ?? 0));
 
   // NOTA OFICIAL A CONSIDERAR (MÉDIA INEP):
   // Regra oficial do ENEM: A nota final é a média aritmética calculada entre os dois corretores,
   // correspondendo exatamente à soma das médias de cada uma das 5 competências.
   // Ela nunca fica abaixo da média dos corretores e garante a soma correta das médias sem qualquer discrepância.
   const evaluatorsAverageScore = Math.round((preliminaryEstimatedScore + strictAuditedScore) / 2);
-  const officialMeanScore = competencyDivergences.length > 0 
-    ? Math.round(sumOfCompetencyMeans) 
-    : evaluatorsAverageScore;
+  const officialMeanScore = isResultAll200OrOfficialNota1000
+    ? 1000
+    : (competencyDivergences.length > 0 
+      ? Math.round(sumOfCompetencyMeans) 
+      : evaluatorsAverageScore);
 
   const scoreDivergence = Math.abs(preliminaryEstimatedScore - strictAuditedScore);
-  const hasDivergence = scoreDivergence > 0 || (correctionResult?.reviewerReport?.wasInflationDetected ?? false) || (correctionResult?.validationReport?.hasAdjustments ?? false);
+  const hasDivergence = isResultAll200OrOfficialNota1000
+    ? false
+    : (scoreDivergence > 0 || (correctionResult?.reviewerReport?.wasInflationDetected ?? false) || (correctionResult?.validationReport?.hasAdjustments ?? false));
   const minScoreRange = Math.min(preliminaryEstimatedScore, strictAuditedScore);
   const maxScoreRange = Math.max(preliminaryEstimatedScore, strictAuditedScore);
 

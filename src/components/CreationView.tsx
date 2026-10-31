@@ -183,8 +183,9 @@ export const CreationView: React.FC<CreationViewProps> = ({
 
   const activeTheme = isCustomTheme ? customThemeInput.trim() : theme.trim();
 
-  // Save focus draft to localStorage
+  // Save focus draft and active theme to localStorage and SavedWorkContext
   useEffect(() => {
+    setCreationDraft(focusDraft, activeTheme);
     try {
       localStorage.setItem(STORAGE_KEYS.FOCUS_DRAFT, focusDraft);
       if (activeTheme) {
@@ -193,7 +194,7 @@ export const CreationView: React.FC<CreationViewProps> = ({
     } catch (e) {
       console.warn('Erro ao salvar rascunho do modo foco:', e);
     }
-  }, [focusDraft, activeTheme]);
+  }, [focusDraft, activeTheme, setCreationDraft]);
 
   // Timer interval countdown
   useEffect(() => {

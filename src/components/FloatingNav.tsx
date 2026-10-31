@@ -3,6 +3,7 @@ import {
   BarChart3, 
   PenTool, 
   Sparkles, 
+  FileEdit,
   GraduationCap, 
   Compass, 
   Search, 
@@ -64,6 +65,14 @@ export const FloatingNav: React.FC<FloatingNavProps> = ({
       hint: 'Correção criteriosa por IA nas 5 competências'
     },
     { 
+      id: 'snippet_writing', 
+      label: 'Treino de Trecho', 
+      shortLabel: 'Trecho', 
+      icon: FileEdit, 
+      badge: 'Novo',
+      hint: 'Pratique Introdução, D1/D2 ou Conclusão com correção focada'
+    },
+    { 
       id: 'creation', 
       label: 'Criador 1000', 
       shortLabel: 'Criador', 
@@ -109,8 +118,8 @@ export const FloatingNav: React.FC<FloatingNavProps> = ({
     },
     { 
       id: 'practice', 
-      label: 'Treino de Trechos', 
-      shortLabel: 'Treino', 
+      label: 'Quiz do Trecho', 
+      shortLabel: 'Quiz', 
       icon: Target,
       hint: 'Prática parágrafo por parágrafo'
     },

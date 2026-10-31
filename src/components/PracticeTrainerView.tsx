@@ -48,17 +48,54 @@ function prepareSnippets(list: PracticeSnippetQuiz[]): PracticeSnippetQuiz[] {
   return shuffleArray(list).map(s => shuffleSnippetOptions(s));
 }
 
+const PRACTICE_QUIZ_STORAGE_KEY = 'enem_practice_quiz_state_v1';
+
 export const PracticeTrainerView: React.FC = () => {
-  const [snippets, setSnippets] = useState<PracticeSnippetQuiz[]>(() => prepareSnippets(PRACTICE_SNIPPETS));
-  const [currentIndex, setCurrentIndex] = useState<number>(0);
-  const [selectedOption, setSelectedOption] = useState<number | null>(null);
-  const [isAnswered, setIsAnswered] = useState<boolean>(false);
-  const [score, setScore] = useState<number>(0);
-  const [totalAnswered, setTotalAnswered] = useState<number>(0);
-  const [streak, setStreak] = useState<number>(0);
-  const [maxStreak, setMaxStreak] = useState<number>(0);
+  const initialSavedQuiz = (() => {
+    try {
+      const raw = localStorage.getItem(PRACTICE_QUIZ_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.snippets) && parsed.snippets.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  })();
+
+  const [snippets, setSnippets] = useState<PracticeSnippetQuiz[]>(
+    () => initialSavedQuiz?.snippets || prepareSnippets(PRACTICE_SNIPPETS)
+  );
+  const [currentIndex, setCurrentIndex] = useState<number>(initialSavedQuiz?.currentIndex ?? 0);
+  const [selectedOption, setSelectedOption] = useState<number | null>(
+    initialSavedQuiz?.selectedOption ?? null
+  );
+  const [isAnswered, setIsAnswered] = useState<boolean>(Boolean(initialSavedQuiz?.isAnswered));
+  const [score, setScore] = useState<number>(initialSavedQuiz?.score ?? 0);
+  const [totalAnswered, setTotalAnswered] = useState<number>(initialSavedQuiz?.totalAnswered ?? 0);
+  const [streak, setStreak] = useState<number>(initialSavedQuiz?.streak ?? 0);
+  const [maxStreak, setMaxStreak] = useState<number>(initialSavedQuiz?.maxStreak ?? 0);
   const [isLoadingAi, setIsLoadingAi] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        PRACTICE_QUIZ_STORAGE_KEY,
+        JSON.stringify({
+          snippets,
+          currentIndex,
+          selectedOption,
+          isAnswered,
+          score,
+          totalAnswered,
+          streak,
+          maxStreak,
+        })
+      );
+    } catch {}
+  }, [snippets, currentIndex, selectedOption, isAnswered, score, totalAnswered, streak, maxStreak]);
 
   const practiceProgress = useAiProgress({
     steps: [
@@ -200,7 +237,7 @@ export const PracticeTrainerView: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-                  Treino de Trechos & Diagnóstico
+                  Quiz do Trecho
                 </h1>
                 <span className="px-2.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950 text-purple-900 dark:text-purple-300 text-[10px] font-black uppercase tracking-wider">
                   Modo Infinito IA

@@ -6,6 +6,34 @@ import {
   RepertoireHunterResponse 
 } from '../types';
 
+export interface PersistedSnippetTheme {
+  theme: string;
+  axis: string;
+  argumentBase: {
+    thesis: string;
+    arg1: string;
+    arg2: string;
+  };
+}
+
+export interface PersistedSnippetWritingState {
+  theme: string;
+  axis: string;
+  argumentBase: {
+    thesis: string;
+    arg1: string;
+    arg2: string;
+  };
+  sectionType: 'introducao' | 'desenvolvimento_1' | 'desenvolvimento_2' | 'conclusao';
+  singleParagraphText: string;
+  paragraphD1: string;
+  paragraphD2: string;
+  evaluationResult: any | null;
+  selectedPresetIndex: number;
+  isCustomThemeMode: boolean;
+  generatedThemes: PersistedSnippetTheme[];
+}
+
 interface SavedWorkState {
   // Correction
   activeCorrection: EssayCorrectionResult | null;
@@ -19,6 +47,10 @@ interface SavedWorkState {
 
   // Theme Generator
   generatedTheme: GeneratedThemeResponse | null;
+  generatedThemesHistory: GeneratedThemeResponse[];
+
+  // Snippet Writing (Treino de Trecho)
+  snippetWritingState: PersistedSnippetWritingState | null;
 
   // Repertoire Hunter
   huntResult: RepertoireHunterResponse | null;
@@ -33,6 +65,13 @@ interface SavedWorkContextType {
   setGeneratedEssay: (essay: GeneratedEssayResponse | null) => void;
   setCreationDraft: (focusDraft: string, creationTheme: string) => void;
   setGeneratedTheme: (theme: GeneratedThemeResponse | null) => void;
+  addGeneratedThemeToHistory: (theme: GeneratedThemeResponse) => void;
+  removeGeneratedThemeFromHistory: (idOrTitle: string) => void;
+  setSnippetWritingState: (
+    stateOrUpdater:
+      | PersistedSnippetWritingState
+      | ((prev: PersistedSnippetWritingState | null) => PersistedSnippetWritingState)
+  ) => void;
   setHuntResult: (result: RepertoireHunterResponse | null, themeInput?: string) => void;
   clearActiveCorrection: () => void;
   clearGeneratedEssay: () => void;
@@ -49,6 +88,8 @@ const defaultState: SavedWorkState = {
   creationTheme: '',
   focusDraft: '',
   generatedTheme: null,
+  generatedThemesHistory: [],
+  snippetWritingState: null,
   huntResult: null,
   hunterThemeInput: '',
 };
@@ -62,7 +103,13 @@ export const SavedWorkProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        return { ...defaultState, ...parsed };
+        return {
+          ...defaultState,
+          ...parsed,
+          generatedThemesHistory: Array.isArray(parsed.generatedThemesHistory)
+            ? parsed.generatedThemesHistory
+            : [],
+        };
       }
     } catch (e) {
       console.warn('Erro ao restaurar trabalho salvo do localStorage:', e);
@@ -87,7 +134,7 @@ export const SavedWorkProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return () => window.removeEventListener('enemaster:cache-cleared', handleCacheCleared);
   }, []);
 
-  // Sync to localStorage
+  // Sync to localStorage immediately whenever savedWork updates
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(savedWork));
@@ -147,12 +194,62 @@ export const SavedWorkProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const setGeneratedTheme = useCallback((theme: GeneratedThemeResponse | null) => {
     setSavedWork(prev => {
       if (prev.generatedTheme === theme) return prev;
+      const updatedHistory = theme
+        ? [
+            theme,
+            ...(prev.generatedThemesHistory || []).filter(
+              t => t.id !== theme.id && t.title !== theme.title
+            ),
+          ].slice(0, 30)
+        : prev.generatedThemesHistory || [];
       return {
         ...prev,
         generatedTheme: theme,
+        generatedThemesHistory: updatedHistory,
       };
     });
   }, []);
+
+  const addGeneratedThemeToHistory = useCallback((theme: GeneratedThemeResponse) => {
+    setSavedWork(prev => {
+      const existing = prev.generatedThemesHistory || [];
+      const filtered = existing.filter(t => t.id !== theme.id && t.title !== theme.title);
+      return {
+        ...prev,
+        generatedTheme: theme,
+        generatedThemesHistory: [theme, ...filtered].slice(0, 30),
+      };
+    });
+  }, []);
+
+  const removeGeneratedThemeFromHistory = useCallback((idOrTitle: string) => {
+    setSavedWork(prev => ({
+      ...prev,
+      generatedThemesHistory: (prev.generatedThemesHistory || []).filter(
+        t => t.id !== idOrTitle && t.title !== idOrTitle
+      ),
+    }));
+  }, []);
+
+  const setSnippetWritingState = useCallback(
+    (
+      stateOrUpdater:
+        | PersistedSnippetWritingState
+        | ((prev: PersistedSnippetWritingState | null) => PersistedSnippetWritingState)
+    ) => {
+      setSavedWork(prev => {
+        const nextSnippetState =
+          typeof stateOrUpdater === 'function'
+            ? stateOrUpdater(prev.snippetWritingState)
+            : stateOrUpdater;
+        return {
+          ...prev,
+          snippetWritingState: nextSnippetState,
+        };
+      });
+    },
+    []
+  );
 
   const setHuntResult = useCallback((result: RepertoireHunterResponse | null, themeInput?: string) => {
     setSavedWork(prev => {
@@ -206,6 +303,9 @@ export const SavedWorkProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setGeneratedEssay,
     setCreationDraft,
     setGeneratedTheme,
+    addGeneratedThemeToHistory,
+    removeGeneratedThemeFromHistory,
+    setSnippetWritingState,
     setHuntResult,
     clearActiveCorrection,
     clearGeneratedEssay,
@@ -218,6 +318,9 @@ export const SavedWorkProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setGeneratedEssay,
     setCreationDraft,
     setGeneratedTheme,
+    addGeneratedThemeToHistory,
+    removeGeneratedThemeFromHistory,
+    setSnippetWritingState,
     setHuntResult,
     clearActiveCorrection,
     clearGeneratedEssay,

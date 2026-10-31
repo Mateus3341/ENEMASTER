@@ -8,6 +8,7 @@ import { ThemeGeneratorView } from './components/ThemeGeneratorView';
 import { RepertoireHunterView } from './components/RepertoireHunterView';
 import { StudyCompetenciesView } from './components/StudyCompetenciesView';
 import { PracticeTrainerView } from './components/PracticeTrainerView';
+import { SnippetWritingView } from './components/SnippetWritingView';
 import { Nota1000ExamplesView } from './components/Nota1000ExamplesView';
 import { ProfessorChatView } from './components/ProfessorChatView';
 import { GlossaryView } from './components/GlossaryView';
@@ -270,9 +271,33 @@ export default function App() {
   const [correctionInitialTheme, setCorrectionInitialTheme] = useState<string>('');
   const [correctionInitialResult, setCorrectionInitialResult] = useState<EssayCorrectionResult | null>(null);
   const [creationInitialTheme, setCreationInitialTheme] = useState<string>('');
+  const [snippetWritingInitialTheme, setSnippetWritingInitialTheme] = useState<string>('');
   const [hunterInitialTheme, setHunterInitialTheme] = useState<string>('');
   const [professorEssayContext, setProfessorEssayContext] = useState<string>('');
   const [professorThemeContext, setProfessorThemeContext] = useState<string>('');
+
+  // Clear one-time initialTheme handoff props when leaving a tab so returning to that tab
+  // always restores the latest persisted theme from SavedWorkContext / localStorage.
+  useEffect(() => {
+    if (activeTab !== 'correction' && correctionInitialTheme) {
+      setCorrectionInitialTheme('');
+    }
+    if (activeTab !== 'creation' && creationInitialTheme) {
+      setCreationInitialTheme('');
+    }
+    if (activeTab !== 'snippet_writing' && snippetWritingInitialTheme) {
+      setSnippetWritingInitialTheme('');
+    }
+    if (activeTab !== 'repertoire_hunter' && hunterInitialTheme) {
+      setHunterInitialTheme('');
+    }
+  }, [
+    activeTab,
+    correctionInitialTheme,
+    creationInitialTheme,
+    snippetWritingInitialTheme,
+    hunterInitialTheme,
+  ]);
 
   // Persist saved essays locally with user-scoped and global keys
   useEffect(() => {
@@ -555,6 +580,26 @@ export default function App() {
             />
           )}
         </ErrorBoundary>
+
+        {/* Keep SnippetWritingView mounted across tab switches so background AI executions and progress bars never abort or reset */}
+        <div className={activeTab === 'snippet_writing' ? 'block' : 'hidden'}>
+          <ErrorBoundary
+            variant="full-page"
+            fallbackTitle="Instabilidade temporária no Treino de Trechos"
+            fallbackMessage="Não se preocupe: seus rascunhos, temas e argumentos continuam salvos. Você pode recarregar esta seção ou voltar ao painel inicial."
+            recoveryActionLabel="Recarregar Seção"
+            onNavigateHome={() => setActiveTab('dashboard')}
+          >
+            <SnippetWritingView 
+              initialTheme={snippetWritingInitialTheme}
+              onSendToFullCorrection={(text, themeName) => {
+                setCorrectionInitialTheme(themeName);
+                setCorrectionInitialResult(null);
+                setActiveTab('correction');
+              }}
+            />
+          </ErrorBoundary>
+        </div>
       </main>
 
       {/* Floating Interactive Mascot Widget */}

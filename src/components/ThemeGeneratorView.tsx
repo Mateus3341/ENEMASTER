@@ -53,25 +53,59 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
   onSendToCreation,
   onSendToRepertoireHunter
 }) => {
-  const { savedWork, setGeneratedTheme: setPersistedTheme } = useSavedWork();
-  const { startTask, updateTaskProgress, completeTask, failTask } = useBackgroundTasks();
+  const {
+    savedWork,
+    setGeneratedTheme: setPersistedTheme,
+    addGeneratedThemeToHistory,
+    removeGeneratedThemeFromHistory,
+  } = useSavedWork();
+  const { startTask, updateTaskProgress, completeTask } = useBackgroundTasks();
 
-  const [selectedAreas, setSelectedAreas] = useState<KnowledgeAreaId[]>(['meio_ambiente', 'sociedade']);
-  const [difficulty, setDifficulty] = useState<'Acessível' | 'Padrão ENEM' | 'Desafiador / Inédito'>('Padrão ENEM');
-  const [keywordsStyle, setKeywordsStyle] = useState<string>('aleatorio');
-  const [subFocus, setSubFocus] = useState<string>('');
+  const savedConfig = (() => {
+    try {
+      const raw = localStorage.getItem('enem_theme_gen_config_v1');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const [selectedAreas, setSelectedAreas] = useState<KnowledgeAreaId[]>(
+    savedConfig?.selectedAreas?.length ? savedConfig.selectedAreas : ['meio_ambiente', 'sociedade']
+  );
+  const [difficulty, setDifficulty] = useState<'Acessível' | 'Padrão ENEM' | 'Desafiador / Inédito'>(
+    savedConfig?.difficulty || 'Padrão ENEM'
+  );
+  const [keywordsStyle, setKeywordsStyle] = useState<string>(savedConfig?.keywordsStyle || 'aleatorio');
+  const [subFocus, setSubFocus] = useState<string>(savedConfig?.subFocus || '');
   
   // Persist across tabs
   const [currentTheme, setCurrentTheme] = useState<GeneratedThemeResponse | null>(() => {
-    return savedWork.generatedTheme || null;
+    if (savedWork.generatedTheme) return savedWork.generatedTheme;
+    try {
+      const storedCurrent = localStorage.getItem('enem_current_generated_theme_v1');
+      if (storedCurrent) return JSON.parse(storedCurrent);
+    } catch {}
+    if (savedWork.generatedThemesHistory && savedWork.generatedThemesHistory.length > 0) {
+      return savedWork.generatedThemesHistory[0];
+    }
+    return null;
   });
-  const [includeMotivatingTexts, setIncludeMotivatingTexts] = useState<boolean>(false);
+  const [includeMotivatingTexts, setIncludeMotivatingTexts] = useState<boolean>(
+    Boolean(savedConfig?.includeMotivatingTexts)
+  );
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isLoadingMotivatingTexts, setIsLoadingMotivatingTexts] = useState<boolean>(false);
   const [isLoadingGuide, setIsLoadingGuide] = useState<boolean>(false);
-  const [showPedagogicalGuide, setShowPedagogicalGuide] = useState<boolean>(false);
-  const [userBrainstormNotes, setUserBrainstormNotes] = useState<string>('');
-  const [showBrainstormBox, setShowBrainstormBox] = useState<boolean>(false);
+  const [showPedagogicalGuide, setShowPedagogicalGuide] = useState<boolean>(
+    Boolean(savedConfig?.showPedagogicalGuide)
+  );
+  const [userBrainstormNotes, setUserBrainstormNotes] = useState<string>(
+    savedConfig?.userBrainstormNotes || ''
+  );
+  const [showBrainstormBox, setShowBrainstormBox] = useState<boolean>(
+    Boolean(savedConfig?.showBrainstormBox)
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedTitle, setCopiedTitle] = useState<boolean>(false);
   const [activeMotivatingTab, setActiveMotivatingTab] = useState<string>('all');
@@ -121,7 +155,7 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
     }
   });
 
-  const [activeSubTab, setActiveSubTab] = useState<'generator' | 'favorites' | 'curated'>('generator');
+  const [activeSubTab, setActiveSubTab] = useState<'generator' | 'history' | 'favorites' | 'curated'>('generator');
 
   useEffect(() => {
     try {
@@ -130,6 +164,44 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
       console.error('Failed to save favorite themes', e);
     }
   }, [savedFavoriteThemes]);
+
+  // Persist generator configuration across tab switches
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'enem_theme_gen_config_v1',
+        JSON.stringify({
+          selectedAreas,
+          difficulty,
+          keywordsStyle,
+          subFocus,
+          includeMotivatingTexts,
+          showPedagogicalGuide,
+          userBrainstormNotes,
+          showBrainstormBox,
+        })
+      );
+    } catch {}
+  }, [
+    selectedAreas,
+    difficulty,
+    keywordsStyle,
+    subFocus,
+    includeMotivatingTexts,
+    showPedagogicalGuide,
+    userBrainstormNotes,
+    showBrainstormBox,
+  ]);
+
+  // Persist currentTheme whenever it changes locally
+  useEffect(() => {
+    if (currentTheme) {
+      setPersistedTheme(currentTheme);
+      try {
+        localStorage.setItem('enem_current_generated_theme_v1', JSON.stringify(currentTheme));
+      } catch {}
+    }
+  }, [currentTheme, setPersistedTheme]);
 
   // Sync state if background task completed while user was on another tab
   useEffect(() => {
@@ -179,6 +251,15 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
         return found ? found.name : id;
       });
 
+      const existingTitles = Array.from(
+        new Set(
+          [
+            currentTheme?.title,
+            ...(savedWork.generatedThemesHistory || []).map((t) => t.title),
+          ].filter(Boolean)
+        )
+      );
+
       const response = await fetch('/api/generate-theme', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -187,7 +268,8 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
           difficulty,
           subFocus: subFocus.trim(),
           keywordsStyle,
-          includeMotivatingTexts
+          includeMotivatingTexts,
+          excludeThemes: existingTitles
         })
       });
 
@@ -200,6 +282,10 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
       themeProgress.completeProgress();
       setCurrentTheme(data);
       setPersistedTheme(data);
+      addGeneratedThemeToHistory(data);
+      try {
+        localStorage.setItem('enem_current_generated_theme_v1', JSON.stringify(data));
+      } catch {}
       completeTask(taskId, data);
       setActiveSubTab('generator');
       if (data.isFallback) {
@@ -216,6 +302,10 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
       };
       setCurrentTheme(fallbackData);
       setPersistedTheme(fallbackData);
+      addGeneratedThemeToHistory(fallbackData);
+      try {
+        localStorage.setItem('enem_current_generated_theme_v1', JSON.stringify(fallbackData));
+      } catch {}
       completeTask(taskId, fallbackData);
       setActiveSubTab('generator');
       setErrorMessage('Tema carregado com sucesso do Acervo Oficial Homologado INEP!');
@@ -248,10 +338,12 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
       const data = await response.json();
       motivatingProgress.completeProgress();
       if (data.motivatingTexts && Array.isArray(data.motivatingTexts)) {
-        setCurrentTheme(prev => ({
-          ...prev,
+        const updatedTheme: GeneratedThemeResponse = {
+          ...currentTheme,
           motivatingTexts: data.motivatingTexts
-        }));
+        };
+        setCurrentTheme(updatedTheme);
+        setPersistedTheme(updatedTheme);
         setActiveMotivatingTab('all');
       }
     } catch (err: any) {
@@ -298,13 +390,15 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
 
       const guideData = await response.json();
       guideProgress.completeProgress();
-      setCurrentTheme(prev => prev ? ({
-        ...prev,
+      const updatedWithGuide: GeneratedThemeResponse = {
+        ...currentTheme,
         suggestedTheses: guideData.suggestedTheses,
         recommendedRepertoires: guideData.recommendedRepertoires,
         suggestedIntervention: guideData.suggestedIntervention,
         commonTangentsWarning: guideData.commonTangentsWarning
-      }) : null);
+      };
+      setCurrentTheme(updatedWithGuide);
+      setPersistedTheme(updatedWithGuide);
       setShowPedagogicalGuide(true);
     } catch (err: any) {
       guideProgress.resetProgress();
@@ -319,6 +413,8 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
     const list = currentTheme ? CURATED_THEME_PROPOSALS.filter(t => t.id !== currentTheme.id) : CURATED_THEME_PROPOSALS;
     const picked = (list.length > 0 ? list[Math.floor(Math.random() * list.length)] : CURATED_THEME_PROPOSALS[0]) || CURATED_THEME_PROPOSALS[0];
     setCurrentTheme(picked);
+    setPersistedTheme(picked);
+    addGeneratedThemeToHistory(picked);
     setShowPedagogicalGuide(false);
     setUserBrainstormNotes('');
     setActiveSubTab('generator');
@@ -368,7 +464,7 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
           </div>
 
           {/* Quick Subtab Switcher */}
-          <div className="flex items-center gap-2 bg-slate-800/80 p-1.5 rounded-2xl border border-slate-700/60 self-start md:self-center">
+          <div className="flex flex-wrap items-center gap-2 bg-slate-800/80 p-1.5 rounded-2xl border border-slate-700/60 self-start md:self-center">
             <button
               id="tab-btn-generator"
               onClick={() => setActiveSubTab('generator')}
@@ -380,6 +476,18 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
             >
               <Sparkles className="w-3.5 h-3.5" />
               <span>Criador de Temas</span>
+            </button>
+            <button
+              id="tab-btn-history"
+              onClick={() => setActiveSubTab('history')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                activeSubTab === 'history'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Gerados ({savedWork.generatedThemesHistory?.length || 0})</span>
             </button>
             <button
               id="tab-btn-curated"
@@ -1473,6 +1581,7 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
                       type="button"
                       onClick={() => {
                         setCurrentTheme(fav);
+                        setPersistedTheme(fav);
                         setActiveSubTab('generator');
                       }}
                       className="flex-1 py-2.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
@@ -1483,6 +1592,98 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
                     <button
                       type="button"
                       onClick={() => onSendToCorrection(fav.title)}
+                      className="py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold text-xs cursor-pointer"
+                      title="Escrever no corretor"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* VIEW 4: Generated Themes History */}
+      {activeSubTab === 'history' && (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Histórico de Temas Gerados</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Todos os temas que você gerou ficam salvos automaticamente mesmo ao trocar de aba
+              </p>
+            </div>
+          </div>
+
+          {!savedWork.generatedThemesHistory || savedWork.generatedThemesHistory.length === 0 ? (
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-12 text-center border border-slate-200 dark:border-slate-800 space-y-4 max-w-md mx-auto">
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-400 flex items-center justify-center mx-auto">
+                <Layers className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white">Nenhum tema gerado ainda</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Os temas que você gerar na aba "Criador de Temas" ficarão listados automaticamente aqui.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveSubTab('generator')}
+                className="py-2 px-4 rounded-xl bg-indigo-600 text-white text-xs font-bold shadow-sm inline-flex items-center gap-1.5 cursor-pointer hover:bg-indigo-700"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Gerar Tema Agora</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {savedWork.generatedThemesHistory.map((gen, idx) => (
+                <div
+                  key={gen.id || `${gen.title}-${idx}`}
+                  className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between gap-4"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="px-2.5 py-0.5 bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 text-[11px] font-bold rounded-full">
+                        {gen.axis || 'Eixo Temático ENEM'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeGeneratedThemeFromHistory(gen.id || gen.title)}
+                        className="text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
+                        title="Remover do histórico"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white font-serif leading-snug">
+                      "{gen.title}"
+                    </h3>
+
+                    <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
+                      {gen.socialProblem}
+                    </p>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCurrentTheme(gen);
+                        setPersistedTheme(gen);
+                        setActiveSubTab('generator');
+                      }}
+                      className="flex-1 py-2.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Abrir Proposta</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSendToCorrection(gen.title)}
                       className="py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold text-xs cursor-pointer"
                       title="Escrever no corretor"
                     >

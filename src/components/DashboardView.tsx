@@ -207,6 +207,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
 
             <button 
+              id="bento-btn-snippet-writing"
+              onClick={() => setActiveTab('snippet_writing')}
+              className="w-full py-2.5 sm:py-3 px-3.5 sm:px-4 bg-indigo-600/90 hover:bg-indigo-600 dark:bg-indigo-800/90 dark:hover:bg-indigo-800 text-white border border-indigo-400/50 rounded-xl sm:rounded-2xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 shadow-sm transition-transform active:scale-[0.99] cursor-pointer"
+            >
+              <FileText className="w-4 h-4 text-amber-300" />
+              <span>Treino de Trecho (Intro, D1/D2 ou Conclusão)</span>
+            </button>
+
+            <button 
               id="bento-btn-create"
               onClick={() => setActiveTab('creation')}
               className="w-full py-2.5 sm:py-3 px-3.5 sm:px-4 bg-indigo-700/80 hover:bg-indigo-700 dark:bg-indigo-800/80 dark:hover:bg-indigo-800 text-white border border-indigo-500/50 rounded-xl sm:rounded-2xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-transform active:scale-[0.99] cursor-pointer"
@@ -465,7 +474,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   🎯
                 </div>
                 <div className="flex-1">
-                  <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 group-hover:text-emerald-900 dark:group-hover:text-emerald-300">Treino de Trechos</p>
+                  <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 group-hover:text-emerald-900 dark:group-hover:text-emerald-300">Quiz do Trecho</p>
                   <p className="text-[10px] text-slate-400 dark:text-slate-500 uppercase font-semibold">Diagnóstico de falhas sintáticas</p>
                 </div>
                 <ArrowRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 group-hover:text-emerald-600 transition-transform group-hover:translate-x-0.5" />
