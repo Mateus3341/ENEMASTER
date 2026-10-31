@@ -44,8 +44,9 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex flex-col min-w-0">
               <div className="flex items-center gap-1 sm:gap-2">
                 <h1 className="text-base sm:text-2xl lg:text-3xl font-black tracking-tight flex items-center leading-none whitespace-nowrap">
-                  <span className="font-black text-slate-950 dark:text-white drop-shadow-xs">ENEM</span>
-                  <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 dark:from-cyan-400 dark:via-cyan-300 dark:to-indigo-300 ml-1">MASTER</span>
+                  <span className="font-black text-slate-950 dark:text-white drop-shadow-xs">ENE</span>
+                  <span className="font-black text-transparent bg-clip-text bg-[linear-gradient(90deg,#020617_0%,#020617_50%,#4f46e5_50%,#6366f1_100%)] dark:bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#22d3ee_50%,#67e8f9_100%)]">M</span>
+                  <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 via-indigo-500 to-cyan-500 dark:from-cyan-300 dark:via-cyan-300 dark:to-indigo-300">ASTER</span>
                 </h1>
                 <span className="hidden md:inline-flex items-center px-2.5 py-0.5 text-[11px] font-black bg-gradient-to-r from-indigo-500/10 to-cyan-500/10 dark:from-indigo-500/20 dark:to-cyan-500/20 text-indigo-700 dark:text-cyan-300 border border-indigo-300/80 dark:border-cyan-400/40 rounded-full shadow-2xs whitespace-nowrap">
                   NOTA 1000

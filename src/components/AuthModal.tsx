@@ -128,9 +128,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <EnemasterLogoIcon size={34} />
           </div>
           <div>
-            <div className="flex items-center gap-1.5 leading-none">
-              <span className="font-black text-slate-950 dark:text-white text-xl">ENEM</span>
-              <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-cyan-500 dark:from-cyan-400 dark:to-indigo-300 text-xl">MASTER</span>
+            <div className="flex items-center leading-none tracking-tight">
+              <span className="font-black text-slate-950 dark:text-white text-xl">ENE</span>
+              <span className="font-black text-transparent bg-clip-text bg-[linear-gradient(90deg,#020617_0%,#020617_50%,#4f46e5_50%,#6366f1_100%)] dark:bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#22d3ee_50%,#67e8f9_100%)] text-xl">M</span>
+              <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-cyan-500 dark:from-cyan-300 dark:to-indigo-300 text-xl">ASTER</span>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-0.5">
               {mode === 'login' && 'Acesse sua conta para salvar suas redações'}

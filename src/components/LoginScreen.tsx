@@ -140,8 +140,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest, sta
           </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-2 leading-none">
-              <span className="text-2xl sm:text-3xl font-black text-white tracking-tight">ENEM</span>
-              <span className="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-cyan-300 to-cyan-200 tracking-tight">MASTER</span>
+              <span className="inline-flex items-center text-2xl sm:text-3xl font-black tracking-tight">
+                <span className="text-white">ENE</span>
+                <span className="text-transparent bg-clip-text bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#818cf8_50%,#67e8f9_100%)]">M</span>
+                <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 to-cyan-200">ASTER</span>
+              </span>
               <span className="hidden sm:inline-flex items-center px-2.5 py-0.5 text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 rounded-full ml-1">
                 NOTA 1000
               </span>
@@ -471,7 +474,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest, sta
 
       {/* Footer */}
       <footer className="max-w-6xl w-full mx-auto pt-4 pb-2 border-t border-white/10 text-xs text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left relative z-10">
-        <p className="text-left">© 2026 ENEM Master • Matriz de Correção Oficial INEP</p>
+        <p className="text-left">© 2026 ENEMASTER • Matriz de Correção Oficial INEP</p>
         <div className="flex flex-wrap items-center justify-center gap-4 text-[11px]">
           <span className="flex items-center gap-1 text-emerald-400 font-semibold">
             <CheckCircle2 className="w-3.5 h-3.5" /> 100% Gratuito para Estudantes

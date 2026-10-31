@@ -231,9 +231,10 @@ export const EnemasterLogo: React.FC<EnemasterLogoProps> = ({
       >
         <EnemasterLogoIcon size={28} />
         <div className="flex flex-col">
-          <div className="flex items-center leading-none">
-            <span className="font-black text-slate-900 dark:text-white tracking-tight text-sm">ENEM</span>
-            <span className="font-medium text-indigo-600 dark:text-indigo-400 tracking-tight text-sm">MASTER</span>
+          <div className="flex items-center leading-none tracking-tight">
+            <span className="font-black text-slate-900 dark:text-white text-sm">ENE</span>
+            <span className="font-black text-transparent bg-clip-text bg-[linear-gradient(90deg,#0f172a_0%,#0f172a_50%,#4f46e5_50%,#6366f1_100%)] dark:bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#22d3ee_50%,#67e8f9_100%)] text-sm">M</span>
+            <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-cyan-500 dark:from-cyan-300 dark:to-indigo-300 text-sm">ASTER</span>
           </div>
           {showSlogan && (
             <span className="text-[8px] font-bold text-slate-400 dark:text-slate-500 tracking-widest uppercase">
@@ -256,8 +257,9 @@ export const EnemasterLogo: React.FC<EnemasterLogoProps> = ({
           <EnemasterLogoIcon size={size === 'xl' || size === '2xl' ? 96 : 72} />
         </div>
         <div className="flex items-center tracking-tight text-3xl sm:text-4xl font-black text-slate-950 dark:text-white leading-none">
-          <span className="font-black">ENEM</span>
-          <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 dark:from-cyan-400 dark:to-indigo-300 ml-1">MASTER</span>
+          <span className="font-black">ENE</span>
+          <span className="font-black text-transparent bg-clip-text bg-[linear-gradient(90deg,#020617_0%,#020617_50%,#4f46e5_50%,#6366f1_100%)] dark:bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#22d3ee_50%,#67e8f9_100%)]">M</span>
+          <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-cyan-500 dark:from-cyan-300 dark:to-indigo-300">ASTER</span>
         </div>
         {showSlogan && (
           <p className="mt-1.5 text-xs sm:text-sm font-extrabold text-slate-500 dark:text-slate-400 tracking-[0.22em] uppercase">
@@ -279,8 +281,9 @@ export const EnemasterLogo: React.FC<EnemasterLogoProps> = ({
       </div>
       <div className="flex flex-col justify-center">
         <div className="flex items-center tracking-tight leading-none text-xl sm:text-2xl font-black text-slate-950 dark:text-white">
-          <span className="font-black text-slate-950 dark:text-white">ENEM</span>
-          <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 dark:from-cyan-400 dark:to-indigo-300 ml-1">MASTER</span>
+          <span className="font-black text-slate-950 dark:text-white">ENE</span>
+          <span className="font-black text-transparent bg-clip-text bg-[linear-gradient(90deg,#020617_0%,#020617_50%,#4f46e5_50%,#6366f1_100%)] dark:bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#22d3ee_50%,#67e8f9_100%)]">M</span>
+          <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-cyan-500 dark:from-cyan-300 dark:to-indigo-300">ASTER</span>
         </div>
         {showSlogan && (
           <span className="text-[10px] sm:text-[11px] font-extrabold text-slate-500 dark:text-slate-400 tracking-[0.2em] uppercase mt-1">

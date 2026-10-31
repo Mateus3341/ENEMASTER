@@ -388,7 +388,11 @@ export default function App() {
             </div>
           </div>
           <div className="flex flex-col items-center">
-            <span className="text-sm font-black tracking-tight text-white">ENEM <span className="text-indigo-400">MASTER</span></span>
+            <span className="inline-flex items-center text-sm font-black tracking-tight">
+              <span className="text-white">ENE</span>
+              <span className="text-transparent bg-clip-text bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#818cf8_50%,#67e8f9_100%)]">M</span>
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 to-cyan-200">ASTER</span>
+            </span>
             <span className="text-[10px] font-bold text-slate-400 tracking-[0.2em] uppercase mt-1">Carregando ambiente de estudos...</span>
           </div>
         </div>

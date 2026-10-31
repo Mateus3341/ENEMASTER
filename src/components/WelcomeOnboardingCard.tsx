@@ -58,7 +58,7 @@ export const WelcomeOnboardingCard: React.FC<WelcomeOnboardingCardProps> = ({
           <div className="flex items-center gap-2.5 flex-wrap">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 text-xs font-black uppercase tracking-wider">
               <Sparkles className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-              <span>Boas-vindas ao ENEM Master 2025</span>
+              <span>Boas-vindas ao ENEMASTER 2025</span>
             </span>
             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/10 text-slate-200 border border-white/15 text-xs font-semibold">
               <ShieldCheck className="w-3.5 h-3.5 text-cyan-300" />
@@ -71,7 +71,7 @@ export const WelcomeOnboardingCard: React.FC<WelcomeOnboardingCardProps> = ({
               Sua jornada rumo aos <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-amber-200 to-emerald-300">1000 Pontos</span> começa aqui!
             </h2>
             <p className="text-sm sm:text-base text-slate-300 mt-2 leading-relaxed font-normal">
-              O ENEM Master é sua central pedagógica completa. Você tem acesso à correção instantânea nas 5 competências, caçador de repertórios socioculturais, criador guiado com parágrafos nota 1000 e chat com o Professor IA.
+              O ENEMASTER é sua central pedagógica completa. Você tem acesso à correção instantânea nas 5 competências, caçador de repertórios socioculturais, criador guiado com parágrafos nota 1000 e chat com o Professor IA.
             </p>
           </div>
 
