@@ -442,8 +442,18 @@ export interface PracticeQuestion {
   officialIneRuleExplained: string;
 }
 
+export type PracticeSnippetCategory =
+  | 'conectivos'
+  | 'repertorio'
+  | 'completar_trecho'
+  | 'reescrita';
+
 export interface PracticeSnippetQuiz {
   id: string;
+  category: PracticeSnippetCategory;
+  categoryLabel: string;
+  themeContext?: string;
+  questionPrompt: string;
   competencyFocus: string;
   snippet: string;
   options: string[];

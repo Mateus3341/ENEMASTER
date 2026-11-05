@@ -162,201 +162,300 @@ export const REPERTOIRE_DATABASE: RepertoireItem[] = [
 ];
 
 export const PRACTICE_SNIPPETS: PracticeSnippetQuiz[] = [
+  // 1. CONECTIVOS (Fill in the blank)
   {
     id: 'ps-1',
-    competencyFocus: 'Competência 1 (Estrutura Sintática)',
-    snippet: 'O Poder Público precisa agir com urgência. Criando projetos nas escolas que valorizem a cultura afro-brasileira.',
+    category: 'conectivos',
+    categoryLabel: 'Lacunas: Conectivos',
+    themeContext: 'Desafios para o enfrentamento da invisibilidade do trabalho de cuidado realizado pela mulher no Brasil',
+    questionPrompt: 'Qual conectivo preenche a lacuna para introduzir uma ressalva/oposição entre a garantia constitucional e a realidade prática?',
+    competencyFocus: 'Competência 4 (Coesão e Operadores Argumentativos)',
+    snippet: 'A Constituição Federal de 1988 assegura a igualdade de direitos e a dignidade humana como pilares do Estado Democrático. [ _____ ], a sobrecarga do trabalho doméstico e de cuidado não remunerado ainda recai majoritariamente sobre as mulheres brasileiras.',
     options: [
-      'Configura um truncamento de período por isolamento indevido de oração subordinada reduzida de gerúndio da sua oração principal.',
-      'Apresenta estrutura sintática perfeita, visto que o ponto final antes de formas nominais de gerúndio é de uso facultativo no padrão culto.',
-      'Classifica-se como desvio clássico de regência verbal e pontuação oracional, sem prejuízo direto à estrutura sintática formal do texto.',
-      'Caracteriza-se como erro de concordância nominal e justaposição de orações coordenadas assindéticas sem o conectivo aditivo obrigatório.'
+      'Todavia, na prática social',
+      'Por conseguinte, nesse cenário',
+      'Outrossim, de maneira análoga',
+      'Consoante a essa premissa legal'
     ],
     correctOptionIndex: 0,
-    explanation: 'Conforme o Módulo 3 do INEP, orações subordinadas ou gerundiais isoladas por ponto final constituem "truncamento de período", contabilizado diretamente como falha de estrutura sintática que derruba a nota da C1.',
-    improvedSnippet: 'O Poder Público precisa agir com urgência, criando projetos nas escolas que valorizem a cultura afro-brasileira.'
+    explanation: 'Como a primeira frase apresenta um ideal positivo garantido por lei e a segunda mostra um problema real que contraria esse ideal, você precisa de um conectivo adversativo/opositivo ("Todavia, na prática social", "Contudo", "Entretanto"). "Por conseguinte" indica conclusão, "Outrossim" indica soma e "Consoante" indica conformidade.',
+    improvedSnippet: 'A Constituição Federal de 1988 assegura a igualdade de direitos e a dignidade humana como pilares do Estado Democrático. Todavia, na prática social, a sobrecarga do trabalho doméstico e de cuidado não remunerado ainda recai majoritariamente sobre as mulheres brasileiras.'
   },
   {
     id: 'ps-2',
-    competencyFocus: 'Competência 2 (Repertório Sociocultural)',
-    snippet: 'Na obra "Utopia", de Thomas More, retrata-se uma sociedade perfeita e justa. No entanto, no Brasil isso não ocorre, pois a herança africana ainda é desvalorizada.',
+    category: 'conectivos',
+    categoryLabel: 'Lacunas: Conectivos',
+    themeContext: 'Desafios para a valorização de comunidades e povos tradicionais no Brasil',
+    questionPrompt: 'Qual operador interparágrafo deve iniciar este 2º parágrafo de desenvolvimento (D2) para somar um novo argumento ao texto?',
+    competencyFocus: 'Competência 4 (Operadores Interparágrafos)',
+    snippet: '[ _____ ], a morosidade estatal na demarcação e fiscalização de terras agrava a vulnerabilidade dos povos originários e quilombolas frente ao avanço predatório do garimpo e do desmatamento ilegal.',
     options: [
-      'Garante a nota máxima na C2 (200 pontos), pois a referência filosófica humanista clássica valida de forma autônoma a argumentação do autor.',
-      'Constitui repertório ilegítimo pela banca do INEP, pois obras literárias ficcionais estrangeiras não são aceitas em redações dissertativas.',
-      'Configura repertório de bolso desprovido de produtividade orgânica, pois a citação genérica não aprofunda o recorte temático específico.',
-      'Configura tangenciamento temático compulsório, o que acarreta anulação automática de toda a redação por fuga aos textos motivadores.'
+      'Ademais, cabe salientar que',
+      'Em suma, infere-se que',
+      'A despeito dessa realidade,',
+      'Sob o prisma inverso, nota-se que'
     ],
-    correctOptionIndex: 2,
-    explanation: 'A Cartilha Oficial do Participante do INEP cita expressamente que citações genéricas desconectadas da realidade concreta configuram repertório sem produtividade, limitando a Competência 2.',
-    improvedSnippet: 'A filósofa Djamila Ribeiro, em "Pequeno Manual Antirracista", adverte que para transformar uma estrutura discriminatória é preciso tirá-la da invisibilidade. No Brasil contemporâneo, contudo, a herança africana permanece silenciada nas salas de aula.'
+    correctOptionIndex: 0,
+    explanation: 'Para abrir o D2 somando uma segunda causa ou problema ao que já foi discutido no D1, utilize um operador interparágrafo aditivo como "Ademais, cabe salientar que", "Outrossim, convém pontuar que" ou "Paralelamente a isso". "Em suma" serve apenas para conclusão.',
+    improvedSnippet: 'Ademais, cabe salientar que a morosidade estatal na demarcação e fiscalização de terras agrava a vulnerabilidade dos povos originários e quilombolas frente ao avanço predatório do garimpo e do desmatamento ilegal.'
   },
   {
     id: 'ps-3',
-    competencyFocus: 'Competência 5 (Proposta Condicional)',
-    snippet: 'Se o Governo Federal investir em verbas públicas e as famílias colaborarem, os desafios do trabalho de cuidado diminuirão no Brasil.',
+    category: 'conectivos',
+    categoryLabel: 'Lacunas: Conectivos',
+    themeContext: 'Invisibilidade e registro civil: garantia de acesso à cidadania no Brasil',
+    questionPrompt: 'Qual expressão preenche corretamente a lacuna sem cometer o erro comum de usar "onde" para ideias abstratas?',
+    competencyFocus: 'Competência 4 (Pronomes Relativos na Coesão)',
+    snippet: 'Milhões de brasileiros ainda vivenciam uma grave exclusão documental, situação [ _____ ] o indivíduo é privado do acesso a programas assistenciais, à saúde pública e ao mercado de trabalho formal.',
     options: [
-      'Atinge a nota máxima de 200 pontos na C5, uma vez que articula dois agentes institucionais distintos em cooperação com a sociedade civil.',
-      'Fica limitada ao Nível 2 (máximo de 80 pontos) na C5, pois a estrutura hipotética-condicional não configura intervenção afirmativa concreta.',
-      'Recebe nota zero imediata na C5 por não detalhar expressamente as prerrogativas do Poder Judiciário nem indicar penalidades cabíveis.',
-      'Alcança o Nível 4 (160 pontos) na C5, pois contém agente, ação, meio e efeito plenamente articulados ao debate dos direitos humanos.'
+      'na qual',
+      'onde',
+      'aonde',
+      'cujo o qual'
     ],
-    correctOptionIndex: 1,
-    explanation: 'A Grade Específica da Competência 5 do INEP estabelece a regra: "Estruturas condicionais (se... caso...) com 2 ou mais elementos válidos não devem ultrapassar o Nível 2 (80 pontos)".',
-    improvedSnippet: 'Portanto, cabe ao Governo Federal — instância máxima de gestão pública — instituir políticas de suporte financeiro ao trabalho de cuidado, mediante destinação orçamentária no Plano Plurianual, a fim de valorizar as trabalhadoras.'
+    correctOptionIndex: 0,
+    explanation: 'Na redação do ENEM, "onde" e "aonde" só podem ser usados para lugares físicos (ex: "a escola onde estuda"). Para retomar palavras abstratas como "situação", "cenário", "contexto" ou "realidade", use sempre "na qual", "no qual" ou "em que".',
+    improvedSnippet: 'Milhões de brasileiros ainda vivenciam uma grave exclusão documental, situação na qual o indivíduo é privado do acesso a programas assistenciais, à saúde pública e ao mercado de trabalho formal.'
   },
   {
     id: 'ps-4',
-    competencyFocus: 'Competência 4 (Operadores Interparágrafos)',
-    snippet: 'Início dos parágrafos da redação:\n§1: "No cenário brasileiro contemporâneo..."\n§2: "De acordo com o sociólogo Zygmunt Bauman..."\n§3: "Além disso..."\n§4: "Portanto..."',
+    category: 'conectivos',
+    categoryLabel: 'Lacunas: Conectivos',
+    themeContext: 'Perspectivas acerca do envelhecimento na sociedade brasileira',
+    questionPrompt: 'Preencha a lacuna com o conectivo que introduz uma relação de causa/explicação para justificar a vulnerabilidade dos idosos:',
+    competencyFocus: 'Competência 4 (Articulação de Causa e Consequência)',
+    snippet: 'O avanço da longevidade no Brasil ainda não é acompanhado por infraestrutura urbana e hospitalar inclusiva, [ _____ ] o planejamento governamental historicamente negligenciou a transição demográfica do país.',
     options: [
-      'Cumpre os requisitos para nota 200 na C4, visto que possui conectivos diversificados iniciando todos os parágrafos do texto dissertativo.',
-      'Apresenta 4 operadores interparágrafos válidos segundo o INEP, dispensando o emprego de outros conectivos no interior dos períodos.',
-      'Zera a Competência 4, pois o conector conclusivo "Portanto" é estritamente proibido pela banca no início do parágrafo de fechamento.',
-      'Não assegura 200 pontos na C4 apenas pelo início: "De acordo com" no §2 é operador intraparágrafo, exigindo-se coesão interna ampla.'
-    ],
-    correctOptionIndex: 3,
-    explanation: 'Para 200 pontos na C4 são necessários: no mínimo 2 operadores interparágrafos expressivos conectando parágrafos E coesão intraparágrafo em TODOS os parágrafos, sem repertório coesivo precário ou repetições excessivas.',
-    improvedSnippet: 'Início do D2 com "Outrossim," ou "Ademais,", início da Conclusão com "Portanto," ou "Infere-se, portanto," acompanhados de rica diversidade de articuladores intraparágrafo.'
-  },
-  {
-    id: 'ps-5',
-    competencyFocus: 'Competência 1 (Justaposição de Orações)',
-    snippet: 'A saúde pública no Brasil enfrenta graves impasses, a falta de médicos no interior agrava a vulnerabilidade social da população ribeirinha.',
-    options: [
-      'Apresenta falha estrutural por justaposição, pois duas orações completas e independentes foram separadas apenas por vírgula sem conectivo.',
-      'Apresenta estrutura sintática irrepreensível, pois a vírgula é o recurso canônico prescrito pela norma para separar orações assindéticas.',
-      'Constitui truncamento de período clássico na C1, visto que a segunda oração depende morfossintaticamente do predicado anterior para fazer sentido.',
-      'Configura desvio pontual de regência nominal, sanável com a substituição da preposição "no" pela locução conjuntiva "em virtude de".'
+      'haja vista que',
+      'conquanto que',
+      'de modo que',
+      'porquanto entretanto'
     ],
     correctOptionIndex: 0,
-    explanation: 'A justaposição ocorre quando duas orações completas com sentido pleno são unidas por vírgula sem conjunção ou ponto e vírgula, constituindo falha estrutural penalizada na C1.',
-    improvedSnippet: 'A saúde pública no Brasil enfrenta graves impasses; com efeito, a carência de médicos no interior agrava a vulnerabilidade social da população ribeirinha.'
+    explanation: 'O segundo trecho explica a razão histórica pela qual falta infraestrutura. O conectivo "haja vista que" (assim como "visto que", "já que" ou "uma vez que") introduz exatamente a causa/explicação. "Conquanto" significa "embora" (concessão) e "de modo que" indica consequência.',
+    improvedSnippet: 'O avanço da longevidade no Brasil ainda não é acompanhado por infraestrutura urbana e hospitalar inclusiva, haja vista que o planejamento governamental historicamente negligenciou a transição demográfica do país.'
+  },
+
+  // 2. REPERTÓRIO PARA O TEMA
+  {
+    id: 'ps-5',
+    category: 'repertorio',
+    categoryLabel: 'Qual Repertório Usar?',
+    themeContext: 'Desafios para a valorização da herança africana no Brasil',
+    questionPrompt: 'Qual repertório sociocultural abaixo é o mais produtivo para fundamentar o argumento de que o apagamento histórico da cultura afro-brasileira nas escolas perpetua o preconceito?',
+    competencyFocus: 'Competência 2 (Repertório Legitimado e Produtivo)',
+    snippet: 'Em primeira análise, a escassa abordagem da história e das matrizes culturais africanas no ambiente escolar contribui para a manutenção do preconceito estrutural. [ _____ ]',
+    options: [
+      'Nesse sentido, a escritora Chimamanda Ngozi Adichie alerta para "o perigo de uma história única", demonstrando como a narrativa eurocêntrica exclusiva reduz a complexidade dos povos africanos a estereótipos.',
+      'Sob esse viés, o filósofo René Descartes afirma "Penso, logo existo", provando que a racionalidade humana deve prevalecer sobre qualquer sentimento nas salas de aula brasileiras.',
+      'De acordo com a Teoria da Evolução das Espécies, de Charles Darwin, apenas os organismos que melhor se adaptam ao meio ambiente conseguem sobreviver às mudanças históricas.',
+      'Conforme retratado na Revolução Industrial inglesa do século XVIII, a substituição do trabalho artesanal pelas máquinas a vapor acelerou o êxodo rural e o crescimento urbano.'
+    ],
+    correctOptionIndex: 0,
+    explanation: 'O conceito de "perigo de uma história única", de Chimamanda Adichie, encaixa-se perfeitamente em temas sobre apagamento cultural, intolerância e eurocentrismo escolar, pois explica como contar apenas um lado da história gera preconceito.',
+    improvedSnippet: 'Em primeira análise, a escassa abordagem da história e das matrizes culturais africanas no ambiente escolar contribui para a manutenção do preconceito estrutural. Nesse sentido, a escritora Chimamanda Ngozi Adichie alerta para "o perigo de uma história única", demonstrando como a narrativa eurocêntrica exclusiva reduz a complexidade dos povos africanos a estereótipos.'
   },
   {
     id: 'ps-6',
-    competencyFocus: 'Competência 3 (Lacuna Argumentativa / Autoria)',
-    snippet: 'Historicamente, a desigualdade de gênero afeta o mercado de trabalho. Isso gera muitos prejuízos e o Estado deve solucionar o impasse.',
+    category: 'repertorio',
+    categoryLabel: 'Qual Repertório Usar?',
+    themeContext: 'O estigma associado às doenças mentais na sociedade brasileira',
+    questionPrompt: 'Você quer argumentar que a cobrança exagerada por produtividade nas redes sociais e no trabalho adoece mentalmente os indivíduos e esconde seu sofrimento. Qual repertório encaixa com precisão?',
+    competencyFocus: 'Competência 2 (Pertinência e Uso Produtivo)',
+    snippet: 'A exigência contemporânea por desempenho incessante e felicidade performática agrava quadros de ansiedade e depressão, enquanto silencia quem precisa de ajuda. [ _____ ]',
     options: [
-      'Apresenta projeto de texto estratégico com excelente autoria, cumprindo todos os requisitos avaliativos da faixa de 200 pontos da C3.',
-      'Apresenta cópia direta dos textos motivadores da proposta temática, incorrendo em desconsideração de linhas na contagem da banca.',
-      'Apresenta lacuna argumentativa por superficialidade, pois aponta prejuízos genéricos sem desdobrar causas, evidências ou impactos concretos.',
-      'Incorre em contradição lógica insolúvel entre os argumentos, o que rebaixa compulsoriamente o texto para o Nível 1 da Competência 3.'
+      'Esse fenômeno dialoga com o conceito de "Sociedade do Cansaço", do filósofo Byung-Chul Han, segundo o qual o indivíduo atual cobra de si mesmo uma produtividade extrema até o esgotamento psíquico.',
+      'Tal situação confirma a Lei da Gravitação Universal, de Isaac Newton, demonstrando que toda ação governamental provoca uma reação proporcional na saúde física da população.',
+      'Essa realidade reflete o Tratado de Tordesilhas, assinado no período colonial, que dividiu territorialmente as terras recém-descobertas e gerou desigualdades regionais.',
+      'Isso comprova a tese do "Determinismo Geográfico", de Friedrich Ratzel, segundo a qual o clima e o relevo determinam o comportamento psicológico e produtivo de uma nação.'
     ],
-    correctOptionIndex: 2,
-    explanation: 'Na Competência 3, afirmações vagas e genéricas ("isso gera muitos problemas") sem desdobramento causal ou exemplificação geram lacuna argumentativa, rebaixando a nota para no máximo 120 pontos.',
-    improvedSnippet: 'Historicamente, a desigualdade de gênero perpetua a precarização feminina no mercado de trabalho. Esse cenário se manifesta na disparidade salarial e na sobrecarga da dupla jornada, limitando a autonomia socioeconômica das mulheres.'
+    correctOptionIndex: 0,
+    explanation: 'Byung-Chul Han ("Sociedade do Cansaço") é um repertório coringa e altamente produtivo para qualquer tema que envolva saúde mental, exaustão no trabalho, vício em telas ou pressão estética/redes sociais.',
+    improvedSnippet: 'A exigência contemporânea por desempenho incessante e felicidade performática agrava quadros de ansiedade e depressão, enquanto silencia quem precisa de ajuda. Esse fenômeno dialoga com o conceito de "Sociedade do Cansaço", do filósofo Byung-Chul Han, segundo o qual o indivíduo atual cobra de si mesmo uma produtividade extrema até o esgotamento psíquico.'
   },
   {
     id: 'ps-7',
-    competencyFocus: 'Competência 5 (Detalhamento Válido)',
-    snippet: 'Cabe ao Ministério da Educação criar campanhas de conscientização nas redes sociais para alertar os jovens sobre a importância do meio ambiente.',
+    category: 'repertorio',
+    categoryLabel: 'Qual Repertório Usar?',
+    themeContext: 'Democratização do acesso ao cinema no Brasil',
+    questionPrompt: 'Para defender no D1 que os direitos culturais existem na lei, mas não chegam à população periférica por falha do Estado, qual repertório cria a ponte ideal?',
+    competencyFocus: 'Competência 2 (Articulação Teoria-Realidade)',
+    snippet: 'Embora o acesso à cultura e ao lazer seja assegurado pelo artigo 215 da Constituição Federal, a concentração das salas de cinema em áreas nobres exclui milhões de brasileiros de baixa renda. [ _____ ]',
     options: [
-      'Garante 200 pontos na Competência 5, pois a menção às redes sociais já cumpre a exigência do detalhamento específico da ação estatal.',
-      'Possui 4 elementos válidos (Agente, Ação, Meio e Efeito), carecendo do Detalhamento substantivo de um dos elementos para atingir 200 pontos.',
-      'Apresenta apenas 2 elementos válidos (Agente e Efeito), pois campanhas de conscientização não são aceitas como ação válida pelo INEP.',
-      'Recebe nota zero imediata na C5 por violar preceitos de Direitos Humanos ao delegar a responsabilidade educativa unicamente ao MEC.'
+      'Configura-se, assim, o que o jornalista Gilberto Dimenstein denomina "Cidadão de Papel": a existência de garantias formais na legislação que não se materializam no cotidiano das camadas vulneráveis.',
+      'Trata-se, portanto, da "Banalidade do Mal", formulada pela filósofa Hannah Arendt ao julgar os crimes cometidos por oficiais nazistas durante os tribunais da Segunda Guerra Mundial.',
+      'Evidencia-se, desse modo, o "Mito da Caverna", de Platão, visto que os espectadores dentro das salas de cinema assistem apenas a sombras projetadas nas telas modernas.',
+      'Cumpre-se, assim, a "Lei Áurea" de 1888, que aboliu formalmente a escravidão no território nacional sem promover políticas imediatas de reforma agrária no campo.'
     ],
-    correctOptionIndex: 1,
-    explanation: 'Para 200 pontos na C5 são exigidos os 5 elementos: Agente, Ação, Meio/Modo, Efeito e Detalhamento (ex: explicitar a função institucional do órgão, o conteúdo temático da campanha ou a metodologia de veiculação).',
-    improvedSnippet: 'Cabe ao Ministério da Educação — órgão responsável pelas diretrizes pedagógicas nacionais — criar campanhas pedagógicas veiculadas nas mídias sociais, a fim de conscientizar a juventude sobre a preservação ecológica.'
+    correctOptionIndex: 0,
+    explanation: 'Sempre que seu argumento contrastar uma lei/Constituição com a falta de acesso real na prática (saúde, educação, cultura, moradia, registro civil), "O Cidadão de Papel", de Gilberto Dimenstein, articula-se de forma direta e produtiva.',
+    improvedSnippet: 'Embora o acesso à cultura e ao lazer seja assegurado pelo artigo 215 da Constituição Federal, a concentração das salas de cinema em áreas nobres exclui milhões de brasileiros de baixa renda. Configura-se, assim, o que o jornalista Gilberto Dimenstein denomina "Cidadão de Papel": a existência de garantias formais na legislação que não se materializam no cotidiano das camadas vulneráveis.'
   },
   {
     id: 'ps-8',
-    competencyFocus: 'Competência 1 (Regência e Crase)',
-    snippet: 'O descaso governamental tende a levar à prejuízos irreparáveis a sociedade brasileira.',
+    category: 'repertorio',
+    categoryLabel: 'Qual Repertório Usar?',
+    themeContext: 'Manipulação do comportamento do usuário pelo controle de dados na internet',
+    questionPrompt: 'Qual repertório fundamenta o argumento de que os algoritmos criam "bolhas" digitais que limitam a autonomia crítica do cidadão?',
+    competencyFocus: 'Competência 2 (Repertório Aplicado ao Eixo Tecnológico)',
+    snippet: 'A filtragem personalizada de conteúdos pelas plataformas digitais restringe o contato do usuário com opiniões divergentes, moldando escolhas de consumo e visões políticas sem que ele perceba. [ _____ ]',
     options: [
-      'Apresenta sintaxe e ortografia adequadas, sendo a crase antes de vocábulos no plural facultativa na norma culta contemporânea.',
-      'Possui desvio de crase proibida antes de masculino no plural ("à prejuízos") e omissão de crase devida na regência do verbo ("à sociedade").',
-      'Contém erro exclusivo de concordância verbal entre o adjunto adverbial de modo e o núcleo do predicado composto da oração principal.',
-      'Configura falha de estrutura sintática por inversão indevida dos complementos verbais direto e indireto no período dissertativo.'
+      'Tal mecanismo confirma a teoria da "Menoridade Intelectual", de Immanuel Kant, uma vez que a tutela algorítmica terceiriza o julgamento crítico do indivíduo para sistemas automatizados.',
+      'Esse processo ilustra o conceito de "Mais-Valia Absoluta", de Karl Marx, caracterizado pelo aumento das horas de trabalho físico nas fábricas têxteis do século XIX.',
+      'Essa dinâmica reproduz o "Pacto Colonial", no qual as colônias americanas só podiam comercializar matérias-primas tropicais exclusivamente com suas metrópoles europeias.',
+      'Tal cenário exemplifica a "Eugenia Social" do início do século XX, que buscava selecionar características biológicas hereditárias na população urbana.'
     ],
-    correctOptionIndex: 1,
-    explanation: 'Não há crase antes de termos masculinos ("a prejuízos"), mas o verbo "levar a" associado ao substantivo feminino "a sociedade" exige o acento indicativo de crase ("levar a + a sociedade = à sociedade").',
-    improvedSnippet: 'O descaso governamental tende a levar a prejuízos irreparáveis à sociedade brasileira.'
+    correctOptionIndex: 0,
+    explanation: 'Em temas sobre algoritmos, fake news, inteligência artificial ou alienação midiática, o conceito de "Menoridade Intelectual" de Kant (ou o "filtro-bolha" de Eli Pariser) funciona perfeitamente para mostrar a perda de autonomia de pensamento.',
+    improvedSnippet: 'A filtragem personalizada de conteúdos pelas plataformas digitais restringe o contato do usuário com opiniões divergentes, moldando escolhas de consumo e visões políticas sem que ele perceba. Tal mecanismo confirma a teoria da "Menoridade Intelectual", de Immanuel Kant, uma vez que a tutela algorítmica terceiriza o julgamento crítico do indivíduo para sistemas automatizados.'
   },
+
+  // 3. COMPLETAR TESE OU PROPOSTA C5 (Fill in the blank)
   {
     id: 'ps-9',
-    competencyFocus: 'Competência 2 (Repertório Produtivo e Articulação)',
-    snippet: 'Segundo Gilberto Dimenstein, em "O Cidadão de Papel", a legislação assegura direitos que não se concretizam na prática. Essa realidade é visível na precariedade do saneamento básico, que priva milhões de brasileiros da dignidade garantida pela Carta Magna.',
+    category: 'completar_trecho',
+    categoryLabel: 'Completar Tese / C5',
+    themeContext: 'Desafios para a valorização de comunidades e povos tradicionais no Brasil',
+    questionPrompt: 'Este parágrafo de conclusão já possui Agente, Ação, Meio e Efeito. Qual frase preenche a lacuna para adicionar o 5º elemento obrigatório (Detalhamento) e garantir 200 pontos na C5?',
+    competencyFocus: 'Competência 5 (Os 5 Elementos da Intervenção)',
+    snippet: 'Portanto, cabe ao Ministério dos Povos Indígenas e ao IBAMA [ _____ ] ampliar a fiscalização territorial das reservas demarcadas, por meio de monitoramento via satélite e bases operacionais permanentes, a fim de coibir invasões ilegais e preservar os modos de vida tradicionais.',
     options: [
-      'Configura repertório de bolso superficial, pois o autor não pertence à tradição da sociologia acadêmica clássica europeia.',
-      'Apresenta repertório legitimado, pertinente e estritamente produtivo, pois vincula a teoria sociológica ao tema e à tese do autor.',
-      'Incorre em tangenciamento temático, pois a citação da Carta Magna anula a pertinência do conceito de Dimenstein na redação.',
-      'Configura cópia disfarçada dos textos motivadores, impossibilitando a pontuação na faixa superior de 160 a 200 pontos da C2.'
+      '— órgãos federais responsáveis pela proteção ambiental e garantia de direitos originários —',
+      'com muita urgência e dedicação de todos os cidadãos brasileiros de bem',
+      'se houver disponibilidade de recursos financeiros sobrando no orçamento do próximo ano',
+      'para que o Brasil finalmente se torne um país mais justo, solidário e desenvolvido'
     ],
-    correctOptionIndex: 1,
-    explanation: 'O repertório é legitimado (obra consagrada de Dimenstein), pertinente (relaciona cidadania formal à falta de serviços básicos) e produtivo (conecta a teoria diretamente à tese desenvolvida pelo participante).',
-    improvedSnippet: 'Segundo Gilberto Dimenstein, em "O Cidadão de Papel", a legislação assegura direitos que não se concretizam na prática. Essa realidade é visível na precariedade do saneamento básico, que priva milhões de brasileiros da dignidade garantida pela Carta Magna.'
+    correctOptionIndex: 0,
+    explanation: 'A forma mais prática e segura de fazer o Detalhamento na Competência 5 é inserir um aposto explicativo entre travessões logo após o Agente, explicando a função institucional daquele órgão ("— órgãos federais responsáveis pela proteção ambiental... —").',
+    improvedSnippet: 'Portanto, cabe ao Ministério dos Povos Indígenas e ao IBAMA — órgãos federais responsáveis pela proteção ambiental e garantia de direitos originários — ampliar a fiscalização territorial das reservas demarcadas, por meio de monitoramento via satélite e bases operacionais permanentes, a fim de coibir invasões ilegais e preservar os modos de vida tradicionais.'
   },
   {
     id: 'ps-10',
-    competencyFocus: 'Competência 4 (Conectivo Inadequado / Desvio de Sentido)',
-    snippet: 'O envelhecimento populacional impõe desafios econômicos urgentes, portanto a falta de cuidadores capacitados agrava o abandono dos idosos.',
+    category: 'completar_trecho',
+    categoryLabel: 'Completar Tese / C5',
+    themeContext: 'A falta de empatia nas relações sociais no Brasil',
+    questionPrompt: 'Preencha a lacuna final desta Introdução com um fechamento de tese que apresente claramente os dois argumentos (D1 e D2) que serão desenvolvidos no texto:',
+    competencyFocus: 'Competência 3 (Projeto de Texto e Tese na Introdução)',
+    snippet: 'Na obra "Modernidade Líquida", o sociólogo Zygmunt Bauman analisa como o individualismo contemporâneo fragiliza os laços humanos. Fora da teoria, o cenário brasileiro reflete essa deterioração da alteridade no convívio cotidiano. [ _____ ]',
     options: [
-      'Apresenta coesão textual perfeita com conectivo conclusivo formal, atendendo a todos os requisitos do Nível 5 da Competência 4.',
-      'Possui desvio de pontuação oracional, pois conjunções coordenativas conclusivas não podem ser precedidas por vírgula em redações.',
-      'Configura inadequação coesiva no uso de "portanto", pois estabelece relação de conclusão onde o sentido pretendido é de adição ou causa.',
-      'Configura truncamento de período na C1, visto que o conectivo "portanto" não pode conectar duas orações de mesmo nível sintático.'
+      'Diante disso, urge analisar como a cultura da intolerância nas redes digitais e a omissão formativa nas escolas perpetuam esse impasse.',
+      'Por isso, é fundamental que todas as pessoas passem a ter mais amor no coração e respeitem o próximo no dia a dia.',
+      'Sendo assim, a empatia é um sentimento muito importante que existe desde os primórdios da humanidade no mundo.',
+      'Portanto, o Governo Federal deve criar leis severas e multas pesadas para punir quem não tiver empatia na sociedade.'
     ],
-    correctOptionIndex: 2,
-    explanation: 'O conector "portanto" expressa conclusão lógica entre premissas. No trecho, a falta de cuidadores não é uma conclusão do envelhecimento, mas sim um fator aditivo ou causal ("outrossim", "ademais" ou "ao passo que").',
-    improvedSnippet: 'O envelhecimento populacional impõe desafios econômicos urgentes; outrossim, a escassez de cuidadores capacitados agrava a vulnerabilidade dos idosos.'
+    correctOptionIndex: 0,
+    explanation: 'O último período da introdução deve apresentar a sua Tese com os 2 encaminhamentos argumentativos (o que será discutido no D1 e no D2). A opção correta antecipa claramente D1 ("cultura da intolerância nas redes digitais") e D2 ("omissão formativa nas escolas").',
+    improvedSnippet: 'Na obra "Modernidade Líquida", o sociólogo Zygmunt Bauman analisa como o individualismo contemporâneo fragiliza os laços humanos. Fora da teoria, o cenário brasileiro reflete essa deterioração da alteridade no convívio cotidiano. Diante disso, urge analisar como a cultura da intolerância nas redes digitais e a omissão formativa nas escolas perpetuam esse impasse.'
   },
   {
     id: 'ps-11',
-    competencyFocus: 'Competência 3 (Tópico Frasal e Autoria no Desenvolvimento)',
-    snippet: 'No Brasil, existem muitos idosos que sofrem com o abandono familiar. Além disso, muitos hospitais não têm vagas suficientes para todos.',
+    category: 'completar_trecho',
+    categoryLabel: 'Completar Tese / C5',
+    themeContext: 'Insegurança alimentar e combate à fome no Brasil',
+    questionPrompt: 'Na conclusão abaixo, faltam o Meio/Modo (como a ação será executada) e o Efeito (para que ela serve). Qual opção completa a lacuna com esses dois elementos?',
+    competencyFocus: 'Competência 5 (Meio/Modo e Finalidade na Intervenção)',
+    snippet: 'Infere-se, portanto, que o Ministério do Desenvolvimento Social — pasta gestora das políticas de assistência — deve fortalecer a compra direta de alimentos da agricultura familiar, [ _____ ].',
     options: [
-      'Apresenta projeto de texto exemplar, pois delimita duas causas paralelas com vocabulário dissertativo refinado e autoral.',
-      'Configura texto predominantemente expositivo e sem tópico frasal reflexivo, limitando o desenvolvimento argumentativo na C3.',
-      'Zera a Competência 3 automaticamente por utilizar a expressão conjuntiva aditiva "Além disso" no interior do desenvolvimento.',
-      'Apresenta repertório sociocultural produtivo implícito, dispensando a necessidade de citação nominal de filósofos ou leis.'
+      'mediante o repasse de verbas públicas aos pequenos produtores rurais, a fim de abastecer cozinhas comunitárias e erradicar a fome nas periferias',
+      'através da conscientização de toda a sociedade brasileira, mostrando que o desperdício de comida é prejudicial ao país',
+      'caso os governos estaduais e municipais concordem em assinar uma parceria voluntária nos próximos anos',
+      'de forma rápida, eficiente e democrática, contando com o apoio indispensável das famílias e das redes sociais'
     ],
-    correctOptionIndex: 1,
-    explanation: 'O trecho apenas relata fatos de forma expositiva ("existem muitos idosos", "muitos hospitais não têm vagas") sem posicionamento crítico, tese reflexiva ou cadeia argumentativa de causa e consequência.',
-    improvedSnippet: 'Em primeiro plano, cabe pontuar que a negligência afetiva e institucional vulnerabiliza a terceira idade no Brasil. Esse cenário reflete o utilitarismo social que descarta aqueles que deixam de ser economicamente produtivos.'
+    correctOptionIndex: 0,
+    explanation: 'Para garantir que o corretor identifique o Meio/Modo e o Efeito imediatamente, use os conectivos marcadores clássicos: "mediante / por meio de [recurso concreto]" para o Meio/Modo, e "a fim de / com o fito de [resultado esperado]" para o Efeito.',
+    improvedSnippet: 'Infere-se, portanto, que o Ministério do Desenvolvimento Social — pasta gestora das políticas de assistência — deve fortalecer a compra direta de alimentos da agricultura familiar, mediante o repasse de verbas públicas aos pequenos produtores rurais, a fim de abastecer cozinhas comunitárias e erradicar a fome nas periferias.'
   },
   {
     id: 'ps-12',
-    competencyFocus: 'Competência 5 (Detalhamento do Agente vs Meio)',
-    snippet: 'Cabe ao Ministério da Saúde — órgão responsável pela gestão do SUS — ampliar os leitos geriátricos, mediante verbas orçamentárias, a fim de garantir atendimento digno aos idosos.',
+    category: 'completar_trecho',
+    categoryLabel: 'Completar Tese / C5',
+    themeContext: 'Evasão escolar de jovens no Ensino Médio brasileiro',
+    questionPrompt: 'Qual tópico frasal preenche a lacuna inicial deste parágrafo de desenvolvimento para apresentar uma causa clara e crítica do problema?',
+    competencyFocus: 'Competência 3 (Tópico Frasal Argumentativo)',
+    snippet: '[ _____ ] Muitos adolescentes de baixa renda são forçados a abandonar as salas de aula precocemente para ingressar no mercado informal e complementar o sustento doméstico.',
     options: [
-      'Contém apenas 3 elementos válidos na C5, pois apostos explicativos entre travessões não são aceitos pela banca como detalhamento.',
-      'Atinge a nota máxima de 200 pontos na C5, pois articula Agente com Detalhamento explicativo, Ação, Meio/Modo e Efeito explícito.',
-      'Fica limitada a 120 pontos na C5 pela ausência de penalidades judiciais estipuladas contra a negligência dos hospitais privados.',
-      'Recebe nota zero imediata por desrespeitar os Direitos Humanos ao focar o atendimento prioritário unicamente na população idosa.'
-    ],
-    correctOptionIndex: 1,
-    explanation: 'A proposta contém os 5 elementos formais completos: 1. Agente (Ministério da Saúde), 2. Detalhamento do Agente ("órgão responsável pela gestão do SUS"), 3. Ação ("ampliar os leitos geriátricos"), 4. Meio ("mediante verbas orçamentárias") e 5. Efeito ("a fim de garantir atendimento digno...").',
-    improvedSnippet: 'Cabe ao Ministério da Saúde — órgão responsável pela gestão do SUS — ampliar os leitos geriátricos, mediante verbas orçamentárias federais, a fim de garantir atendimento digno e humanizado aos idosos.'
-  },
-  {
-    id: 'ps-13',
-    competencyFocus: 'Competência 1 (Paralelismo Sintático)',
-    snippet: 'O projeto visa à conscientização dos jovens e combater a evasão escolar no Ensino Médio.',
-    options: [
-      'Apresenta quebra de paralelismo sintático na C1, ao coordenar um substantivo regido de preposição ("à conscientização") com uma oração infinitiva ("combater").',
-      'Apresenta concordância nominal e verbal perfeita, pois verbos no infinitivo podem coordenar livremente com substantivos femininos.',
-      'Constitui desvio exclusivo de regência verbal do termo "visa", o qual na norma padrão não admite a presença da preposição "a".',
-      'Configura erro crasso de justaposição de orações, exigindo a inclusão de ponto e vírgula antes da conjunção aditiva coordenativa "e".'
+      'Em primeira análise, a desigualdade socioeconômica atua como um entrave direto à permanência estudantil no Brasil.',
+      'Desde a Revolução Industrial, existem muitas escolas e estudantes espalhados por todas as regiões do território nacional.',
+      'Em primeiro lugar, cabe ao Ministério da Educação construir novas quadras esportivas mediante verbas federais.',
+      'Atualmente, a educação é a base de tudo e sem ela os jovens não conseguem alcançar um futuro promissor.'
     ],
     correctOptionIndex: 0,
-    explanation: 'Ao coordenar elementos ligados pela conjunção "e", deve-se manter a simetria sintática: ou dois substantivos regidos de preposição ("visa à conscientização... e ao combate...") ou dois verbos no infinitivo ("visa a conscientizar... e a combater...").',
-    improvedSnippet: 'O projeto visa à conscientização dos jovens e ao combate à evasão escolar no Ensino Médio.'
+    explanation: 'Todo parágrafo de desenvolvimento deve começar com um Tópico Frasal (frase-núcleo que resume o argumento do parágrafo). Como o período seguinte fala sobre jovens que largam a escola para trabalhar e ajudar na renda familiar, o tópico frasal deve apontar a "desigualdade socioeconômica" como causa.',
+    improvedSnippet: 'Em primeira análise, a desigualdade socioeconômica atua como um entrave direto à permanência estudantil no Brasil. Muitos adolescentes de baixa renda são forçados a abandonar as salas de aula precocemente para ingressar no mercado informal e complementar o sustento doméstico.'
+  },
+
+  // 4. REESCRITA / FORTALECER TRECHO FRACO
+  {
+    id: 'ps-13',
+    category: 'reescrita',
+    categoryLabel: 'Fortalecer Trecho',
+    themeContext: 'Desafios da saúde pública e saneamento básico no Brasil',
+    questionPrompt: 'O trecho abaixo está genérico e com linguagem de senso comum. Qual reescrita transforma essa mesma ideia em um período maduro e de nível Nota 1000?',
+    competencyFocus: 'Competência 3 e 1 (Maturação Argumentativa e Vocabulário)',
+    snippet: 'Trecho original fraco: "O governo não liga para as pessoas pobres que moram longe e não têm água limpa, e isso faz todo mundo ficar muito doente."',
+    options: [
+      'A negligência estatal quanto à universalização do saneamento básico nas periferias perpetua a proliferação de doenças hídricas e fere a dignidade humana.',
+      'O Poder Público fecha os olhos para a população carente que vive sem água tratada, gerando inúmeras enfermidades todos os dias.',
+      'Observa-se que a falta de água limpa nas regiões afastadas acontece porque os governantes não dão a mínima atenção para a saúde do povo.',
+      'Infelizmente, as camadas populares sofrem com a ausência de água potável, fato que deixa milhares de brasileiros hospitalizados constantemente.'
+    ],
+    correctOptionIndex: 0,
+    explanation: 'Para elevar um trecho de senso comum ao padrão Nota 1000, substitua expressões coloquiais ("o governo não liga", "todo mundo ficar doente") por conceitos formais e precisos ("negligência estatal", "universalização do saneamento básico", "proliferação de doenças hídricas").',
+    improvedSnippet: 'A negligência estatal quanto à universalização do saneamento básico nas periferias perpetua a proliferação de doenças hídricas e fere a dignidade humana.'
   },
   {
     id: 'ps-14',
-    competencyFocus: 'Competência 4 (Conectivo "Onde" para Contextos Não Físicos)',
-    snippet: 'O país vivencia uma crise estrutural, onde os cidadãos mais vulneráveis têm seus direitos negligenciados cotidianamente.',
+    category: 'reescrita',
+    categoryLabel: 'Fortalecer Trecho',
+    themeContext: 'Valorização dos professores e da educação básica no Brasil',
+    questionPrompt: 'O trecho original abaixo comete um erro grave de "período truncado" (isolar o gerúndio depois do ponto final). Qual opção corrige a frase mantendo a elegância?',
+    competencyFocus: 'Competência 1 (Correção de Truncamento na Prática)',
+    snippet: 'Trecho original com falha: "A desvalorização salarial afasta jovens talentos da carreira docente. Prejudicando diretamente a qualidade do ensino público brasileiro."',
     options: [
-      'Possui emprego adequado do pronome relativo "onde", perfeitamente admitido na norma culta para retomar substantivos abstratos como "crise".',
-      'Apresenta inadequação coesiva no uso do pronome relativo "onde", que na norma padrão formal deve restringir-se estritamente à referência a lugares físicos.',
-      'Configura truncamento de período na C1, exigindo a substituição do pronome relativo por uma conjunção consecutiva com sentido de causa.',
-      'Constitui quebra de paralelismo sintático e concordância verbal entre o sujeito coletivo "país" e o predicativo composto da oração subordinada.'
+      'A desvalorização salarial afasta jovens talentos da carreira docente, o que compromete diretamente a qualidade do ensino público brasileiro.',
+      'A desvalorização salarial afasta jovens talentos da carreira docente. Sendo assim, prejudicando a qualidade do ensino público brasileiro.',
+      'A desvalorização salarial afasta jovens talentos da carreira docente; prejudicando, portanto, a qualidade do ensino público brasileiro.',
+      'Por causa da desvalorização salarial afastar jovens talentos da carreira docente. Prejudica-se a qualidade do ensino público brasileiro.'
     ],
-    correctOptionIndex: 1,
-    explanation: 'Na norma culta exigida no ENEM, o pronome relativo "onde" só pode ser utilizado para retomar substantivos que designem espaço ou lugar físico concreto. Para conceitos abstratos ("crise", "situação", "sociedade"), deve-se usar "em que", "no qual" ou "na qual".',
-    improvedSnippet: 'O país vivencia uma crise estrutural, em que os cidadãos mais vulneráveis têm seus direitos negligenciados cotidianamente.'
+    correctOptionIndex: 0,
+    explanation: 'Nunca coloque um ponto final antes de um verbo no gerúndio ("...docente. Prejudicando..."). Para corrigir na hora da prova, troque o ponto por vírgula e use ", o que compromete..." ou ", prejudicando...".',
+    improvedSnippet: 'A desvalorização salarial afasta jovens talentos da carreira docente, o que compromete diretamente a qualidade do ensino público brasileiro.'
+  },
+  {
+    id: 'ps-15',
+    category: 'reescrita',
+    categoryLabel: 'Fortalecer Trecho',
+    themeContext: 'Combate aos discursos de ódio no ambiente virtual',
+    questionPrompt: 'O trecho abaixo usa uma proposta condicional ("Se o governo fizer..."), que trava a nota da Competência 5 em 80 pontos. Como reescrevê-lo de forma afirmativa e imperativa?',
+    competencyFocus: 'Competência 5 (Substituição de Estrutura Condicional)',
+    snippet: 'Trecho original fraco: "Se o Poder Legislativo aprovar leis mais claras e as plataformas digitais fiscalizarem as postagens, os crimes cibernéticos diminuirão no Brasil."',
+    options: [
+      'Urge, portanto, que o Poder Legislativo aperfeiçoe o Marco Civil da Internet, mediante a tipificação rigorosa de crimes de ódio e a exigência de moderação ativa pelas plataformas digitais, a fim de assegurar um ambiente virtual seguro.',
+      'Caso o Congresso Nacional decida revisar a legislação vigente em parceria com as empresas de tecnologia, a violência nas redes sociais poderá ser reduzida gradualmente.',
+      'Quando os parlamentares brasileiros criarem regras severas para a internet, os usuários finalmente respeitarão os direitos humanos no espaço cibernético.',
+      'Para que os crimes virtuais diminuam no Brasil, seria interessante se o governo federal conversasse com as redes sociais sobre a moderação de conteúdo.'
+    ],
+    correctOptionIndex: 0,
+    explanation: 'Na conclusão (C5), jamais use "Se...", "Caso...", "Quando..." ou "Seria bom se...". Use verbos diretos de comando ou dever: "Urge, portanto, que [Agente] promova [Ação]...", "Cabe ao [Agente] instituir...".',
+    improvedSnippet: 'Urge, portanto, que o Poder Legislativo aperfeiçoe o Marco Civil da Internet, mediante a tipificação rigorosa de crimes de ódio e a exigência de moderação ativa pelas plataformas digitais, a fim de assegurar um ambiente virtual seguro.'
+  },
+  {
+    id: 'ps-16',
+    category: 'reescrita',
+    categoryLabel: 'Fortalecer Trecho',
+    themeContext: 'Impactos do consumo de ultraprocessados na saúde infantil',
+    questionPrompt: 'O trecho original repete a palavra "muito/muitas" e não explica a causa do problema. Qual opção reescreve a ideia com vocabulário rico e causa explícita?',
+    competencyFocus: 'Competência 3 e 4 (Precisão Vocabular e Causa/Efeito)',
+    snippet: 'Trecho original fraco: "Hoje em dia muitas crianças comem muitos alimentos industrializados porque passam muito tempo vendo propagandas na televisão e no celular."',
+    options: [
+      'A exposição precoce e irrestrita à publicidade infantil nas mídias digitais estimula o consumo excessivo de alimentos ultraprocessados, elevando os índices de obesidade pediátrica.',
+      'Atualmente, grande parte das crianças ingere bastantes produtos industrializados pelo fato de assistirem a muitas propagandas nos aparelhos celulares.',
+      'Nota-se que o consumo exagerado de comidas artificiais pelas crianças ocorre porque existem várias propagandas chamativas passando o dia inteiro.',
+      'Desde os tempos antigos, a mídia televisiva influencia intensamente os hábitos alimentares infantis, fazendo com que comam muitos doces e salgadinhos.'
+    ],
+    correctOptionIndex: 0,
+    explanation: 'Trocar repetições de "muito/muitas" por termos substantivos precisos ("exposição precoce e irrestrita à publicidade infantil", "consumo excessivo de alimentos ultraprocessados", "obesidade pediátrica") demonstra domínio vocabular (C1) e aprofunda a relação de causa e consequência (C3).',
+    improvedSnippet: 'A exposição precoce e irrestrita à publicidade infantil nas mídias digitais estimula o consumo excessivo de alimentos ultraprocessados, elevando os índices de obesidade pediátrica.'
   }
 ];
 

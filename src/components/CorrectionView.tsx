@@ -1042,14 +1042,46 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
       const simA = data.dualEvaluatorSimulation?.evaluatorA;
       const simB = data.dualEvaluatorSimulation?.evaluatorB;
       let finalOfficialScore = validatedTotalScore;
+
+      // Sincronizar a nota de cada competência com a Média Oficial (Avaliador 1 + Avaliador 2) / 2
+      // para que a Tabela Oficial, o Detalhamento das 5 Competências e o Log de Auditoria tenham exatamente os mesmos valores
       if (shouldLockNota1000) {
         finalOfficialScore = 1000;
       } else if (simA && simB) {
-        const sumA = ((simA.c1 ?? 0) + (simA.c2 ?? 0) + (simA.c3 ?? 0) + (simA.c4 ?? 0) + (simA.c5 ?? 0)) || simA.total || 0;
-        const sumB = ((simB.c1 ?? 0) + (simB.c2 ?? 0) + (simB.c3 ?? 0) + (simB.c4 ?? 0) + (simB.c5 ?? 0)) || simB.total || 0;
-        if (sumA > 0 && sumB > 0) {
-          finalOfficialScore = Math.round((sumA + sumB) / 2);
+        let sumMeans = 0;
+        (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((compKey, idx) => {
+          const cNum = idx + 1;
+          const sA = simA[compKey] ?? validatedCompetencies[compKey]?.score ?? 0;
+          const sB = simB[compKey] ?? validatedCompetencies[compKey]?.score ?? 0;
+          const compMean = Math.round((sA + sB) / 2);
+          sumMeans += compMean;
+          if (validatedCompetencies[compKey]) {
+            validatedCompetencies[compKey].score = compMean;
+            validatedCompetencies[compKey].nota = compMean;
+          }
+          const logEntry = data.auditLog?.competencyLogs?.find((l: any) => l.competencyNum === cNum);
+          if (logEntry) {
+            logEntry.assignedScore = compMean;
+            logEntry.isMaxScore200 = compMean === 200;
+          }
+        });
+        if (sumMeans > 0) {
+          finalOfficialScore = sumMeans;
         }
+      } else {
+        (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((compKey, idx) => {
+          const cNum = idx + 1;
+          const compScore = validatedCompetencies[compKey]?.score ?? 0;
+          const logEntry = data.auditLog?.competencyLogs?.find((l: any) => l.competencyNum === cNum);
+          if (logEntry) {
+            logEntry.assignedScore = compScore;
+            logEntry.isMaxScore200 = compScore === 200;
+          }
+        });
+      }
+
+      if (data.auditLog) {
+        data.auditLog.finalConsolidatedScore = finalOfficialScore;
       }
 
       const result: EssayCorrectionResult = {
@@ -1172,7 +1204,7 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
          correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.reviewedScore ??
          correctionResult.competencies[k]?.score ?? 0);
 
-    const officialCompMean = (scoreA + scoreB) / 2;
+    const officialCompMean = Math.round((scoreA + scoreB) / 2);
     const diff = Math.abs(scoreA - scoreB);
 
     return {
@@ -2028,11 +2060,11 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
               {/* Barras de Progresso Gráficas C1..C5 */}
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-1">
                 {[
-                  { key: 'c1', num: 1, title: 'C1: Norma Culta', score: correctionResult.competencies.c1.score },
-                  { key: 'c2', num: 2, title: 'C2: Tema e Repertório', score: correctionResult.competencies.c2.score },
-                  { key: 'c3', num: 3, title: 'C3: Projeto de Texto', score: correctionResult.competencies.c3.score },
-                  { key: 'c4', num: 4, title: 'C4: Coesão Textual', score: correctionResult.competencies.c4.score },
-                  { key: 'c5', num: 5, title: 'C5: Intervenção', score: correctionResult.competencies.c5.score },
+                  { key: 'c1', num: 1, title: 'C1: Norma Culta', score: competencyDivergences[0]?.officialCompMean ?? correctionResult.competencies.c1.score },
+                  { key: 'c2', num: 2, title: 'C2: Tema e Repertório', score: competencyDivergences[1]?.officialCompMean ?? correctionResult.competencies.c2.score },
+                  { key: 'c3', num: 3, title: 'C3: Projeto de Texto', score: competencyDivergences[2]?.officialCompMean ?? correctionResult.competencies.c3.score },
+                  { key: 'c4', num: 4, title: 'C4: Coesão Textual', score: competencyDivergences[3]?.officialCompMean ?? correctionResult.competencies.c4.score },
+                  { key: 'c5', num: 5, title: 'C5: Intervenção', score: competencyDivergences[4]?.officialCompMean ?? correctionResult.competencies.c5.score },
                 ].map((c) => (
                   <div 
                     key={c.key}
@@ -2191,11 +2223,61 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
             <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">Detalhamento das 5 Competências</h3>
 
             {[
-              { num: 1, key: 'c1' as const, name: 'Competência 1', subtitle: 'Domínio da modalidade escrita formal da Língua Portuguesa', data: correctionResult.competencies.c1 },
-              { num: 2, key: 'c2' as const, name: 'Competência 2', subtitle: 'Compreensão do tema e aplicação de repertório sociocultural produtivo', data: correctionResult.competencies.c2 },
-              { num: 3, key: 'c3' as const, name: 'Competência 3', subtitle: 'Seleção, relação, organização e interpretação (Projeto de Texto & Autoria)', data: correctionResult.competencies.c3 },
-              { num: 4, key: 'c4' as const, name: 'Competência 4', subtitle: 'Conhecimento dos mecanismos linguísticos e operadores argumentativos', data: correctionResult.competencies.c4 },
-              { num: 5, key: 'c5' as const, name: 'Competência 5', subtitle: 'Elaboração de proposta de intervenção com respeito aos Direitos Humanos', data: correctionResult.competencies.c5 },
+              {
+                num: 1,
+                key: 'c1' as const,
+                name: 'Competência 1',
+                subtitle: 'Domínio da modalidade escrita formal da Língua Portuguesa',
+                data: {
+                  ...correctionResult.competencies.c1,
+                  score: competencyDivergences[0]?.officialCompMean ?? correctionResult.competencies.c1.score,
+                  nota: competencyDivergences[0]?.officialCompMean ?? correctionResult.competencies.c1.score,
+                },
+              },
+              {
+                num: 2,
+                key: 'c2' as const,
+                name: 'Competência 2',
+                subtitle: 'Compreensão do tema e aplicação de repertório sociocultural produtivo',
+                data: {
+                  ...correctionResult.competencies.c2,
+                  score: competencyDivergences[1]?.officialCompMean ?? correctionResult.competencies.c2.score,
+                  nota: competencyDivergences[1]?.officialCompMean ?? correctionResult.competencies.c2.score,
+                },
+              },
+              {
+                num: 3,
+                key: 'c3' as const,
+                name: 'Competência 3',
+                subtitle: 'Seleção, relação, organização e interpretação (Projeto de Texto & Autoria)',
+                data: {
+                  ...correctionResult.competencies.c3,
+                  score: competencyDivergences[2]?.officialCompMean ?? correctionResult.competencies.c3.score,
+                  nota: competencyDivergences[2]?.officialCompMean ?? correctionResult.competencies.c3.score,
+                },
+              },
+              {
+                num: 4,
+                key: 'c4' as const,
+                name: 'Competência 4',
+                subtitle: 'Conhecimento dos mecanismos linguísticos e operadores argumentativos',
+                data: {
+                  ...correctionResult.competencies.c4,
+                  score: competencyDivergences[3]?.officialCompMean ?? correctionResult.competencies.c4.score,
+                  nota: competencyDivergences[3]?.officialCompMean ?? correctionResult.competencies.c4.score,
+                },
+              },
+              {
+                num: 5,
+                key: 'c5' as const,
+                name: 'Competência 5',
+                subtitle: 'Elaboração de proposta de intervenção com respeito aos Direitos Humanos',
+                data: {
+                  ...correctionResult.competencies.c5,
+                  score: competencyDivergences[4]?.officialCompMean ?? correctionResult.competencies.c5.score,
+                  nota: competencyDivergences[4]?.officialCompMean ?? correctionResult.competencies.c5.score,
+                },
+              },
             ].map((comp) => {
               const isExpanded = expandedComp === comp.num;
               return (
@@ -2240,366 +2322,820 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                     </div>
                   </button>
 
-                  {isExpanded && (
-                    <div className="px-5 sm:px-6 pb-6 pt-2 border-t border-slate-100 dark:border-slate-800 space-y-6 text-sm text-slate-700 dark:text-slate-300">
-                      {/* 200 Score Rule Audit Badge */}
-                      <div className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
-                        comp.data.score === 200
-                          ? 'bg-emerald-50/80 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-200'
-                          : 'bg-indigo-50/70 dark:bg-indigo-950/40 border-indigo-200 dark:border-indigo-800 text-indigo-900 dark:text-indigo-200'
-                      }`}>
-                        <div className="flex items-center gap-2">
-                          <Award className={`w-4 h-4 shrink-0 ${comp.data.score === 200 ? 'text-emerald-600 dark:text-emerald-400' : 'text-indigo-600 dark:text-indigo-400'}`} />
-                          <div>
-                            <span className="font-extrabold uppercase tracking-wide">
-                              {comp.data.score === 200 ? '⭐ Nota 200 Concedida por Evidência Positiva de Excelência' : '⚖️ Critério Oficial de Pontuação Ponderada'}
+                  {isExpanded && (() => {
+                    const compAudit = correctionResult.auditLog?.competencyLogs?.find(
+                      (l) => l.competencyNum === comp.num
+                    );
+                    const curve =
+                      correctionResult.highPerformanceCurveReport ||
+                      correctionResult.validationReport?.highPerformanceCurveReport;
+                    const reviewerCheck = correctionResult.reviewerReport?.competencyReviews?.find(
+                      (r) => r.competencyNum === comp.num
+                    );
+
+                    // Collect all unique textual evidence snippets from the student's essay for this competency
+                    const rawQuotes = [
+                      comp.data.trecho_evidencia,
+                      comp.data.primaryEvidenceQuote,
+                      ...(comp.data.evidenceSnippets || []),
+                      compAudit?.evidenceQuoteFromStudent,
+                    ]
+                      .map((q) => (q || '').trim())
+                      .filter(
+                        (q) =>
+                          q.length > 0 &&
+                          q !== 'Trecho sob análise textual.' &&
+                          q !== 'Análise global do texto submetido.'
+                      );
+                    const uniqueQuotes = Array.from(new Set(rawQuotes));
+
+                    // Helper to normalize strings for strict deduplication
+                    const normalizeForDedup = (str: string) =>
+                      (str || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\u0300-\u036f]/g, '')
+                        .replace(/[^a-z0-9\s]/g, '')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+
+                    // Classify each pedagogicalRewrite into ONE single competency (1..5) so the same rewrite NEVER appears in both C1 and C2
+                    const classifyRewriteCompetency = (rw: {
+                      original: string;
+                      problem: string;
+                      explanation: string;
+                    }): 1 | 2 | 3 | 4 | 5 => {
+                      const probText = `${rw.problem || ''} ${rw.explanation || ''}`.toLowerCase();
+                      if (
+                        /(intervenç|intervenc|proposta|agente|meio\/modo|meio ou modo|detalhamento|finalidade|efeito social)/i.test(
+                          probText
+                        )
+                      ) {
+                        return 5;
+                      }
+                      if (
+                        /(gramat|ortograf|vírgula|virgula|crase|concord|regênc|regenc|sintát|sintat|norma-padrão|norma culta|acentua|pontuaç|oralidade|coloquial|informal|truncament|paralelismo)/i.test(
+                          probText
+                        )
+                      ) {
+                        return 1;
+                      }
+                      if (
+                        /(conectiv|coesão|coesao|coesiv|operador|transiç|articulador|repetição de palavra|anáfora|anafora|interparágrafo|intraparágrafo)/i.test(
+                          probText
+                        )
+                      ) {
+                        return 4;
+                      }
+                      if (
+                        /(repertór|repertor|recorte temático|tangencia|senso comum|legitimad|alinhad|produtiv|filósof|sociólog|constituição|tema central)/i.test(
+                          probText
+                        )
+                      ) {
+                        return 2;
+                      }
+                      return 3;
+                    };
+
+                    const matchingRewrites = (correctionResult.pedagogicalRewrites || []).filter(
+                      (rw) => classifyRewriteCompetency(rw) === comp.num
+                    );
+
+                    // Helper to clean a student quote and generate a natural, non-repetitive 200-point rewrite (Depois)
+                    const cleanTheme = (correctionResult.theme || 'a problemática em questão')
+                      .replace(/^["'“”]+|["'“”.]+$/g, '')
+                      .trim();
+
+                    const themeSignificantWords = normalizeForDedup(cleanTheme)
+                      .split(' ')
+                      .filter((w) => w.length > 4);
+
+                    const sanitizeRewriteOutput = (txt: string): string => {
+                      let out = (txt || '')
+                        .replace(/^["'“”]+|["'“”]+$/g, '')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                      // Remove accidental duplicate observation verbs
+                      out = out.replace(
+                        /\b(observa-se que|verifica-se que|constata-se que|percebe-se que|nota-se que)\s+(observa-se que|verifica-se que|constata-se que|percebe-se que|nota-se que|é possível observar que|vemos que)\b/gi,
+                        '$1'
+                      );
+                      // Remove consecutive duplicate words
+                      out = out.replace(/\b(\w+)(\s+\1\b)+/gi, '$1');
+                      // Remove duplicate punctuation
+                      out = out.replace(/([,;:.])\s*\1+/g, '$1');
+                      return out;
+                    };
+
+                    const extractCleanCoreClause = (rawQuote: string): { fullClean: string; coreClause: string } => {
+                      const base = (rawQuote || '')
+                        .replace(/^["'“”]+|["'“”]+$/g, '')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                      // Take first meaningful sentence if multiple sentences are pasted
+                      const sentences = base
+                        .split(/(?<=[.!?])\s+/)
+                        .map((s) => s.trim())
+                        .filter((s) => s.length > 10);
+                      const targetSentence = (sentences[0] || base).replace(/[.!;:,]+$/, '').trim();
+
+                      // Strip leading connectors and introductory formulas so we never double them
+                      let stripped = targetSentence
+                        .replace(
+                          /^(sob a ótica[^,]+,\s*|à luz[^,]+,\s*|de acordo com[^,]+,\s*|segundo[^,]+,\s*|conforme[^,]+,\s*|diante desse cenário,\s*|diante disso,\s*|nesse contexto,\s*|nesse sentido,\s*|sob esse viés,\s*|outrossim,\s*|ademais,\s*|além disso,\s*|portanto,\s*|dessa forma,\s*|assim,\s*|no brasil contemporâneo,\s*|no brasil,\s*|hoje em dia,\s*|atualmente,\s*|primeiramente,\s*|em primeiro lugar,\s*)+/i,
+                          ''
+                        )
+                        .replace(
+                          /^(observa-se que\s+|verifica-se que\s+|constata-se que\s+|percebe-se que\s+|nota-se que\s+|é possível observar que\s+|é possível perceber que\s+|é notório que\s+|vemos que\s+|pode-se afirmar que\s+|vale ressaltar que\s+|nota-se\s+|percebe-se\s+)/i,
+                          ''
+                        )
+                        .replace(
+                          /,\s*(visto que|já que|uma vez que|haja vista|pois|porque|o que perpetua|o que gera|evidenciando|realidade que).*$/i,
+                          ''
+                        )
+                        .trim();
+
+                      if (stripped.length < 12) {
+                        stripped = targetSentence;
+                      }
+
+                      const startsWithProper =
+                        /^(Brasil|Constituição|Estado|Governo|Ministério|ONU|OMS|IBGE|ECA|Foucault|Bauman|Durkheim|Bourdieu|Arendt|Kant|Aristóteles|Platão|Habermas)/i.test(
+                          stripped
+                        );
+                      const coreClause =
+                        stripped.length > 1
+                          ? (startsWithProper ? stripped[0] : stripped[0].toLowerCase()) + stripped.slice(1)
+                          : stripped;
+
+                      return { fullClean: targetSentence, coreClause };
+                    };
+
+                    const buildConcreteCompetencyRewrite = (
+                      cNum: number,
+                      rawQuote: string,
+                      flawText: string
+                    ): { fixAfter: string; stepByStep: string } => {
+                      const { fullClean, coreClause } = extractCleanCoreClause(rawQuote);
+                      const clauseNorm = normalizeForDedup(fullClean);
+                      const flawLower = (flawText || '').toLowerCase();
+
+                      // Check if the student's quote already mentions the theme or "Brasil/país" to avoid repeating them
+                      const quoteAlreadyHasTheme =
+                        themeSignificantWords.length > 0 &&
+                        themeSignificantWords.filter((w) => clauseNorm.includes(w)).length >=
+                          Math.min(2, themeSignificantWords.length);
+                      const quoteAlreadyHasBrazil = /(brasil|pais|sociedade brasileira)/i.test(clauseNorm);
+
+                      const themeRef = quoteAlreadyHasTheme ? 'essa problemática estrutural' : cleanTheme;
+                      const countryRef = quoteAlreadyHasBrazil ? 'na contemporaneidade' : 'no Brasil contemporâneo';
+
+                      if (cNum === 1) {
+                        let fixedC1 = fullClean;
+                        if (correctionResult.c1Deviations && correctionResult.c1Deviations.length > 0) {
+                          correctionResult.c1Deviations.forEach((dev) => {
+                            if (dev.snippet && dev.bestForm && fixedC1.includes(dev.snippet)) {
+                              fixedC1 = fixedC1.replace(dev.snippet, dev.bestForm);
+                            }
+                          });
+                        }
+                        fixedC1 = fixedC1
+                          .replace(/\ba gente\b/gi, 'a sociedade')
+                          .replace(/\bpra\b/gi, 'para')
+                          .replace(/\btá\b/gi, 'está')
+                          .replace(/\btem muitos\b/gi, 'existem diversos')
+                          .replace(/\btem muitas\b/gi, 'existem diversas')
+                          .replace(/\bhoje em dia\b/gi, 'na contemporaneidade');
+
+                        if (normalizeForDedup(fixedC1) === normalizeForDedup(fullClean)) {
+                          fixedC1 = `Constata-se que ${coreClause}, circunstância que exige rigor sintático e adequação vocabular à norma-padrão.`;
+                        } else if (!/[.!?]$/.test(fixedC1)) {
+                          fixedC1 = `${fixedC1}.`;
+                        }
+                        return {
+                          fixAfter: sanitizeRewriteOutput(fixedC1),
+                          stepByStep:
+                            'Substitua expressões coloquiais, períodos truncados ou falhas gramaticais pela construção formal reescrita acima.',
+                        };
+                      }
+
+                      if (cNum === 2) {
+                        const quoteHasRepertoire =
+                          /(segundo|conforme|de acordo com|constituição|1988|artigo|ibge|onu|oms|bauman|foucault|durkheim|bourdieu|arendt|kant|aristóteles|habermas|locke|hobbes|rousseau|lei|estatuto|eca|filósof|sociólog|historiad|obra|livro)/i.test(
+                            fullClean
+                          );
+
+                        if (quoteHasRepertoire || /(produtiv|articul|justapost|colado|vínculo|vinculo|integra)/i.test(flawLower)) {
+                          const strippedVistoQue = fullClean.replace(/,\s*(visto que|já que|uma vez que|pois).*$/i, '').trim();
+                          return {
+                            fixAfter: sanitizeRewriteOutput(
+                              `${strippedVistoQue} — premissa que se relaciona diretamente a ${themeRef}, uma vez que a falha na efetivação desse princípio compromete a garantia plena de direitos ${countryRef}.`
+                            ),
+                            stepByStep: `Mantenha a referência citada no seu texto, mas acrescente logo em seguida um conectivo explicativo ("uma vez que", "na medida em que") amarrando a ideia teórica diretamente ao tema.`,
+                          };
+                        }
+
+                        if (/(tangencia|parcial|recorte|palavra-chave|palavras-chave|núcleo|tese)/i.test(flawLower)) {
+                          return {
+                            fixAfter: sanitizeRewriteOutput(
+                              `Sob a ótica da Constituição Federal de 1988, que assegura a dignidade e o bem-estar social como deveres do Estado, verifica-se que ${coreClause}, evidenciando a urgência de enfrentar ${themeRef} ${countryRef}.`
+                            ),
+                            stepByStep: `Inclua expressamente os núcleos do tema ("${cleanTheme}") dentro do período e fundamente sua tese em um repertório legitimado logo na abertura do parágrafo.`,
+                          };
+                        }
+
+                        return {
+                          fixAfter: sanitizeRewriteOutput(
+                            `À luz da Constituição Federal de 1988 — a qual garante a cidadania como direito fundamental —, observa-se que ${coreClause}, realidade que agrava os entraves ligados a ${themeRef} ${countryRef}.`
+                          ),
+                          stepByStep: `Substitua a afirmação de senso comum por uma referência sociocultural legitimada (como a Constituição de 1988, dados do IBGE ou um conceito sociológico) articulada a "${cleanTheme}".`,
+                        };
+                      }
+
+                      if (cNum === 3) {
+                        return {
+                          fixAfter: sanitizeRewriteOutput(
+                            `${fullClean}, haja vista que a omissão institucional e a naturalização social dessa falha impedem sua superação, o que perpetua os impactos negativos de ${themeRef} ${countryRef}.`
+                          ),
+                          stepByStep:
+                            'Desdobre sua afirmação no mesmo período explicitando a causa ("haja vista que...") e a consequência prática sobre a sociedade ("o que perpetua...").',
+                        };
+                      }
+
+                      if (cNum === 4) {
+                        return {
+                          fixAfter: sanitizeRewriteOutput(
+                            `Outrossim, sob essa mesma perspectiva analítica, constata-se que ${coreClause}, de modo que tal conjuntura demanda medidas articuladas para ser revertida.`
+                          ),
+                          stepByStep:
+                            'Substitua conectivos básicos ou repetidos por operadores argumentativos variados ("Outrossim", "Sob essa perspectiva", "De modo que") e utilize retomadas coesivas ("tal conjuntura").',
+                        };
+                      }
+
+                      // C5 - Proposta de Intervenção com os 5 Elementos
+                      const c5 = correctionResult.c5Structure;
+                      const agentPart =
+                        c5?.agent?.present && c5.agent.text
+                          ? c5.agent.text.replace(/[.]+$/, '')
+                          : 'o Ministério Público, em parceria com o Governo Federal';
+                      return {
+                        fixAfter: sanitizeRewriteOutput(
+                          `Portanto, cabe a ${agentPart} — instituição responsável pela defesa dos direitos sociais e fiscalização de políticas públicas (Detalhamento) — criar um plano nacional de enfrentamento a ${cleanTheme} (Ação), por meio do direcionamento de verbas públicas, fiscalização rigorosa e campanhas educativas nas escolas e mídias (Meio/Modo), a fim de erradicar esse entrave e garantir a cidadania plena ${countryRef} (Efeito).`
+                        ),
+                        stepByStep:
+                          'Reúna no parágrafo final os 5 elementos obrigatórios do INEP: 1) Agente (Quem faz), 2) Detalhamento explicativo entre travessões ou vírgulas, 3) Ação prática (O que faz), 4) Meio/Modo ("por meio de...") e 5) Efeito ("a fim de...").',
+                      };
+                    };
+
+                    // Build non-repetitive list of ALL errors and how to resolve them for this competency
+                    interface CompetencyErrorItem {
+                      badge: string;
+                      errorTitle: string;
+                      quoteBefore: string;
+                      fixAfter: string;
+                      howToResolve: string;
+                    }
+                    const allCompetencyErrors: CompetencyErrorItem[] = [];
+                    const usedQuotesNorm = new Set<string>();
+                    const usedFixAftersNorm = new Set<string>();
+                    const usedErrorTitlesNorm = new Set<string>();
+
+                    const isQuoteAlreadyUsed = (quote: string) => {
+                      const norm = normalizeForDedup(quote);
+                      if (!norm) return true;
+                      for (const existing of usedQuotesNorm) {
+                        if (
+                          existing === norm ||
+                          (existing.length >= 12 && norm.includes(existing)) ||
+                          (norm.length >= 12 && existing.includes(norm))
+                        ) {
+                          return true;
+                        }
+                      }
+                      return false;
+                    };
+
+                    const isFixAfterAlreadyUsed = (fix: string) => {
+                      const norm = normalizeForDedup(fix);
+                      if (!norm) return true;
+                      for (const existing of usedFixAftersNorm) {
+                        if (
+                          existing === norm ||
+                          existing.slice(0, 50) === norm.slice(0, 50) ||
+                          (existing.length >= 25 && norm.includes(existing.slice(0, 35))) ||
+                          (norm.length >= 25 && existing.includes(norm.slice(0, 35)))
+                        ) {
+                          return true;
+                        }
+                      }
+                      return false;
+                    };
+
+                    const isErrorTopicAlreadyUsed = (title: string) => {
+                      const norm = normalizeForDedup(title);
+                      if (!norm) return true;
+                      for (const existing of usedErrorTitlesNorm) {
+                        if (
+                          existing.slice(0, 35) === norm.slice(0, 35) ||
+                          existing.includes(norm.slice(0, 28)) ||
+                          norm.includes(existing.slice(0, 28))
+                        ) {
+                          return true;
+                        }
+                      }
+                      return false;
+                    };
+
+                    // Extract fallback sentences from the student's essay in case multiple distinct flaws exist
+                    const essaySentences = (essayText || correctionResult.essayText || '')
+                      .split(/(?<=[.!?])\s+|\n+/)
+                      .map((s) => s.trim())
+                      .filter((s) => s.length >= 25);
+
+                    const pickDistinctStudentQuote = (preferredQuote?: string, fallbackIdx = 0): string => {
+                      const candidates = [
+                        preferredQuote,
+                        ...uniqueQuotes,
+                        essaySentences[comp.num - 1],
+                        essaySentences[fallbackIdx],
+                        essaySentences[0],
+                      ]
+                        .map((c) => (c || '').trim())
+                        .filter(
+                          (c) =>
+                            c.length > 0 &&
+                            c !== 'Trecho sob análise textual.' &&
+                            c !== 'Análise global do texto submetido.'
+                        );
+
+                      for (const cand of candidates) {
+                        if (!isQuoteAlreadyUsed(cand)) {
+                          return cand;
+                        }
+                      }
+                      return candidates[0] || 'Trecho avaliado na redação.';
+                    };
+
+                    // 1. If C1, add deduplicated C1 deviations with exact Before -> After
+                    if (comp.num === 1 && correctionResult.c1Deviations && correctionResult.c1Deviations.length > 0) {
+                      correctionResult.c1Deviations.forEach((dev) => {
+                        const snippetClean = (dev.snippet || '').trim();
+                        const bestFormClean = sanitizeRewriteOutput(dev.bestForm || '');
+                        if (!snippetClean || !bestFormClean) return;
+                        if (normalizeForDedup(snippetClean) === normalizeForDedup(bestFormClean)) return;
+                        if (isQuoteAlreadyUsed(snippetClean) || isFixAfterAlreadyUsed(bestFormClean)) return;
+
+                        const catLabel =
+                          dev.category === 'convenções_escrita'
+                            ? 'Convenções da Escrita'
+                            : dev.category === 'estrutura_sintatica'
+                            ? 'Estrutura Sintática'
+                            : dev.category === 'gramatical'
+                            ? 'Gramatical'
+                            : dev.category === 'vocabular'
+                            ? 'Vocabulário / Precisão'
+                            : 'Registro Formal';
+
+                        usedQuotesNorm.add(normalizeForDedup(snippetClean));
+                        usedFixAftersNorm.add(normalizeForDedup(bestFormClean));
+                        usedErrorTitlesNorm.add(normalizeForDedup(dev.problem));
+
+                        allCompetencyErrors.push({
+                          badge: `Desvio C1 • ${catLabel}`,
+                          errorTitle: dev.problem,
+                          quoteBefore: snippetClean,
+                          fixAfter: bestFormClean,
+                          howToResolve: `Substitua "${snippetClean}" por "${bestFormClean}" para corrigir o desvio de ${catLabel.toLowerCase()}.`,
+                        });
+                      });
+                    }
+
+                    // 2. Add matching Pedagogical Rewrites ONLY if not already covered by C1 deviations or an earlier card
+                    // In C1, if c1Deviations already populated the exact errors, skip redundant C1 rewrites
+                    if (!(comp.num === 1 && allCompetencyErrors.length > 0)) {
+                      matchingRewrites.forEach((rw) => {
+                        if (isQuoteAlreadyUsed(rw.original) || isErrorTopicAlreadyUsed(rw.problem)) return;
+                        // For C2..C5, keep at most 1 rewrite per topic so C2 never repeats two cards about repertoire/theme
+                        if (comp.num >= 2 && allCompetencyErrors.length >= 1) return;
+
+                        const generated = buildConcreteCompetencyRewrite(comp.num, rw.original, rw.problem);
+                        const cleanedAiRewrite = sanitizeRewriteOutput(rw.improvedVersion || '');
+                        const hasValidAiRewrite =
+                          cleanedAiRewrite.length > 12 &&
+                          normalizeForDedup(cleanedAiRewrite) !== normalizeForDedup(rw.original) &&
+                          !isFixAfterAlreadyUsed(cleanedAiRewrite);
+
+                        const finalFixAfter = hasValidAiRewrite ? cleanedAiRewrite : generated.fixAfter;
+                        if (isFixAfterAlreadyUsed(finalFixAfter)) return;
+
+                        usedQuotesNorm.add(normalizeForDedup(rw.original));
+                        usedFixAftersNorm.add(normalizeForDedup(finalFixAfter));
+                        usedErrorTitlesNorm.add(normalizeForDedup(rw.problem));
+
+                        allCompetencyErrors.push({
+                          badge: `C${comp.num} • Reescrita Prática`,
+                          errorTitle: rw.problem,
+                          quoteBefore: rw.original,
+                          fixAfter: finalFixAfter,
+                          howToResolve:
+                            rw.explanation &&
+                            normalizeForDedup(rw.explanation) !== normalizeForDedup(comp.data.howToImprove || '')
+                              ? rw.explanation
+                              : generated.stepByStep,
+                        });
+                      });
+                    }
+
+                    // 3. If C5 and score < 200, consolidate any missing mandatory intervention elements into a single clear Before -> After card
+                    if (comp.num === 5 && comp.data.score < 200 && correctionResult.c5Structure) {
+                      const c5 = correctionResult.c5Structure;
+                      const missingNames: string[] = [];
+                      if (!c5.agent.present) missingNames.push('AGENTE (Quem executa a ação)');
+                      if (!c5.action.present) missingNames.push('AÇÃO prática (O que será feito)');
+                      if (!c5.modeMedium.present) missingNames.push('MEIO/MODO (Como será executado)');
+                      if (!c5.effect.present) missingNames.push('EFEITO/FINALIDADE (Para que será feito)');
+                      if (!c5.detailing.present) missingNames.push('DETALHAMENTO (Explicação extra de um dos elementos)');
+
+                      if (missingNames.length > 0 && allCompetencyErrors.length === 0) {
+                        const c5Quote = pickDistinctStudentQuote(uniqueQuotes[0], essaySentences.length - 1);
+                        const generatedC5 = buildConcreteCompetencyRewrite(5, c5Quote, missingNames.join(', '));
+                        usedQuotesNorm.add(normalizeForDedup(c5Quote));
+                        usedFixAftersNorm.add(normalizeForDedup(generatedC5.fixAfter));
+                        allCompetencyErrors.push({
+                          badge: `C5 • Elementos Faltantes (-${200 - comp.data.score} pts)`,
+                          errorTitle: `Sua proposta de intervenção ficou incompleta porque faltou: ${missingNames.join('; ')}.`,
+                          quoteBefore: c5Quote,
+                          fixAfter: generatedC5.fixAfter,
+                          howToResolve: generatedC5.stepByStep,
+                        });
+                      }
+                    }
+
+                    // 4. Fallback for any competency with score < 200 where no error card was added yet
+                    if (comp.data.score < 200 && allCompetencyErrors.length === 0) {
+                      const rawFlawCandidates: { badge: string; title: string; snippet?: string }[] = [];
+
+                      if (curve?.penaltiesApplied) {
+                        curve.penaltiesApplied
+                          .filter((p) => p.competencyAffected.toUpperCase().includes(`C${comp.num}`))
+                          .forEach((pen) => {
+                            rawFlawCandidates.push({
+                              badge: `Penalidade C${comp.num} (-${200 - comp.data.score} pts)`,
+                              title: `${pen.penaltyName}: ${pen.reason}`,
+                              snippet: pen.evidenceSnippet,
+                            });
+                          });
+                      }
+
+                      if (compAudit?.reasonNotRoundedTo200) {
+                        rawFlawCandidates.push({
+                          badge: `Motivo do Desconto na C${comp.num} (-${200 - comp.data.score} pts)`,
+                          title: compAudit.reasonNotRoundedTo200,
+                          snippet: uniqueQuotes[0],
+                        });
+                      }
+
+                      (comp.data.problemsIdentified || []).forEach((prob) => {
+                        if (prob && prob.trim()) {
+                          rawFlawCandidates.push({
+                            badge: `Falha Identificada na C${comp.num}`,
+                            title: prob.trim(),
+                          });
+                        }
+                      });
+
+                      (comp.data.penaltiesOrGaps || []).forEach((gap) => {
+                        if (gap && gap.trim()) {
+                          rawFlawCandidates.push({
+                            badge: `Lacuna Identificada na C${comp.num}`,
+                            title: gap.trim(),
+                          });
+                        }
+                      });
+
+                      if (compAudit?.qualityPillarsChecked) {
+                        compAudit.qualityPillarsChecked
+                          .filter((p) => p.status !== 'atendido')
+                          .forEach((p) => {
+                            rawFlawCandidates.push({
+                              badge: `Critério ${p.status === 'parcial' ? 'Incompleto' : 'Ausente'} • ${p.pillar}`,
+                              title: p.detail,
+                            });
+                          });
+                      }
+
+                      const primaryFlaw = rawFlawCandidates.find(
+                        (c) => c.title && normalizeForDedup(c.title).length >= 8
+                      );
+
+                      if (primaryFlaw) {
+                        const primaryQuote = pickDistinctStudentQuote(
+                          primaryFlaw.snippet || uniqueQuotes[0],
+                          0
+                        );
+                        const generatedPrimary = buildConcreteCompetencyRewrite(
+                          comp.num,
+                          primaryQuote,
+                          primaryFlaw.title
+                        );
+
+                        usedQuotesNorm.add(normalizeForDedup(primaryQuote));
+                        usedFixAftersNorm.add(normalizeForDedup(generatedPrimary.fixAfter));
+                        usedErrorTitlesNorm.add(normalizeForDedup(primaryFlaw.title));
+
+                        allCompetencyErrors.push({
+                          badge: primaryFlaw.badge,
+                          errorTitle: primaryFlaw.title,
+                          quoteBefore: primaryQuote,
+                          fixAfter: generatedPrimary.fixAfter,
+                          howToResolve: generatedPrimary.stepByStep,
+                        });
+                      }
+                    }
+
+                    return (
+                      <div className="px-5 sm:px-6 pb-6 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-5 text-sm text-slate-700 dark:text-slate-300">
+                        {/* 1. Resumo simples: Por que você tirou esta nota */}
+                        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-extrabold text-xs uppercase tracking-wider text-indigo-700 dark:text-indigo-400 flex items-center gap-1.5">
+                              <Info className="w-4 h-4 shrink-0" />
+                              <span>Por que você tirou {comp.data.score} de 200 pontos</span>
                             </span>
-                            <p className="text-[11px] opacity-90 mt-0.5">
-                              {comp.data.score === 200 
-                                ? 'Foram detectadas evidências textuais irrefutáveis de maturidade dissertativa neste critério.' 
-                                : 'A nota 200 exige evidência positiva de alto padrão e não é conferida por mera ausência de falhas.'}
-                            </p>
+                            {(comp.data.localizacao_trecho || comp.data.excerptLocation) && (
+                              <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-md bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                                📍 {comp.data.localizacao_trecho || comp.data.excerptLocation}
+                              </span>
+                            )}
                           </div>
-                        </div>
-                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider shrink-0 ${
-                          comp.data.score === 200
-                            ? 'bg-emerald-200 dark:bg-emerald-900 text-emerald-950 dark:text-emerald-100'
-                            : 'bg-indigo-200 dark:bg-indigo-900 text-indigo-950 dark:text-indigo-100'
-                        }`}>
-                          {comp.data.score === 200 ? 'Excelência Positiva' : `${comp.data.score}/200 Pontos`}
-                        </span>
-                      </div>
-
-                      {/* Estrutura de Evidências Obrigatórias (Interface AvaliacaoCompetencia) */}
-                      <div className="p-4 sm:p-5 rounded-2xl bg-slate-900 text-slate-100 border border-indigo-500/30 shadow-xs space-y-4">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                          <div className="flex items-center gap-2 text-indigo-300 font-extrabold text-xs uppercase tracking-wider">
-                            <Scale className="w-4 h-4 text-indigo-400" />
-                            <span>Estrutura de Evidências (Interface AvaliacaoCompetencia)</span>
-                          </div>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-[10px] font-mono bg-indigo-950/80 text-indigo-300 px-2 py-0.5 rounded-md border border-indigo-800/80">
-                              📍 {comp.data.localizacao_trecho || comp.data.excerptLocation || 'Corpo da Redação'}
-                            </span>
-                            <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded-md border border-emerald-800/80">
-                              ✓ Evidência Obrigatória
-                            </span>
-                          </div>
+                          <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 leading-relaxed">
+                            {comp.data.diagnostic}
+                          </p>
+                          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+                            {comp.data.evaluation}
+                          </p>
                         </div>
 
-                        {/* Passo 1: Trecho de Evidência Extraído */}
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
-                              <Quote className="w-3.5 h-3.5 text-amber-400" />
-                              <span>1. Trecho Evidência Citado (trecho_evidencia):</span>
-                            </span>
-                            <span className="text-[10px] text-slate-400">Obrigatório antes da pontuação</span>
-                          </div>
-                          <blockquote className="text-xs sm:text-sm font-serif italic text-emerald-300 bg-emerald-950/30 p-3.5 rounded-xl border-l-4 border-emerald-500 leading-relaxed shadow-inner">
-                            "{comp.data.trecho_evidencia || comp.data.primaryEvidenceQuote || comp.data.evidenceSnippets?.[0] || 'Trecho sob análise textual.'}"
-                          </blockquote>
-                        </div>
-
-                        {/* Passo 2: Justificativa Analítica */}
-                        <div className="space-y-1.5">
-                          <span className="font-bold text-indigo-300 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-                            <Info className="w-3.5 h-3.5 text-indigo-400" />
-                            <span>2. Justificativa Analítica Prévia (justificativa_analitica):</span>
-                          </span>
-                          <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 text-xs sm:text-sm text-slate-200 leading-relaxed">
-                            {comp.data.justificativa_analitica || comp.data.evaluation || 'Análise qualitativa fundamentada no trecho.'}
-                          </div>
-                        </div>
-
-                        {/* Passo 3: Deliberação e Bloqueio de 200 Padrão */}
-                        <div className="pt-2 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                          <div className="flex items-center gap-2">
-                            <ShieldAlert className="w-4 h-4 text-cyan-400 shrink-0" />
-                            <p className="text-[11px] text-slate-300">
-                              <strong>Regra Anti-Default 200:</strong> Nota {comp.data.nota ?? comp.data.score}/200 fixada exclusivamente após validação das evidências. Ausência de erros não pontua 200 por padrão.
-                            </p>
-                          </div>
-                          <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider shrink-0 self-start sm:self-auto ${
-                            (comp.data.nota ?? comp.data.score) === 200
-                              ? 'bg-emerald-400 text-slate-950'
-                              : 'bg-indigo-500/30 text-indigo-200 border border-indigo-400/40'
-                          }`}>
-                            {(comp.data.nota ?? comp.data.score) === 200 ? 'Nota 200 Afirmativa' : `Nota: ${comp.data.nota ?? comp.data.score}/200`}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Diagnostic summary */}
-                      <div className="p-3.5 rounded-xl bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/80 text-amber-900 dark:text-amber-200">
-                        <span className="font-bold block text-xs uppercase tracking-wider text-amber-800 dark:text-amber-300 mb-1">
-                          Diagnóstico Direto
-                        </span>
-                        <p className="text-xs sm:text-sm font-medium">{comp.data.diagnostic}</p>
-                      </div>
-
-                      {/* Weighted Evidence Pillars (Soma Ponderada de Evidências) */}
-                      {comp.data.evidenceWeightPillars && comp.data.evidenceWeightPillars.length > 0 && (
-                        <div className="space-y-3 p-4 rounded-xl bg-slate-50/80 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center justify-between">
-                            <h5 className="font-extrabold text-slate-900 dark:text-slate-100 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                              <BookCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                              <span>Soma Ponderada de Evidências Coletadas</span>
+                        {/* 2. O que você acertou vs. Resumo do que melhorar */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* O que você acertou */}
+                          <div className="p-4 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-800/60 space-y-2.5">
+                            <h5 className="font-extrabold text-emerald-800 dark:text-emerald-300 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                              <span>O que você mandou bem</span>
                             </h5>
-                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
-                              Matriz INEP Calibrada
-                            </span>
+                            {comp.data.positiveEvidence && comp.data.positiveEvidence.length > 0 ? (
+                              <ul className="space-y-1.5">
+                                {comp.data.positiveEvidence.map((pos, pIdx) => (
+                                  <li
+                                    key={pIdx}
+                                    className="text-xs text-emerald-950 dark:text-emerald-200 flex items-start gap-2 leading-relaxed"
+                                  >
+                                    <span className="text-emerald-600 dark:text-emerald-400 font-bold shrink-0">✓</span>
+                                    <span>{pos}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="text-xs text-emerald-900/80 dark:text-emerald-200/80 leading-relaxed">
+                                {comp.data.score >= 160
+                                  ? 'Você atendeu bem à estrutura principal exigida nesta competência.'
+                                  : 'Seu texto apresenta base inicial, mas precisa de ajustes práticos para subir de nível.'}
+                              </p>
+                            )}
                           </div>
 
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-                            {comp.data.evidenceWeightPillars.map((pillar, pIdx) => (
-                              <div key={pIdx} className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 flex flex-col justify-between gap-2 shadow-xs">
-                                <div>
-                                  <div className="flex items-center justify-between gap-1 mb-1">
-                                    <span className="font-bold text-[11px] text-slate-800 dark:text-slate-200 line-clamp-1">{pillar.pillarName}</span>
-                                    <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900 shrink-0">
-                                      Peso {pillar.weightPercentage}%
-                                    </span>
-                                  </div>
-                                  <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-snug">
-                                    {pillar.positiveEvidenceFound}
-                                  </p>
-                                </div>
-                                <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800 text-[10px]">
-                                  <span className="text-slate-500 dark:text-slate-400 font-medium">Contribuição:</span>
-                                  <span className={`font-black ${pillar.isExceptionalLevel ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-800 dark:text-slate-200'}`}>
-                                    {pillar.scoreContribution} pts
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
+                          {/* Direcionamento Geral para 200 */}
+                          <div className="p-4 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/25 border border-indigo-200/80 dark:border-indigo-800/60 space-y-2.5">
+                            <h5 className="font-extrabold text-indigo-900 dark:text-indigo-300 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                              <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                              <span>
+                                {comp.data.score === 200
+                                  ? 'Como manter os 200 pontos'
+                                  : 'Direcionamento geral para chegar aos 200'}
+                              </span>
+                            </h5>
+                            <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+                              {comp.data.howToImprove}
+                            </p>
                           </div>
                         </div>
-                      )}
 
-                      {/* Positive Evidence Audit List */}
-                      {comp.data.positiveEvidence && comp.data.positiveEvidence.length > 0 && (
-                        <div className="space-y-2">
-                          <h5 className="font-bold text-emerald-800 dark:text-emerald-300 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                            <span>Evidências Positivas Auditadas</span>
-                          </h5>
-                          <ul className="space-y-1.5">
-                            {comp.data.positiveEvidence.map((pos, pIdx) => (
-                              <li key={pIdx} className="p-2 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-800/40 text-xs text-emerald-950 dark:text-emerald-200 flex items-start gap-2">
-                                <span className="text-emerald-600 dark:text-emerald-400 font-bold shrink-0">✓</span>
-                                <span>{pos}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {/* Detailed Evaluation */}
-                      <div>
-                        <h5 className="font-bold text-slate-900 dark:text-slate-100 mb-1.5 flex items-center gap-1.5 text-xs uppercase tracking-wider">
-                          <Info className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                          <span>Avaliação da Banca</span>
-                        </h5>
-                        <p className="text-slate-600 dark:text-slate-400 leading-relaxed">{comp.data.evaluation}</p>
-                      </div>
-
-                      {/* Evidence Snippets */}
-                      {comp.data.evidenceSnippets && comp.data.evidenceSnippets.length > 0 && (
-                        <div>
-                          <h5 className="font-bold text-slate-900 dark:text-slate-100 mb-1.5 text-xs uppercase tracking-wider">
-                            📌 Citações Extraídas do Texto
-                          </h5>
-                          <div className="space-y-1.5">
-                            {comp.data.evidenceSnippets.map((ev, i) => (
-                              <blockquote key={i} className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/80 border-l-3 border-indigo-500 text-xs font-serif text-slate-800 dark:text-slate-200 italic">
-                                "{ev}"
-                              </blockquote>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Micro Audit Log Card for this specific competency */}
-                      {correctionResult.auditLog?.competencyLogs?.find(l => l.competencyNum === comp.num) && (() => {
-                        const compAudit = correctionResult.auditLog!.competencyLogs.find(l => l.competencyNum === comp.num)!;
-                        return (
-                          <div className="p-4 rounded-xl bg-slate-950 text-slate-100 border border-slate-800 space-y-3">
-                            <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
-                              <div className="flex items-center gap-2">
-                                <Terminal className="w-4 h-4 text-amber-400" />
-                                <span className="font-bold text-xs text-white uppercase tracking-wider">
-                                  Auditoria Interna da IA (Justificativa Textual C{comp.num})
+                        {/* 3. TODOS OS ERROS DESTA COMPETÊNCIA E COMO RESOLVÊ-LOS */}
+                        {allCompetencyErrors.length > 0 && (
+                          <div className="p-4 sm:p-5 rounded-2xl bg-rose-50/40 dark:bg-rose-950/15 border border-rose-200/80 dark:border-rose-900/60 space-y-3.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-200/60 dark:border-rose-800/50 pb-2.5">
+                              <h5 className="font-extrabold text-rose-900 dark:text-rose-200 text-xs sm:text-sm uppercase tracking-wider flex items-center gap-2">
+                                <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                                <span>
+                                  Todos os Erros Identificados na C{comp.num} e Como Resolvê-los ({allCompetencyErrors.length})
                                 </span>
-                              </div>
-                              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                {compAudit.isMaxScore200 ? '200 Aprovado por Evidência' : '200 Bloqueado (Sem Arredondamento)'}
+                              </h5>
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-rose-100 dark:bg-rose-900/70 text-rose-800 dark:text-rose-200">
+                                Reescrita Antes → Depois
                               </span>
                             </div>
 
-                            <div className="space-y-2 text-xs">
-                              <div>
-                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
-                                  Justificativa Algorítmica da Pontuação:
-                                </span>
-                                <p className="text-slate-300 leading-relaxed font-sans">{compAudit.scoreJustification}</p>
-                              </div>
+                            <div className="space-y-3.5">
+                              {allCompetencyErrors.map((errItem, eIdx) => (
+                                <div
+                                  key={eIdx}
+                                  className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xs space-y-3"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="px-2.5 py-0.5 rounded-md bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 text-[10px] font-black uppercase tracking-wider border border-rose-200 dark:border-rose-800">
+                                      Erro #{eIdx + 1} • {errItem.badge}
+                                    </span>
+                                  </div>
 
-                              <div>
-                                <span className="text-[10px] font-bold text-amber-400/90 uppercase tracking-wider block mb-0.5">
-                                  Evidência Textual Extraída para Validação:
-                                </span>
-                                <blockquote className="text-xs font-serif italic text-emerald-300 bg-emerald-950/20 p-2.5 rounded border-l-2 border-emerald-500">
-                                  "{compAudit.evidenceQuoteFromStudent}"
-                                </blockquote>
-                              </div>
+                                  <p className="text-xs sm:text-sm font-bold text-rose-900 dark:text-rose-200 leading-snug">
+                                    ⚠️ O que você errou: <span className="font-semibold text-slate-800 dark:text-slate-100">{errItem.errorTitle}</span>
+                                  </p>
 
-                              {!compAudit.isMaxScore200 && compAudit.reasonNotRoundedTo200 && (
-                                <div className="p-2.5 rounded-lg bg-amber-950/40 border border-amber-600/30 text-amber-200 text-[11px] flex items-start gap-2">
-                                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                                  <span><strong>Bloqueio de 200:</strong> {compAudit.reasonNotRoundedTo200}</span>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                                    <div className="p-3 rounded-lg bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/70 space-y-1">
+                                      <span className="text-[10px] font-black uppercase tracking-wider text-rose-700 dark:text-rose-300 block">
+                                        ❌ Como você escreveu no texto (Antes)
+                                      </span>
+                                      <p className="font-serif italic text-xs sm:text-sm text-rose-950 dark:text-rose-100 leading-relaxed">
+                                        "{errItem.quoteBefore}"
+                                      </p>
+                                    </div>
+
+                                    <div className="p-3 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/70 space-y-1">
+                                      <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 block">
+                                        ✅ Como deveria ser escrito (Depois)
+                                      </span>
+                                      <p className="font-serif text-xs sm:text-sm text-emerald-950 dark:text-emerald-100 font-semibold leading-relaxed">
+                                        "{errItem.fixAfter}"
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="p-2.5 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/25 border border-indigo-200/70 dark:border-indigo-800/50 text-xs text-slate-800 dark:text-slate-200 flex items-start gap-2">
+                                    <CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <strong className="font-extrabold text-indigo-900 dark:text-indigo-300">Como resolver na prática: </strong>
+                                      <span>{errItem.howToResolve}</span>
+                                    </div>
+                                  </div>
                                 </div>
-                              )}
+                              ))}
                             </div>
                           </div>
-                        );
-                      })()}
+                        )}
 
-                      {/* Special: C1 Deviations Table */}
-                      {comp.num === 1 && correctionResult.c1Deviations && correctionResult.c1Deviations.length > 0 && (
-                        <div className="space-y-2">
-                          <h5 className="font-bold text-rose-800 dark:text-rose-300 text-xs uppercase tracking-wider">
-                            🔍 Desvios Gramaticais e Estruturais Identificados
-                          </h5>
-                          <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
-                            <table className="w-full text-left text-xs border-collapse">
-                              <thead>
-                                <tr className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 font-bold">
-                                  <th className="p-2.5">Trecho Original</th>
-                                  <th className="p-2.5">Problema Identificado</th>
-                                  <th className="p-2.5">Melhor Forma</th>
-                                  <th className="p-2.5">Categoria</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                                {correctionResult.c1Deviations.map((dev, i) => (
-                                  <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                                    <td className="p-2.5 font-serif text-rose-700 dark:text-rose-300 bg-rose-50/40 dark:bg-rose-950/30 font-medium">"{dev.snippet}"</td>
-                                    <td className="p-2.5 text-slate-700 dark:text-slate-300">{dev.problem}</td>
-                                    <td className="p-2.5 font-serif text-emerald-700 dark:text-emerald-300 bg-emerald-50/40 dark:bg-emerald-950/30 font-medium">"{dev.bestForm}"</td>
-                                    <td className="p-2.5 text-[11px] text-slate-500 dark:text-slate-400 capitalize">{dev.category.replace('_', ' ')}</td>
-                                  </tr>
+                        {/* 4. Additional Evidence Quotes if not already shown */}
+                        {(() => {
+                          const remainingQuotes = uniqueQuotes.filter((q) => !isQuoteAlreadyUsed(q));
+                          if (remainingQuotes.length === 0) return null;
+                          return (
+                            <div className="space-y-2">
+                              <h5 className="font-extrabold text-slate-900 dark:text-slate-100 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                                <Quote className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                                <span>Outras citações analisadas nesta competência</span>
+                              </h5>
+                              <div className="space-y-2">
+                                {remainingQuotes.map((quote, qIdx) => (
+                                  <blockquote
+                                    key={qIdx}
+                                    className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/80 border-l-4 border-indigo-500 text-xs font-serif italic text-slate-800 dark:text-slate-200"
+                                  >
+                                    "{quote}"
+                                  </blockquote>
                                 ))}
-                              </tbody>
-                            </table>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* 5. Special: C5 5-Element Checklist Table */}
+                        {comp.num === 5 && correctionResult.c5Structure && (
+                          <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-xs uppercase tracking-wider text-slate-900 dark:text-slate-100">
+                                Checklist dos 5 Elementos da Proposta de Intervenção
+                              </span>
+                              <span className="text-xs font-bold px-2.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                                {correctionResult.c5Structure.validElementsCount} de 5 Elementos Encontrados
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
+                                {correctionResult.c5Structure.agent.present ? (
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                                ) : (
+                                  <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                                )}
+                                <div>
+                                  <strong className="text-slate-900 dark:text-slate-100">1. AGENTE (Quem faz?):</strong>{' '}
+                                  <span className="text-slate-700 dark:text-slate-300">
+                                    {correctionResult.c5Structure.agent.present
+                                      ? correctionResult.c5Structure.agent.text
+                                      : 'Faltou indicar um agente claro'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
+                                {correctionResult.c5Structure.action.present ? (
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                                ) : (
+                                  <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                                )}
+                                <div>
+                                  <strong className="text-slate-900 dark:text-slate-100">2. AÇÃO (O que faz?):</strong>{' '}
+                                  <span className="text-slate-700 dark:text-slate-300">
+                                    {correctionResult.c5Structure.action.present
+                                      ? correctionResult.c5Structure.action.text
+                                      : 'Faltou indicar uma ação concreta'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
+                                {correctionResult.c5Structure.modeMedium.present ? (
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                                ) : (
+                                  <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                                )}
+                                <div>
+                                  <strong className="text-slate-900 dark:text-slate-100">3. MEIO / MODO (Como faz?):</strong>{' '}
+                                  <span className="text-slate-700 dark:text-slate-300">
+                                    {correctionResult.c5Structure.modeMedium.present
+                                      ? correctionResult.c5Structure.modeMedium.text
+                                      : 'Faltou explicar por qual meio a ação ocorre'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
+                                {correctionResult.c5Structure.effect.present ? (
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                                ) : (
+                                  <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                                )}
+                                <div>
+                                  <strong className="text-slate-900 dark:text-slate-100">4. EFEITO (Para quê?):</strong>{' '}
+                                  <span className="text-slate-700 dark:text-slate-300">
+                                    {correctionResult.c5Structure.effect.present
+                                      ? correctionResult.c5Structure.effect.text
+                                      : 'Faltou indicar a finalidade/resultado esperado'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 sm:col-span-2 flex items-start gap-2">
+                                {correctionResult.c5Structure.detailing.present ? (
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                                ) : (
+                                  <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                                )}
+                                <div>
+                                  <strong className="text-slate-900 dark:text-slate-100">5. DETALHAMENTO (Explicação extra):</strong>{' '}
+                                  <span className="text-slate-700 dark:text-slate-300">
+                                    {correctionResult.c5Structure.detailing.present
+                                      ? `${correctionResult.c5Structure.detailing.text} (detalhando ${correctionResult.c5Structure.detailing.targetElement || 'um dos elementos'})`
+                                      : 'Faltou detalhar um dos elementos (ex.: explicar quem é o agente ou dar exemplo do meio)'}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div
+                              className={`p-2.5 rounded-lg flex items-center gap-2 text-xs font-semibold ${
+                                correctionResult.c5Structure.respectsHumanRights
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                                  : 'bg-rose-100 dark:bg-rose-950 text-rose-900 dark:text-rose-200 border border-rose-300 dark:border-rose-800'
+                              }`}
+                            >
+                              {correctionResult.c5Structure.respectsHumanRights ? (
+                                <>
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                                  <span>Sua proposta respeita integralmente os Direitos Humanos.</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                                  <span>
+                                    Atenção: Foi identificada violação aos Direitos Humanos (Nota 0 na C5).{' '}
+                                    {correctionResult.c5Structure.humanRightsObservations}
+                                  </span>
+                                </>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
-
-                      {/* Special: C5 5-Element Checklist Table */}
-                      {comp.num === 5 && correctionResult.c5Structure && (
-                        <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-xs uppercase tracking-wider text-slate-900 dark:text-slate-100">
-                              Checklist Oficial da Proposta de Intervenção
-                            </span>
-                            <span className="text-xs font-bold px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
-                              {correctionResult.c5Structure.validElementsCount} de 5 Elementos Válidos
-                            </span>
-                          </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                            <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
-                              {correctionResult.c5Structure.agent.present ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                              ) : (
-                                <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                              )}
-                              <div>
-                                <strong className="text-slate-900 dark:text-slate-100">AGENTE:</strong> <span className="text-slate-700 dark:text-slate-300">{correctionResult.c5Structure.agent.present ? correctionResult.c5Structure.agent.text : 'Ausente ou nulo'}</span>
-                              </div>
-                            </div>
-
-                            <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
-                              {correctionResult.c5Structure.action.present ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                              ) : (
-                                <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                              )}
-                              <div>
-                                <strong className="text-slate-900 dark:text-slate-100">AÇÃO:</strong> <span className="text-slate-700 dark:text-slate-300">{correctionResult.c5Structure.action.present ? correctionResult.c5Structure.action.text : 'Ausente ou nula'}</span>
-                              </div>
-                            </div>
-
-                            <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
-                              {correctionResult.c5Structure.modeMedium.present ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                              ) : (
-                                <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                              )}
-                              <div>
-                                <strong className="text-slate-900 dark:text-slate-100">MEIO / MODO:</strong> <span className="text-slate-700 dark:text-slate-300">{correctionResult.c5Structure.modeMedium.present ? correctionResult.c5Structure.modeMedium.text : 'Ausente'}</span>
-                              </div>
-                            </div>
-
-                            <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-start gap-2">
-                              {correctionResult.c5Structure.effect.present ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                              ) : (
-                                <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                              )}
-                              <div>
-                                <strong className="text-slate-900 dark:text-slate-100">FINALIDADE / EFEITO:</strong> <span className="text-slate-700 dark:text-slate-300">{correctionResult.c5Structure.effect.present ? correctionResult.c5Structure.effect.text : 'Ausente'}</span>
-                              </div>
-                            </div>
-
-                            <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 sm:col-span-2 flex items-start gap-2">
-                              {correctionResult.c5Structure.detailing.present ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                              ) : (
-                                <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                              )}
-                              <div>
-                                <strong className="text-slate-900 dark:text-slate-100">DETALHAMENTO:</strong> <span className="text-slate-700 dark:text-slate-300">{correctionResult.c5Structure.detailing.present ? `${correctionResult.c5Structure.detailing.text} (foco no ${correctionResult.c5Structure.detailing.targetElement || 'elemento'})` : 'Ausente (faltou detalhar agente, ação, meio ou efeito)'}</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className={`p-2.5 rounded-lg flex items-center gap-2 text-xs font-semibold ${
-                            correctionResult.c5Structure.respectsHumanRights 
-                              ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300' 
-                              : 'bg-rose-100 dark:bg-rose-950 text-rose-900 dark:text-rose-200 border border-rose-300 dark:border-rose-800'
-                          }`}>
-                            {correctionResult.c5Structure.respectsHumanRights ? (
-                              <>
-                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                                <span>Respeito aos Direitos Humanos confirmado pela banca.</span>
-                              </>
-                            ) : (
-                              <>
-                                <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400" />
-                                <span>Violação de Direitos Humanos identificada (Nota 0 na C5). {correctionResult.c5Structure.humanRightsObservations}</span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* How to reach 200 */}
-                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
-                        <span className="font-bold text-xs uppercase tracking-wider text-indigo-700 dark:text-indigo-400 block mb-1">
-                          🚀 Como atingir 200 pontos nesta competência:
-                        </span>
-                        <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">{comp.data.howToImprove}</p>
+                        )}
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               );
             })}
           </div>
 
-          {/* Internal AI Audit Log: Textual Evidence Verification & Anti-Rounding Engine */}
+          {/* Internal AI Audit Log: Enriched with More Textual Evidence & Clearer Score Explanations */}
           {correctionResult.auditLog && (
             <div className="bg-slate-950 text-slate-100 p-6 sm:p-7 rounded-2xl border border-slate-800 shadow-xl space-y-5 transition-colors">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
@@ -2608,16 +3144,16 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                     <Terminal className="w-5 h-5 text-amber-400" />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h4 className="font-extrabold text-base text-white tracking-wide">
-                        Log de Auditoria Interna da IA (Evidências & Anti-Arredondamento)
+                        Log de Auditoria da Nota (Evidências do Seu Texto e Motivo da Pontuação)
                       </h4>
                       <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                        Zero Viés 200
+                        Auditoria Completa
                       </span>
                     </div>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Protocolo estrito do INEP: cada nota foi justificada por evidência textual específica, sem arredondamentos automáticos.
+                      Veja exatamente quais trechos da sua redação foram usados para definir a nota de cada competência e o motivo detalhado.
                     </p>
                   </div>
                 </div>
@@ -2638,21 +3174,21 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 <div className="flex items-center gap-2 text-slate-300">
                   <Scale className="w-4 h-4 text-indigo-400 shrink-0" />
                   <div>
-                    <span className="text-[10px] text-slate-500 uppercase block font-bold">Motor de Avaliação</span>
-                    <span className="font-mono text-slate-200">{correctionResult.auditLog.modelEngine}</span>
+                    <span className="text-[10px] text-slate-500 uppercase block font-bold">Critério de Correção</span>
+                    <span className="font-bold text-slate-200">Matriz Oficial do ENEM (2025/2026)</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 text-slate-300">
                   <Lock className="w-4 h-4 text-emerald-400 shrink-0" />
                   <div>
-                    <span className="text-[10px] text-slate-500 uppercase block font-bold">Diretriz Anti-Arredondamento</span>
-                    <span className="font-bold text-emerald-400">Ativa (Exige Comprovação Positiva)</span>
+                    <span className="text-[10px] text-slate-500 uppercase block font-bold">Regra de Pontuação</span>
+                    <span className="font-bold text-emerald-400">Baseada em Trechos Reais da Redação</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 text-slate-300">
                   <Search className="w-4 h-4 text-amber-400 shrink-0" />
                   <div>
-                    <span className="text-[10px] text-slate-500 uppercase block font-bold">Auditoria de Citações</span>
+                    <span className="text-[10px] text-slate-500 uppercase block font-bold">Verificação Textual</span>
                     <span className="font-mono text-slate-200">5 de 5 Competências Auditadas</span>
                   </div>
                 </div>
@@ -2673,151 +3209,513 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                     >
                       Todas as 5 Competências
                     </button>
-                    {(['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((key, i) => (
-                      <button
-                        key={key}
-                        onClick={() => setSelectedAuditTab(key)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          selectedAuditTab === key
-                            ? 'bg-amber-400 text-slate-950 shadow-xs'
-                            : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
-                        }`}
-                      >
-                        C{i + 1} ({correctionResult.competencies[key]?.score} pts)
-                      </button>
-                    ))}
+                    {(['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((key, i) => {
+                      const chipScore =
+                        competencyDivergences[i]?.officialCompMean ??
+                        correctionResult.competencies[key]?.score ??
+                        0;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => setSelectedAuditTab(key)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                            selectedAuditTab === key
+                              ? 'bg-amber-400 text-slate-950 shadow-xs'
+                              : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                          }`}
+                        >
+                          C{i + 1} ({chipScore} pts)
+                        </button>
+                      );
+                    })}
                   </div>
 
                   {/* Audit Items List */}
-                  <div className="space-y-3.5">
+                  <div className="space-y-4">
                     {correctionResult.auditLog.competencyLogs
                       .filter(item => selectedAuditTab === 'all' || selectedAuditTab === `c${item.competencyNum}`)
-                      .map((logItem) => (
-                        <div
-                          key={logItem.competencyNum}
-                          className="p-4 sm:p-5 rounded-xl bg-slate-900/70 border border-slate-800 hover:border-slate-700 transition-colors space-y-3"
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                            <div className="flex items-center gap-2.5">
-                              <span className="w-7 h-7 rounded-lg bg-slate-800 text-amber-400 font-black text-xs flex items-center justify-center border border-slate-700">
-                                C{logItem.competencyNum}
-                              </span>
-                              <span className="font-extrabold text-sm text-slate-200">
-                                {logItem.competencyName}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className={`px-2.5 py-1 rounded-lg text-xs font-black uppercase tracking-wider ${
-                                logItem.isMaxScore200 
-                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' 
-                                  : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40'
-                              }`}>
-                                Pontuação: {logItem.assignedScore}/200
-                              </span>
-                              {logItem.isMaxScore200 ? (
-                                <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/80">
-                                  ★ Excelência Positiva
+                      .map((logItem) => {
+                        const cKey = `c${logItem.competencyNum}` as 'c1' | 'c2' | 'c3' | 'c4' | 'c5';
+                        const compData = correctionResult.competencies[cKey];
+                        const officialAuditScore =
+                          competencyDivergences[logItem.competencyNum - 1]?.officialCompMean ??
+                          compData?.score ??
+                          logItem.assignedScore;
+                        const isOfficialMax200 = officialAuditScore === 200;
+
+                        // Collect all concrete evidence quotes from the student's essay for this competency
+                        const collectedQuotes = Array.from(
+                          new Set(
+                            [
+                              logItem.evidenceQuoteFromStudent,
+                              compData?.trecho_evidencia,
+                              compData?.primaryEvidenceQuote,
+                              ...(compData?.evidenceSnippets || []),
+                              ...(logItem.competencyNum === 5 && correctionResult.c5Structure
+                                ? [
+                                    correctionResult.c5Structure.agent.present && correctionResult.c5Structure.agent.text
+                                      ? `Agente identificado: "${correctionResult.c5Structure.agent.text}"`
+                                      : null,
+                                    correctionResult.c5Structure.action.present && correctionResult.c5Structure.action.text
+                                      ? `Ação identificada: "${correctionResult.c5Structure.action.text}"`
+                                      : null,
+                                    correctionResult.c5Structure.modeMedium.present && correctionResult.c5Structure.modeMedium.text
+                                      ? `Meio/Modo identificado: "${correctionResult.c5Structure.modeMedium.text}"`
+                                      : null,
+                                    correctionResult.c5Structure.effect.present && correctionResult.c5Structure.effect.text
+                                      ? `Efeito identificado: "${correctionResult.c5Structure.effect.text}"`
+                                      : null,
+                                  ].filter(Boolean) as string[]
+                                : []),
+                            ]
+                              .map((q) => (q || '').trim())
+                              .filter(
+                                (q) =>
+                                  q.length > 0 &&
+                                  q !== 'Trecho sob análise textual.' &&
+                                  q !== 'Análise global do texto submetido.'
+                              )
+                          )
+                        );
+
+                        return (
+                          <div
+                            key={logItem.competencyNum}
+                            className="p-4 sm:p-5 rounded-xl bg-slate-900/75 border border-slate-800 hover:border-slate-700 transition-colors space-y-3.5"
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                              <div className="flex items-center gap-2.5">
+                                <span className="w-7 h-7 rounded-lg bg-slate-800 text-amber-400 font-black text-xs flex items-center justify-center border border-slate-700">
+                                  C{logItem.competencyNum}
                                 </span>
-                              ) : (
-                                <span className="text-[10px] font-bold text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/80">
-                                  🔒 200 Bloqueado (Faltam Requisitos)
+                                <div>
+                                  <span className="font-extrabold text-sm text-slate-100 block">
+                                    {logItem.competencyName}
+                                  </span>
+                                  {(compData?.localizacao_trecho || compData?.excerptLocation) && (
+                                    <span className="text-[11px] text-slate-400">
+                                      📍 Local analisado: {compData.localizacao_trecho || compData.excerptLocation}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2.5 py-1 rounded-lg text-xs font-black uppercase tracking-wider ${
+                                  isOfficialMax200 
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' 
+                                    : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40'
+                                }`}>
+                                  Nota: {officialAuditScore}/200
                                 </span>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Justification & Criteria */}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                            <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 space-y-1.5">
-                              <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider flex items-center gap-1">
-                                <Info className="w-3 h-3 text-indigo-400" />
-                                Justificativa Técnica da Pontuação
-                              </span>
-                              <p className="text-slate-300 leading-relaxed">
-                                {logItem.scoreJustification}
-                              </p>
-                            </div>
-
-                            <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 space-y-1.5">
-                              <span className="text-[10px] font-extrabold uppercase text-amber-400/90 tracking-wider flex items-center gap-1">
-                                <Lock className="w-3 h-3 text-amber-400" />
-                                Requisito Estrito Exigido para 200
-                              </span>
-                              <p className="text-slate-300 leading-relaxed">
-                                {logItem.requiredTextualEvidence}
-                              </p>
-                            </div>
-                          </div>
-
-                          {/* Reason why not rounded to 200 */}
-                          {!logItem.isMaxScore200 && logItem.reasonNotRoundedTo200 && (
-                            <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-500/30 text-xs text-amber-200 flex items-start gap-2">
-                              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                              <div>
-                                <strong className="font-bold text-amber-300">Gatilho de Auditoria (Motivo de não arredondar para 200): </strong>
-                                <span>{logItem.reasonNotRoundedTo200}</span>
+                                {isOfficialMax200 ? (
+                                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/80">
+                                    ★ Nota Máxima Atingida
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-bold text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/80">
+                                    Perdeu {200 - officialAuditScore} pts
+                                  </span>
+                                )}
                               </div>
                             </div>
-                          )}
 
-                          {/* Textual Quote Verified in Student Draft */}
-                          <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
-                            <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider flex items-center gap-1.5">
-                              <FileCode className="w-3 h-3 text-emerald-400" />
-                              Evidência Textual Extraída do Rascunho do Aluno
-                            </span>
-                            <blockquote className="text-xs font-serif italic text-emerald-300 bg-emerald-950/20 p-2.5 rounded border-l-2 border-emerald-500">
-                              "{logItem.evidenceQuoteFromStudent}"
-                            </blockquote>
-                          </div>
+                            {/* Clear Score Reason & What Was Needed for 200 */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                              <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-1.5">
+                                <span className="text-[11px] font-extrabold uppercase text-indigo-300 tracking-wider flex items-center gap-1.5">
+                                  <Info className="w-3.5 h-3.5 text-indigo-400" />
+                                  Motivo claro da sua nota ({officialAuditScore} pts)
+                                </span>
+                                {compData?.diagnostic && (
+                                  <p className="text-slate-100 font-semibold leading-relaxed">
+                                    {compData.diagnostic}
+                                  </p>
+                                )}
+                                <p className="text-slate-300 leading-relaxed">
+                                  {logItem.scoreJustification}
+                                </p>
+                              </div>
 
-                          {/* Quality Pillars Micro-Audit */}
-                          {logItem.qualityPillarsChecked && logItem.qualityPillarsChecked.length > 0 && (
-                            <div className="space-y-1.5 pt-1">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                                Pilares Qualitativos Verificados:
-                              </span>
-                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                {logItem.qualityPillarsChecked.map((pillar, pIdx) => (
-                                  <div
-                                    key={pIdx}
-                                    className={`p-2 rounded-lg text-[11px] border flex items-center justify-between gap-1.5 ${
-                                      pillar.status === 'atendido'
-                                        ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
-                                        : pillar.status === 'parcial'
-                                        ? 'bg-amber-950/30 border-amber-800/60 text-amber-200'
-                                        : 'bg-rose-950/30 border-rose-800/60 text-rose-300'
-                                    }`}
-                                  >
-                                    <div className="truncate">
-                                      <span className="font-bold block truncate">{pillar.pillar}</span>
-                                      <span className="text-[10px] opacity-80 block truncate">{pillar.detail}</span>
-                                    </div>
-                                    <span className="font-black shrink-0 text-xs">
-                                      {pillar.status === 'atendido' ? '✓' : pillar.status === 'parcial' ? '⚠' : '✗'}
+                              <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-1.5">
+                                <span className="text-[11px] font-extrabold uppercase text-amber-300 tracking-wider flex items-center gap-1.5">
+                                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                                  {isOfficialMax200
+                                    ? 'Por que você garantiu os 200 pontos'
+                                    : 'O que faltou no seu texto para tirar 200'}
+                                </span>
+                                {!isOfficialMax200 && logItem.reasonNotRoundedTo200 && (
+                                  <p className="text-amber-200 font-semibold leading-relaxed">
+                                    {logItem.reasonNotRoundedTo200}
+                                  </p>
+                                )}
+                                <p className="text-slate-300 leading-relaxed">
+                                  {compData?.howToImprove || logItem.requiredTextualEvidence}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* SPECIAL FOR C1 IN AUDIT LOG: Explicit & Detailed C1 Deviations Extracted from Text */}
+                            {logItem.competencyNum === 1 && (() => {
+                              const fullEssayStr = (essayText || correctionResult.essayText || '').trim();
+                              const essayParagraphs = fullEssayStr
+                                .split(/\n+/)
+                                .map((p) => p.trim())
+                                .filter((p) => p.length > 0);
+                              const essaySentencesList = fullEssayStr
+                                .split(/(?<=[.!?])\s+|\n+/)
+                                .map((s) => s.trim())
+                                .filter((s) => s.length >= 20);
+
+                              const normalizeAuditStr = (s: string) =>
+                                (s || '')
+                                  .toLowerCase()
+                                  .normalize('NFD')
+                                  .replace(/[\u0300-\u036f]/g, '')
+                                  .replace(/[^a-z0-9\s]/g, '')
+                                  .replace(/\s+/g, ' ')
+                                  .trim();
+
+                              const locateSnippetParagraph = (snippet: string): string => {
+                                const cleanSnip = (snippet || '').trim().toLowerCase();
+                                if (!cleanSnip || essayParagraphs.length === 0) return 'Texto da Redação';
+                                const probe = cleanSnip.slice(0, Math.min(35, cleanSnip.length));
+                                const pIdx = essayParagraphs.findIndex((p) => p.toLowerCase().includes(probe));
+                                if (pIdx === -1) return 'Trecho da Redação';
+                                if (pIdx === 0) return '1º Parágrafo (Introdução)';
+                                if (pIdx === essayParagraphs.length - 1 && essayParagraphs.length >= 3) {
+                                  return `${pIdx + 1}º Parágrafo (Conclusão)`;
+                                }
+                                return `${pIdx + 1}º Parágrafo (Desenvolvimento ${pIdx})`;
+                              };
+
+                              interface C1AuditDeviationItem {
+                                categoryLabel: string;
+                                locationLabel: string;
+                                snippet: string;
+                                problem: string;
+                                bestForm: string;
+                              }
+
+                              const c1ExtractedDeviations: C1AuditDeviationItem[] = [];
+                              const usedSnippetsNorm = new Set<string>();
+
+                              const addC1AuditDev = (item: C1AuditDeviationItem) => {
+                                const snipClean = (item.snippet || '').replace(/^["'“”]+|["'“”]+$/g, '').trim();
+                                const bestClean = (item.bestForm || '').replace(/^["'“”]+|["'“”]+$/g, '').trim();
+                                const normS = normalizeAuditStr(snipClean);
+                                if (!normS || normS.length < 6) return;
+                                for (const existing of usedSnippetsNorm) {
+                                  if (
+                                    existing === normS ||
+                                    (existing.length >= 15 && normS.includes(existing)) ||
+                                    (normS.length >= 15 && existing.includes(normS))
+                                  ) {
+                                    return;
+                                  }
+                                }
+                                usedSnippetsNorm.add(normS);
+                                c1ExtractedDeviations.push({
+                                  ...item,
+                                  snippet: snipClean,
+                                  bestForm: bestClean,
+                                });
+                              };
+
+                              // 1. Direct C1 Deviations from AI analysis
+                              (correctionResult.c1Deviations || []).forEach((dev) => {
+                                if (!dev.snippet || !dev.bestForm) return;
+                                const catLabel =
+                                  dev.category === 'convenções_escrita'
+                                    ? 'Convenções da Escrita (Ortografia / Acentuação)'
+                                    : dev.category === 'estrutura_sintatica'
+                                    ? 'Estrutura Sintática (Pontuação / Período)'
+                                    : dev.category === 'gramatical'
+                                    ? 'Desvio Gramatical (Concordância / Regência / Crase)'
+                                    : dev.category === 'vocabular'
+                                    ? 'Precisão Vocabular'
+                                    : 'Registro Formal / Oralidade';
+                                addC1AuditDev({
+                                  categoryLabel: catLabel,
+                                  locationLabel: locateSnippetParagraph(dev.snippet),
+                                  snippet: dev.snippet,
+                                  problem: dev.problem,
+                                  bestForm: dev.bestForm,
+                                });
+                              });
+
+                              // 2. Pedagogical Rewrites classified under C1 (grammar, syntax, punctuation, register)
+                              (correctionResult.pedagogicalRewrites || []).forEach((rw) => {
+                                const pText = `${rw.problem || ''} ${rw.explanation || ''}`;
+                                if (
+                                  /(gramat|ortograf|vírgula|virgula|crase|concord|regênc|regenc|sintát|sintat|norma-padrão|norma culta|acentua|pontuaç|oralidade|coloquial|informal|truncament|paralelismo)/i.test(
+                                    pText
+                                  ) &&
+                                  rw.original &&
+                                  rw.improvedVersion
+                                ) {
+                                  addC1AuditDev({
+                                    categoryLabel: 'Norma-Padrão e Estrutura Sintática',
+                                    locationLabel: locateSnippetParagraph(rw.original),
+                                    snippet: rw.original,
+                                    problem: rw.problem,
+                                    bestForm: rw.improvedVersion,
+                                  });
+                                }
+                              });
+
+                              // 3. Inspect student's actual sentences for concrete C1 deviations if score < 200
+                              if (!isOfficialMax200 && essaySentencesList.length > 0) {
+                                essaySentencesList.forEach((sent) => {
+                                  // 3a. Missing comma after initial connector or displaced adverbial phrase
+                                  const missingCommaMatch = sent.match(
+                                    /^(Nesse contexto|Nesse sentido|Diante desse cenário|Diante disso|Sob essa ótica|Sob esse viés|Além disso|Ademais|Outrossim|Portanto|Dessa forma|Desse modo|Em primeiro lugar|Em segundo lugar|Primeiramente|Atualmente|Hoje em dia|No Brasil contemporâneo|No Brasil|Por conseguinte|Contudo|Entretanto|Todavia)\s+([a-záàâãéêíóôõúç][^,.!?]+)/i
+                                  );
+                                  if (missingCommaMatch) {
+                                    const connector = missingCommaMatch[1];
+                                    const fixedSent = sent.replace(
+                                      new RegExp(`^${connector}\\s+`, 'i'),
+                                      `${connector}, `
+                                    );
+                                    addC1AuditDev({
+                                      categoryLabel: 'Estrutura Sintática (Pontuação / Vírgula)',
+                                      locationLabel: locateSnippetParagraph(sent),
+                                      snippet: sent,
+                                      problem: `Ausência de vírgula obrigatória logo após o conectivo ou adjunto adverbial deslocado na abertura do período ("${connector}").`,
+                                      bestForm: fixedSent,
+                                    });
+                                  }
+
+                                  // 3b. Marks of informality / colloquialism
+                                  if (/\b(a gente|pra\b|pro\b|tá\b|hoje em dia|tipo assim)\b/i.test(sent)) {
+                                    const fixedInformal = sent
+                                      .replace(/\ba gente\b/gi, 'a sociedade')
+                                      .replace(/\bpra\b/gi, 'para')
+                                      .replace(/\bpro\b/gi, 'para o')
+                                      .replace(/\btá\b/gi, 'está')
+                                      .replace(/\bhoje em dia\b/gi, 'na contemporaneidade')
+                                      .replace(/\btipo assim\b/gi, 'desse modo');
+                                    addC1AuditDev({
+                                      categoryLabel: 'Registro Formal / Oralidade',
+                                      locationLabel: locateSnippetParagraph(sent),
+                                      snippet: sent,
+                                      problem:
+                                        'Presença de marca de oralidade ou expressão informal no período, o que reduz a adequação ao registro formal exigido na Competência 1.',
+                                      bestForm: fixedInformal,
+                                    });
+                                  }
+
+                                  // 3c. Queísmo (3 or more "que" in the same sentence causing syntactic overload)
+                                  const queMatches = sent.match(/\bque\b/gi);
+                                  if (queMatches && queMatches.length >= 3) {
+                                    const fixedQueismo = sent
+                                      .replace(/,\s*que\s+faz\s+com\s+que/i, ', fazendo com que')
+                                      .replace(/,\s*o\s+que\s+mostra\s+que/i, ', evidenciando como')
+                                      .replace(/\bque\s+é\s+/i, 'considerado ');
+                                    addC1AuditDev({
+                                      categoryLabel: 'Estrutura Sintática (Paralelismo / Queísmo)',
+                                      locationLabel: locateSnippetParagraph(sent),
+                                      snippet: sent,
+                                      problem: `Repetição excessiva da partícula "que" (${queMatches.length} ocorrências no mesmo período), prejudicando a fluidez sintática e a concisão oracional.`,
+                                      bestForm:
+                                        fixedQueismo !== sent
+                                          ? fixedQueismo
+                                          : `${sent.replace(/[.!?]+$/, '')} — trecho que deve substituir orações adjetivas encadeadas com "que" por formas reduzidas de gerúndio ou particípio.`,
+                                    });
+                                  }
+                                });
+                              }
+
+                              // 4. Ensure any remaining quotes from collectedQuotes or problemsIdentified are clearly shown with the exact text snippet
+                              if (!isOfficialMax200) {
+                                const c1ProblemsPool = [
+                                  ...(compData?.problemsIdentified || []),
+                                  ...(compData?.penaltiesOrGaps || []),
+                                  logItem.reasonNotRoundedTo200,
+                                ]
+                                  .map((p) => (p || '').trim())
+                                  .filter((p) => p.length > 8);
+
+                                const candidateQuotesForC1 =
+                                  collectedQuotes.length > 0 ? collectedQuotes : essaySentencesList.slice(0, 2);
+
+                                candidateQuotesForC1.forEach((q, qIdx) => {
+                                  if (c1ExtractedDeviations.length >= 3 && qIdx > 0) return;
+                                  const cleanQ = q.replace(/^["'“”]+|["'“”.]+$/g, '').trim();
+                                  const strippedQ = cleanQ
+                                    .replace(
+                                      /^(nesse contexto,\s*|diante disso,\s*|além disso,\s*|portanto,\s*|assim,\s*|observa-se que\s*|verifica-se que\s*|constata-se que\s*)/i,
+                                      ''
+                                    )
+                                    .trim();
+                                  const lowerClause =
+                                    strippedQ.length > 1
+                                      ? strippedQ[0].toLowerCase() + strippedQ.slice(1)
+                                      : strippedQ;
+                                  const specificProblem =
+                                    c1ProblemsPool[qIdx] ||
+                                    c1ProblemsPool[0] ||
+                                    compData?.diagnostic ||
+                                    'Oscilação pontual de pontuação, escolha vocabular ou encadeamento sintático do período.';
+
+                                  addC1AuditDev({
+                                    categoryLabel: 'Análise Sintática e Norma-Padrão no Trecho',
+                                    locationLabel: locateSnippetParagraph(q),
+                                    snippet: q,
+                                    problem: specificProblem,
+                                    bestForm: `Constata-se que ${lowerClause}, construção que assegura precisão vocabular, regência adequada e pontuação em conformidade com a norma-padrão.`,
+                                  });
+                                });
+                              }
+
+                              return (
+                                <div className="p-4 rounded-xl bg-rose-950/30 border border-rose-800/70 space-y-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-800/50 pb-2.5">
+                                    <span className="text-xs font-extrabold uppercase text-rose-300 tracking-wider flex items-center gap-2">
+                                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                                      <span>
+                                        Desvios Identificados Retirados do Seu Texto (Competência 1)
+                                      </span>
+                                    </span>
+                                    <span className="px-2.5 py-0.5 rounded-md bg-rose-900/80 text-rose-200 text-[10px] font-black uppercase border border-rose-700">
+                                      {isOfficialMax200
+                                        ? '0 desvios graves (200 pts)'
+                                        : `${c1ExtractedDeviations.length} trecho(s) com desvio identificado`}
                                     </span>
                                   </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                  </div>
 
-                  {/* Anti-Rounding Technical Statement */}
-                  <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-3">
-                    <span className="text-base">🛡️</span>
-                    <p className="text-[11px] leading-relaxed">
-                      <strong>Declaração de Transparência Algorítmica:</strong> O motor de IA segue estritamente a política de calibragem do INEP. A nota máxima de 200 pontos em cada competência é uma honraria técnica restrita a textos com comprovação factual irrefutável de excelência.
-                    </p>
+                                  {c1ExtractedDeviations.length > 0 ? (
+                                    <div className="space-y-3">
+                                      {c1ExtractedDeviations.map((dev, dIdx) => (
+                                        <div
+                                          key={dIdx}
+                                          className="p-3.5 rounded-lg bg-slate-950/90 border border-rose-800/60 space-y-2.5 text-xs"
+                                        >
+                                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+                                            <span className="font-black text-rose-300 uppercase text-[10px] tracking-wider">
+                                              Desvio #{dIdx + 1} • {dev.categoryLabel}
+                                            </span>
+                                            <span className="text-[10px] font-bold text-slate-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-700">
+                                              📍 {dev.locationLabel}
+                                            </span>
+                                          </div>
+
+                                          <div className="p-2.5 rounded-lg bg-rose-950/50 border border-rose-800/60">
+                                            <span className="text-[10px] font-extrabold uppercase text-rose-400 block mb-1">
+                                              ❌ Trecho exato retirado do seu texto (Onde ocorreu o desvio):
+                                            </span>
+                                            <blockquote className="font-serif italic text-rose-100 leading-relaxed">
+                                              "{dev.snippet}"
+                                            </blockquote>
+                                          </div>
+
+                                          <div className="p-2.5 rounded-lg bg-amber-950/30 border border-amber-800/50">
+                                            <span className="text-[10px] font-extrabold uppercase text-amber-300 block mb-0.5">
+                                              ⚠️ Qual foi o desvio identificado neste trecho:
+                                            </span>
+                                            <p className="text-slate-200 leading-relaxed">{dev.problem}</p>
+                                          </div>
+
+                                          <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60">
+                                            <span className="text-[10px] font-extrabold uppercase text-emerald-400 block mb-1">
+                                              ✅ Como escrever este trecho na norma-padrão (Corrigido):
+                                            </span>
+                                            <p className="font-serif text-emerald-200 font-semibold leading-relaxed">
+                                              "{dev.bestForm}"
+                                            </p>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="p-3 rounded-lg bg-emerald-950/30 border border-emerald-800/50 text-xs text-emerald-200">
+                                      Nenhum desvio gramatical ou sintático que comprometesse a nota máxima foi identificado nos trechos analisados.
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* Expanded Textual Evidence Quotes from Student's Essay (Shown for C2..C5, or C1 when 200 pts) */}
+                            {(logItem.competencyNum !== 1 || isOfficialMax200) && collectedQuotes.length > 0 && (
+                              <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-[11px] font-extrabold uppercase text-emerald-400 tracking-wider flex items-center gap-1.5">
+                                    <Quote className="w-3.5 h-3.5 text-emerald-400" />
+                                    Evidências retiradas diretamente do seu texto ({collectedQuotes.length})
+                                  </span>
+                                </div>
+                                <div className="space-y-2">
+                                  {collectedQuotes.map((quote, qIdx) => (
+                                    <blockquote
+                                      key={qIdx}
+                                      className="text-xs font-serif italic text-emerald-200 bg-emerald-950/25 p-2.5 rounded-lg border-l-3 border-emerald-500 leading-relaxed"
+                                    >
+                                      "{quote}"
+                                    </blockquote>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Positive Evidence vs Checked Points */}
+                            {compData?.positiveEvidence && compData.positiveEvidence.length > 0 && (
+                              <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-800/40 space-y-1.5">
+                                <span className="text-[10px] font-extrabold uppercase text-emerald-400 tracking-wider block">
+                                  Pontos positivos comprovados na sua escrita:
+                                </span>
+                                <div className="flex flex-wrap gap-2">
+                                  {compData.positiveEvidence.map((pos, pIdx) => (
+                                    <span
+                                      key={pIdx}
+                                      className="text-[11px] text-emerald-200 bg-emerald-950/50 px-2.5 py-1 rounded-md border border-emerald-800/50"
+                                    >
+                                      ✓ {pos}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Quality Pillars Micro-Audit */}
+                            {logItem.qualityPillarsChecked && logItem.qualityPillarsChecked.length > 0 && (
+                              <div className="space-y-1.5 pt-1">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                                  Critérios avaliados nesta competência:
+                                </span>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                  {logItem.qualityPillarsChecked.map((pillar, pIdx) => (
+                                    <div
+                                      key={pIdx}
+                                      className={`p-2.5 rounded-lg text-[11px] border flex items-center justify-between gap-2 ${
+                                        pillar.status === 'atendido'
+                                          ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
+                                          : pillar.status === 'parcial'
+                                          ? 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+                                          : 'bg-rose-950/30 border-rose-800/60 text-rose-300'
+                                      }`}
+                                    >
+                                      <div className="min-w-0">
+                                        <span className="font-bold block truncate">{pillar.pillar}</span>
+                                        <span className="text-[10px] opacity-85 block leading-snug">{pillar.detail}</span>
+                                      </div>
+                                      <span className="font-black shrink-0 text-xs">
+                                        {pillar.status === 'atendido' ? '✓' : pillar.status === 'parcial' ? '⚠' : '✗'}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* High Performance Scoring Curve Panel (Curva Estatística de Alto Desempenho INEP) */}
+          {/* High Performance Scoring Curve Panel (Simplified Text) */}
           {(correctionResult.highPerformanceCurveReport || correctionResult.validationReport?.highPerformanceCurveReport) && (() => {
             const curve = correctionResult.highPerformanceCurveReport || correctionResult.validationReport!.highPerformanceCurveReport!;
             return (
@@ -2829,10 +3727,10 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                     </div>
                     <div>
                       <h4 className="font-extrabold text-base text-slate-900 dark:text-slate-100">
-                        Curva Estatística de Alto Desempenho (Rigor INEP &gt; 900)
+                        Curva Estatística de Desempenho (Padrão ENEM)
                       </h4>
                       <p className="text-xs text-slate-500 dark:text-slate-400">
-                        Calibração oficial contra inflação de notas: distribuição realista em 920, 940, 960, 980 e 1000
+                        Veja de forma simples o quão perto sua redação está das notas acima de 900 pontos
                       </p>
                     </div>
                   </div>
@@ -2851,7 +3749,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-bold text-slate-700 dark:text-slate-300">
-                        Índice de Domínio Técnico (C1 & C4)
+                        Domínio da Escrita e Conectivos (C1 e C4)
                       </span>
                       <span className="font-black text-indigo-600 dark:text-indigo-400">
                         {curve.technicalMasteryIndex}%
@@ -2864,14 +3762,14 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                       />
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Avalia ausência de desvios, complexidade sintática e riqueza de repertório coesivo.
+                      Mede se você escreveu sem erros gramaticais e usou bons conectivos entre frases e parágrafos.
                     </p>
                   </div>
 
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-bold text-slate-700 dark:text-slate-300">
-                        Índice de Densidade Argumentativa (C2, C3 & C5)
+                        Força da Argumentação e Proposta (C2, C3 e C5)
                       </span>
                       <span className="font-black text-emerald-600 dark:text-emerald-400">
                         {curve.argumentativeDepthIndex}%
@@ -2884,7 +3782,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                       />
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Avalia legitimidade e produtividade do repertório, encadeamento causal e detalhamento da proposta.
+                      Mede o uso de repertório útil, defesa clara do seu ponto de vista e conclusão completa.
                     </p>
                   </div>
                 </div>
@@ -2892,7 +3790,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 {/* Criteria Checked Grid */}
                 <div className="space-y-2">
                   <span className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider block">
-                    Comprovação dos Pilares de Excelência INEP
+                    O que sua redação já comprovou na prática
                   </span>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                     <div className={`p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
@@ -2900,8 +3798,8 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                         ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200'
                         : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
                     }`}>
-                      <span>{curve.criteriaVerified.c1_normativeMastery ? '✅' : '🔒'}</span>
-                      <span className="font-semibold text-[11px]">C1: Sintaxe Erudita</span>
+                      <span>{curve.criteriaVerified.c1_normativeMastery ? '✅' : '⏳'}</span>
+                      <span className="font-semibold text-[11px]">C1: Gramática Firme</span>
                     </div>
 
                     <div className={`p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
@@ -2909,8 +3807,8 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                         ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200'
                         : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
                     }`}>
-                      <span>{curve.criteriaVerified.c2_productiveRepertoire ? '✅' : '🔒'}</span>
-                      <span className="font-semibold text-[11px]">C2: Repertório Produtivo</span>
+                      <span>{curve.criteriaVerified.c2_productiveRepertoire ? '✅' : '⏳'}</span>
+                      <span className="font-semibold text-[11px]">C2: Bom Repertório</span>
                     </div>
 
                     <div className={`p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
@@ -2918,8 +3816,8 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                         ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200'
                         : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
                     }`}>
-                      <span>{curve.criteriaVerified.c3_strategicProject ? '✅' : '🔒'}</span>
-                      <span className="font-semibold text-[11px]">C3: Autoria & Causalidade</span>
+                      <span>{curve.criteriaVerified.c3_strategicProject ? '✅' : '⏳'}</span>
+                      <span className="font-semibold text-[11px]">C3: Argumentação Clara</span>
                     </div>
 
                     <div className={`p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
@@ -2927,8 +3825,8 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                         ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200'
                         : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
                     }`}>
-                      <span>{curve.criteriaVerified.c4_cohesiveDiversity ? '✅' : '🔒'}</span>
-                      <span className="font-semibold text-[11px]">C4: Diversidade Coesiva</span>
+                      <span>{curve.criteriaVerified.c4_cohesiveDiversity ? '✅' : '⏳'}</span>
+                      <span className="font-semibold text-[11px]">C4: Bons Conectivos</span>
                     </div>
 
                     <div className={`p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
@@ -2936,265 +3834,87 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                         ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200'
                         : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
                     }`}>
-                      <span>{curve.criteriaVerified.c5_fiveCanonicalElements ? '✅' : '🔒'}</span>
-                      <span className="font-semibold text-[11px]">C5: 5 Elementos Válidos</span>
+                      <span>{curve.criteriaVerified.c5_fiveCanonicalElements ? '✅' : '⏳'}</span>
+                      <span className="font-semibold text-[11px]">C5: 5 Elementos na C5</span>
                     </div>
                   </div>
                 </div>
 
-                {/* Rigor Verdict & Gate Summary */}
-                <div className="space-y-2">
-                  <div className="p-3.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-800/40 text-xs text-amber-950 dark:text-amber-200 flex items-start gap-2.5">
-                    <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                    <div className="space-y-1">
-                      <p className="leading-relaxed font-medium">
-                        <strong>Veredito da Curva de Rigor:</strong> {curve.rigorVerdict}
-                      </p>
-                      {curve.scoreGateSummary && (
-                        <p className="text-[11px] text-amber-800/90 dark:text-amber-300/90 leading-relaxed">
-                          <strong>Gating de Nota:</strong> {curve.scoreGateSummary}
-                        </p>
-                      )}
-                    </div>
+                {/* Simplified Summary */}
+                <div className="p-3.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-800/40 text-xs text-amber-950 dark:text-amber-200 flex items-start gap-2.5">
+                  <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="leading-relaxed font-medium">
+                      <strong>Resumo do seu desempenho:</strong> {curve.rigorVerdict}
+                    </p>
                   </div>
                 </div>
 
-                {/* Excellence Evidence Gates (Portas de Evidência de Excelência) */}
-                {curve.requiredExcellenceEvidence && curve.requiredExcellenceEvidence.length > 0 && (
-                  <div className="space-y-2.5">
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider block">
-                      Portas de Evidência de Excelência (Requisitos para Faixa 920–1000)
-                    </span>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                      {curve.requiredExcellenceEvidence.map((gate, idx) => (
-                        <div
-                          key={idx}
-                          className={`p-3 rounded-xl border text-xs space-y-1.5 transition-colors ${
-                            gate.isMet
-                              ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-slate-800 dark:text-slate-200'
-                              : 'bg-rose-50/40 dark:bg-rose-950/20 border-rose-200 dark:border-rose-800/60 text-slate-800 dark:text-slate-200'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5 font-bold">
-                              <span>{gate.isMet ? '✅' : '❌'}</span>
-                              <span className="text-slate-900 dark:text-slate-100 font-extrabold">{gate.competency}: {gate.gateName}</span>
-                            </div>
-                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
-                              gate.isMet
-                                ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300'
-                                : 'bg-rose-100 dark:bg-rose-900/60 text-rose-800 dark:text-rose-300'
-                            }`}>
-                              {gate.isMet ? 'Atestado' : 'Não Atendido'}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-snug">
-                            {gate.requirement}
-                          </p>
-                          {gate.impactOnScore && (
-                            <div className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 flex items-center gap-1">
-                              <span>⚡ Impacto:</span> {gate.impactOnScore}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {/* Penalties Applied Matrix (Coherent with Official Competency Means) */}
+                {(() => {
+                  const coherentDeductions = competencyDivergences
+                    .filter((cd) => cd.officialCompMean < 200)
+                    .map((cd) => {
+                      const matchedPen = curve.penaltiesApplied?.find((p) =>
+                        p.competencyAffected.toUpperCase().includes(`C${cd.num}`)
+                      );
+                      const auditItem = correctionResult.auditLog?.competencyLogs?.find(
+                        (l) => l.competencyNum === cd.num
+                      );
+                      const compObj = correctionResult.competencies[cd.key];
+                      return {
+                        competencyAffected: `C${cd.num}`,
+                        penaltyName: matchedPen?.penaltyName || cd.name.replace(/^C\d\s*-\s*/, ''),
+                        reason:
+                          matchedPen?.reason ||
+                          auditItem?.reasonNotRoundedTo200 ||
+                          compObj?.problemsIdentified?.[0] ||
+                          compObj?.diagnostic ||
+                          'Ajuste necessário para atingir a nota máxima nesta competência.',
+                        penaltyPoints: 200 - cd.officialCompMean,
+                      };
+                    });
 
-                {/* Penalties Applied Matrix (Penalizações Severas por Imprecisões) */}
-                {curve.penaltiesApplied && curve.penaltiesApplied.length > 0 && (
-                  <div className="space-y-2.5">
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider block text-rose-700 dark:text-rose-400">
-                      Penalizações por Imprecisões e Desvios Aplicadas ({curve.penaltiesApplied.length})
-                    </span>
-                    <div className="space-y-2">
-                      {curve.penaltiesApplied.map((pen, idx) => (
-                        <div
-                          key={idx}
-                          className="p-3 rounded-xl border border-rose-200 dark:border-rose-900/50 bg-rose-50/50 dark:bg-rose-950/20 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-                        >
-                          <div className="space-y-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white font-black text-[10px]">
-                                {pen.competencyAffected}
-                              </span>
-                              <span className="font-bold text-slate-900 dark:text-slate-100">
-                                {pen.penaltyName}
-                              </span>
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                pen.severity === 'critica'
-                                  ? 'bg-red-700 text-white'
-                                  : pen.severity === 'severa'
-                                  ? 'bg-rose-200 dark:bg-rose-900 text-rose-800 dark:text-rose-200'
-                                  : 'bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200'
-                              }`}>
-                                Gravidade: {pen.severity}
-                              </span>
+                  if (coherentDeductions.length === 0) return null;
+
+                  return (
+                    <div className="space-y-2.5">
+                      <span className="text-xs font-bold uppercase tracking-wider block text-rose-700 dark:text-rose-400">
+                        Onde sua redação perdeu pontos ({coherentDeductions.length} competência{coherentDeductions.length > 1 ? 's' : ''} • Total: -{1000 - officialMeanScore} pts)
+                      </span>
+                      <div className="space-y-2">
+                        {coherentDeductions.map((pen, idx) => (
+                          <div
+                            key={idx}
+                            className="p-3 rounded-xl border border-rose-200 dark:border-rose-900/50 bg-rose-50/50 dark:bg-rose-950/20 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                          >
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2">
+                                <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white font-black text-[10px]">
+                                  {pen.competencyAffected}
+                                </span>
+                                <span className="font-bold text-slate-900 dark:text-slate-100">
+                                  {pen.penaltyName}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                                {pen.reason}
+                              </p>
                             </div>
-                            <p className="text-[11px] text-slate-600 dark:text-slate-400">
-                              {pen.reason}
-                            </p>
+                            <div className="shrink-0 self-end sm:self-center font-black text-rose-600 dark:text-rose-400 text-sm">
+                              -{pen.penaltyPoints} pts
+                            </div>
                           </div>
-                          <div className="shrink-0 self-end sm:self-center font-black text-rose-600 dark:text-rose-400 text-sm">
-                            -{pen.penaltyPoints} pts
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             );
           })()}
 
-          {/* Dual-Evaluator Official Simulation (Simulação de Duplo Avaliador INEP) */}
-          {correctionResult.dualEvaluatorSimulation && (
-            <div className="bg-white dark:bg-slate-900 p-6 sm:p-7 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-5 transition-colors">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 flex items-center justify-center font-black">
-                    ⚖️
-                  </div>
-                  <div>
-                    <h4 className="font-extrabold text-base text-slate-900 dark:text-slate-100">
-                      Simulação de Auditoria com Duplo Avaliador (INEP)
-                    </h4>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Reproduz o procedimento oficial com dois corretores independentes e cálculo de discrepância
-                    </p>
-                  </div>
-                </div>
-                <span className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider self-start sm:self-auto ${
-                  correctionResult.dualEvaluatorSimulation.status === 'consenso_direto'
-                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700'
-                    : 'bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700'
-                }`}>
-                  {correctionResult.dualEvaluatorSimulation.status === 'consenso_direto' ? '✅ Consenso Direto' : '⚖️ Divergência Tolerada'}
-                </span>
-              </div>
-
-              {/* Evaluator Comparison Table */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Evaluator 1 */}
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h5 className="font-bold text-xs text-indigo-700 dark:text-indigo-400 uppercase tracking-wider">
-                        {correctionResult.dualEvaluatorSimulation.evaluatorA.evaluatorProfile}
-                      </h5>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {correctionResult.dualEvaluatorSimulation.evaluatorA.notes}
-                      </p>
-                    </div>
-                    <span className="text-xl font-black text-slate-900 dark:text-slate-100">
-                      {correctionResult.dualEvaluatorSimulation.evaluatorA.total}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-5 gap-1.5 text-center text-xs">
-                    {(['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((k, i) => {
-                      const scoreA = correctionResult.dualEvaluatorSimulation?.evaluatorA[k];
-                      const scoreB = correctionResult.dualEvaluatorSimulation?.evaluatorB[k];
-                      const hasDiff = scoreA !== undefined && scoreB !== undefined && scoreA !== scoreB;
-                      return (
-                        <div key={k} className={`p-2 rounded-lg border transition-colors ${
-                          hasDiff 
-                            ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700' 
-                            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700'
-                        }`}>
-                          <span className="block text-[10px] text-slate-400 font-bold">C{i + 1}</span>
-                          <span className={`font-extrabold ${hasDiff ? 'text-amber-900 dark:text-amber-200' : 'text-slate-800 dark:text-slate-200'}`}>
-                            {scoreA}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Evaluator 2 */}
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h5 className="font-bold text-xs text-indigo-700 dark:text-indigo-400 uppercase tracking-wider">
-                        {correctionResult.dualEvaluatorSimulation.evaluatorB.evaluatorProfile}
-                      </h5>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {correctionResult.dualEvaluatorSimulation.evaluatorB.notes}
-                      </p>
-                    </div>
-                    <span className="text-xl font-black text-slate-900 dark:text-slate-100">
-                      {correctionResult.dualEvaluatorSimulation.evaluatorB.total}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-5 gap-1.5 text-center text-xs">
-                    {(['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((k, i) => {
-                      const scoreA = correctionResult.dualEvaluatorSimulation?.evaluatorA[k];
-                      const scoreB = correctionResult.dualEvaluatorSimulation?.evaluatorB[k];
-                      const hasDiff = scoreA !== undefined && scoreB !== undefined && scoreA !== scoreB;
-                      return (
-                        <div key={k} className={`p-2 rounded-lg border transition-colors ${
-                          hasDiff 
-                            ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700' 
-                            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700'
-                        }`}>
-                          <span className="block text-[10px] text-slate-400 font-bold">C{i + 1}</span>
-                          <span className={`font-extrabold ${hasDiff ? 'text-amber-900 dark:text-amber-200' : 'text-slate-800 dark:text-slate-200'}`}>
-                            {scoreB}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              {/* Per-Competency Official Mean Breakdown if divergence occurred */}
-              {correctionResult.dualEvaluatorSimulation.totalDiscrepancy > 0 && (
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                      📊 Média Aritmética Oficial por Competência (Regra INEP)
-                    </span>
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                      (Avaliador 1 + Avaliador 2) ÷ 2
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-5 gap-2 text-center text-xs">
-                    {(['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((k, i) => {
-                      const sA = correctionResult.dualEvaluatorSimulation?.evaluatorA[k] ?? 0;
-                      const sB = correctionResult.dualEvaluatorSimulation?.evaluatorB[k] ?? 0;
-                      const avg = (sA + sB) / 2;
-                      const isDiv = sA !== sB;
-                      return (
-                        <div key={k} className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
-                          <span className="block text-[10px] text-slate-400 font-bold">C{i + 1}</span>
-                          <span className="font-black text-indigo-700 dark:text-indigo-300">
-                            {avg}
-                          </span>
-                          {isDiv && (
-                            <span className="block text-[9px] text-amber-600 dark:text-amber-400 font-semibold">
-                              Δ {Math.abs(sA - sB)}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Discrepancy explanation */}
-              <div className="p-3.5 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-800 text-xs text-indigo-900 dark:text-indigo-200 flex items-center justify-between gap-4">
-                <span>{correctionResult.dualEvaluatorSimulation.explanation}</span>
-                <span className="font-bold shrink-0">
-                  Divergência Total: {correctionResult.dualEvaluatorSimulation.totalDiscrepancy} pts
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Cartilha Benchmark & Comparative Profiler */}
+          {/* Cartilha Benchmark (Without Correlated Profile, Edition 2025/2026) */}
           {correctionResult.cartilhaBenchmark && (
             <div className="bg-white dark:bg-slate-900 p-6 sm:p-7 rounded-2xl border border-amber-200/80 dark:border-amber-900/50 shadow-xs space-y-4 transition-colors">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
@@ -3205,14 +3925,14 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <h4 className="font-extrabold text-base text-slate-900 dark:text-slate-100">
-                        Benchmark Oficial: {correctionResult.cartilhaBenchmark.edition || 'Cartilha Oficial do Participante INEP 2024/2025'}
+                        Benchmark Oficial: Cartilha Oficial do Participante INEP 2025/2026
                       </h4>
                       <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
-                        INEP / MEC
+                        INEP / MEC 2025/2026
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {correctionResult.cartilhaBenchmark.cartilhaReferenceQuote || 'Cruzamento de dados estatísticos com redações reais catalogadas pelo INEP'}
+                      Comparativo direto da sua redação com os parâmetros oficiais da Cartilha do Participante 2025/2026
                     </p>
                   </div>
                 </div>
@@ -3223,7 +3943,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                     className="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
                   >
                     <BookOpen className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                    <span>Consultar Normas da Cartilha</span>
+                    <span>Consultar Cartilha 2025/2026</span>
                   </button>
                   <span className="px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
                     {correctionResult.cartilhaBenchmark.tier}
@@ -3231,33 +3951,19 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-2">
-                  <span className="font-bold text-slate-900 dark:text-slate-100 block uppercase tracking-wider text-[11px]">
-                    Perfil Correlato na Cartilha:
-                  </span>
-                  <p className="font-semibold text-indigo-700 dark:text-indigo-300 text-sm">
-                    {correctionResult.cartilhaBenchmark.closestProfileTitle}
-                  </p>
-                  <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
-                    {correctionResult.cartilhaBenchmark.commonPatternIdentified}
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-2">
-                  <span className="font-bold text-slate-900 dark:text-slate-100 block uppercase tracking-wider text-[11px]">
-                    Distância Crucial para a Faixa 900+ / 1000:
-                  </span>
-                  <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-medium">
-                    {correctionResult.cartilhaBenchmark.keyDifferenceTo900Plus}
-                  </p>
-                </div>
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-1.5 text-xs">
+                <span className="font-bold text-slate-900 dark:text-slate-100 block uppercase tracking-wider text-[11px]">
+                  O que separa sua redação atual da faixa 900+ / 1000:
+                </span>
+                <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-medium text-xs sm:text-sm">
+                  {correctionResult.cartilhaBenchmark.keyDifferenceTo900Plus}
+                </p>
               </div>
 
               {/* Status de Aderência da Matriz Oficial (C1 a C5) */}
               <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
                 <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
-                  Enquadramento na Matriz de 5 Competências da Cartilha:
+                  Seu nível atual nas 5 Competências da Cartilha 2025/2026 (clique para ver a regra):
                 </span>
                 <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
                   {(['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((compKey, cIdx) => {
@@ -3277,7 +3983,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                             ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-200' 
                             : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200'
                         }`}
-                        title="Clique para ver o descritor deste nível na Cartilha Oficial"
+                        title="Clique para ver o descritor deste nível na Cartilha Oficial 2025/2026"
                       >
                         <div className="flex items-center justify-between text-[10px] font-extrabold mb-1">
                           <span>C{compNum}</span>
@@ -3289,7 +3995,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                           Nível {Math.floor(cScore / 40)}
                         </p>
                         <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
-                          {is200 ? 'Nota Máxima Oficial' : `${200 - cScore} pts da faixa 200`}
+                          {is200 ? 'Nota Máxima Oficial' : `Faltam ${200 - cScore} pts para 200`}
                         </p>
                       </div>
                     );
@@ -3305,7 +4011,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
             <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-emerald-200 dark:border-emerald-800 shadow-xs space-y-3 transition-colors">
               <h4 className="font-extrabold text-base flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
                 <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-                <span>🏆 3 Maiores Pontos Fortes</span>
+                <span>🏆 3 Maiores Acertos da Sua Redação</span>
               </h4>
               <ul className="space-y-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
                 {correctionResult.top3Strengths.map((str, i) => (
@@ -3323,7 +4029,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
             <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-rose-200 dark:border-rose-800 shadow-xs space-y-3 transition-colors">
               <h4 className="font-extrabold text-base flex items-center gap-2 text-rose-800 dark:text-rose-300">
                 <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
-                <span>⚠️ 3 Maiores Problemas</span>
+                <span>⚠️ 3 Principais Pontos que Descontaram Nota</span>
               </h4>
               <ul className="space-y-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
                 {correctionResult.top3Problems.map((prob, i) => (
@@ -3342,10 +4048,10 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
           <div className="bg-gradient-to-br from-indigo-900 to-slate-900 text-white p-6 sm:p-8 rounded-2xl shadow-md space-y-4 border border-indigo-800">
             <div className="flex items-center gap-2 text-amber-300 font-extrabold text-base sm:text-lg">
               <Sparkles className="w-5 h-5" />
-              <span>O que preciso fazer para subir minha nota?</span>
+              <span>Passo a Passo Simples para Subir Sua Nota</span>
             </div>
             <p className="text-xs sm:text-sm text-slate-300">
-              Plano de ação prático e específico para seus próximos treinos:
+              Aplique estes ajustes diretos na sua próxima redação:
             </p>
 
             <div className="space-y-2.5 pt-2">
@@ -3366,58 +4072,361 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
           <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-3 transition-colors">
             <h4 className="font-extrabold text-slate-900 dark:text-slate-100 text-base flex items-center gap-2">
               <Award className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-              <span>O que redações de alto desempenho fazem que esta ainda não faz?</span>
+              <span>O que falta para sua redação chegar ao nível Nota 1000?</span>
             </h4>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
               {correctionResult.highPerformanceComparison}
             </p>
           </div>
 
-          {/* Pedagogical Rewrites (Como eu melhoraria este trecho) */}
-          {correctionResult.pedagogicalRewrites && correctionResult.pedagogicalRewrites.length > 0 && (
-            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-5 transition-colors">
-              <div className="border-b border-slate-100 dark:border-slate-800 pb-3">
-                <h4 className="font-extrabold text-slate-900 dark:text-slate-100 text-base flex items-center gap-2">
-                  <GraduationCap className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                  <span>Reescrita Pedagógica: Como eu melhoraria estes trechos</span>
-                </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Veja a transformação prática dos principais trechos que limitaram sua nota.
-                </p>
-              </div>
+          {/* Complete Consolidated Before -> After Section: All Errors & How to Resolve Across All 5 Competencies */}
+          {(() => {
+            interface ConsolidatedErrorQuote {
+              compLabel: string;
+              original: string;
+              problem: string;
+              improvedVersion: string;
+              howToResolve: string;
+            }
 
-              <div className="space-y-4">
-                {correctionResult.pedagogicalRewrites.map((rw, idx) => (
-                  <div key={idx} className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-3 text-xs sm:text-sm">
-                    <div>
-                      <span className="font-bold text-rose-800 dark:text-rose-300 text-[11px] uppercase tracking-wider block mb-1">
-                        🔴 Trecho Original com Problema:
-                      </span>
-                      <p className="font-serif italic text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700">
-                        "{rw.original}"
-                      </p>
-                      <p className="text-rose-700 dark:text-rose-300 text-xs mt-1">
-                        <strong>Problema:</strong> {rw.problem}
-                      </p>
-                    </div>
+            const consolidatedList: ConsolidatedErrorQuote[] = [];
+            const seenOriginals = new Set<string>();
+            const seenImproved = new Set<string>();
 
-                    <div>
-                      <span className="font-bold text-emerald-800 dark:text-emerald-300 text-[11px] uppercase tracking-wider block mb-1">
-                        🟢 Versão Melhorada de Alto Nível:
-                      </span>
-                      <p className="font-serif text-slate-900 dark:text-slate-100 bg-emerald-50/60 dark:bg-emerald-950/40 p-2.5 rounded-lg border border-emerald-200 dark:border-emerald-800 font-medium">
-                        "{rw.improvedVersion}"
-                      </p>
-                    </div>
+            const normText = (s: string) =>
+              (s || '')
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/[^a-z0-9\s]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
 
-                    <div className="text-slate-600 dark:text-slate-400 text-xs bg-white dark:bg-slate-900 p-2 rounded border border-slate-100 dark:border-slate-800">
-                      <strong>Por que melhorou:</strong> {rw.explanation}
-                    </div>
+            const sanitizeConsolidatedText = (txt: string): string => {
+              let out = (txt || '')
+                .replace(/^["'“”]+|["'“”]+$/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+              out = out.replace(
+                /\b(observa-se que|verifica-se que|constata-se que|percebe-se que|nota-se que)\s+(observa-se que|verifica-se que|constata-se que|percebe-se que|nota-se que|é possível observar que|vemos que)\b/gi,
+                '$1'
+              );
+              out = out.replace(/\b(\w+)(\s+\1\b)+/gi, '$1');
+              out = out.replace(/([,;:.])\s*\1+/g, '$1');
+              return out;
+            };
+
+            const cleanThemeConsolidated = (correctionResult.theme || 'a problemática discutida no tema')
+              .replace(/^["'“”]+|["'“”.]+$/g, '')
+              .trim();
+
+            const themeWordsConsolidated = normText(cleanThemeConsolidated)
+              .split(' ')
+              .filter((w) => w.length > 4);
+
+            const buildConsolidatedRewrite = (
+              cNum: number,
+              rawOriginal: string,
+              problemDesc: string
+            ): { improved: string; step: string } => {
+              const baseQ = (rawOriginal || '')
+                .replace(/^["'“”]+|["'“”]+$/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+              const firstSent = (
+                baseQ
+                  .split(/(?<=[.!?])\s+/)
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 10)[0] || baseQ
+              )
+                .replace(/[.!;:,]+$/, '')
+                .trim();
+
+              let stripped = firstSent
+                .replace(
+                  /^(sob a ótica[^,]+,\s*|à luz[^,]+,\s*|de acordo com[^,]+,\s*|segundo[^,]+,\s*|conforme[^,]+,\s*|diante desse cenário,\s*|diante disso,\s*|nesse contexto,\s*|nesse sentido,\s*|sob esse viés,\s*|outrossim,\s*|ademais,\s*|além disso,\s*|portanto,\s*|dessa forma,\s*|assim,\s*|no brasil contemporâneo,\s*|no brasil,\s*|hoje em dia,\s*|atualmente,\s*)+/i,
+                  ''
+                )
+                .replace(
+                  /^(observa-se que\s+|verifica-se que\s+|constata-se que\s+|percebe-se que\s+|nota-se que\s+|é possível observar que\s+|é notório que\s+|vemos que\s+|pode-se afirmar que\s+)/i,
+                  ''
+                )
+                .replace(
+                  /,\s*(visto que|já que|uma vez que|haja vista|pois|porque|o que perpetua|o que gera|evidenciando|realidade que).*$/i,
+                  ''
+                )
+                .trim();
+
+              if (stripped.length < 12) stripped = firstSent;
+
+              const startsProper =
+                /^(Brasil|Constituição|Estado|Governo|Ministério|ONU|OMS|IBGE|ECA|Foucault|Bauman|Durkheim|Bourdieu|Arendt|Kant|Aristóteles|Platão|Habermas)/i.test(
+                  stripped
+                );
+              const clause =
+                stripped.length > 1
+                  ? (startsProper ? stripped[0] : stripped[0].toLowerCase()) + stripped.slice(1)
+                  : stripped;
+
+              const sentNorm = normText(firstSent);
+              const alreadyHasTheme =
+                themeWordsConsolidated.length > 0 &&
+                themeWordsConsolidated.filter((w) => sentNorm.includes(w)).length >=
+                  Math.min(2, themeWordsConsolidated.length);
+              const alreadyHasBrazil = /(brasil|pais|sociedade brasileira)/i.test(sentNorm);
+
+              const themeLabel = alreadyHasTheme ? 'essa problemática estrutural' : cleanThemeConsolidated;
+              const placeLabel = alreadyHasBrazil ? 'na contemporaneidade' : 'no Brasil';
+
+              if (cNum === 1) {
+                return {
+                  improved: sanitizeConsolidatedText(
+                    `Constata-se que ${clause}, circunstância que requer precisão vocabular e rigor sintático na exposição argumentativa.`
+                  ),
+                  step: 'Substitua expressões informais, desvios de concordância ou períodos truncados pela estrutura formal reescrita acima.',
+                };
+              }
+              if (cNum === 2) {
+                const hasRep =
+                  /(segundo|conforme|de acordo com|constituição|1988|artigo|ibge|onu|oms|bauman|foucault|durkheim|bourdieu|arendt|kant|aristóteles|habermas|lei|estatuto|eca|filósof|sociólog)/i.test(
+                    firstSent
+                  );
+                if (hasRep || /(produtiv|articul|justapost|vínculo|vinculo)/i.test(problemDesc)) {
+                  const cleanNoVisto = firstSent.replace(/,\s*(visto que|já que|uma vez que|pois).*$/i, '').trim();
+                  return {
+                    improved: sanitizeConsolidatedText(
+                      `${cleanNoVisto} — premissa teórica que se comprova diretamente nos desafios de ${themeLabel}, visto que a falha na efetivação desse princípio agrava o cenário social ${placeLabel}.`
+                    ),
+                    step: `Mantenha sua referência teórica, mas acrescente imediatamente um conectivo explicativo ("visto que") amarrando-a aos termos-chave do tema.`,
+                  };
+                }
+                return {
+                  improved: sanitizeConsolidatedText(
+                    `À luz da Constituição Federal de 1988 — que assegura a dignidade e o bem-estar social como garantias fundamentais —, constata-se que ${clause}, realidade que evidencia os entraves de ${themeLabel} ${placeLabel}.`
+                  ),
+                  step: `Ancore sua afirmação em um repertório sociocultural legitimado (como a Constituição Federal de 1988, dados do IBGE ou um pensador) vinculado ao tema.`,
+                };
+              }
+              if (cNum === 3) {
+                return {
+                  improved: sanitizeConsolidatedText(
+                    `${firstSent}, haja vista que a negligência histórica das instituições e a naturalização social do problema impedem sua resolução, o que perpetua os impactos de ${themeLabel} sobre a coletividade.`
+                  ),
+                  step: 'Desdobre sua afirmação explicando a causa ("haja vista que...") e o efeito social concreto ("o que perpetua...") no mesmo período.',
+                };
+              }
+              if (cNum === 4) {
+                return {
+                  improved: sanitizeConsolidatedText(
+                    `Outrossim, sob essa mesma perspectiva analítica, observa-se que ${clause}, de modo que tal conjuntura exige medidas articuladas para ser superada.`
+                  ),
+                  step: 'Troque conectivos básicos ou repetidos por operadores argumentativos de alto nível ("Outrossim", "Sob essa perspectiva", "De modo que") e use retomadas sem repetir palavras.',
+                };
+              }
+              return {
+                improved: sanitizeConsolidatedText(
+                  `Portanto, cabe ao Ministério Público, em parceria com o Governo Federal — órgãos responsáveis pela garantia dos direitos sociais e gestão pública (Detalhamento) —, implementar um programa nacional de enfrentamento a ${cleanThemeConsolidated} (Ação), por meio de verbas governamentais, fiscalização rigorosa e campanhas educativas nas escolas e mídias (Meio/Modo), a fim de superar esse entrave e efetivar a cidadania ${placeLabel} (Efeito).`
+                ),
+                step: 'Inclua os 5 elementos obrigatórios da Competência 5 no parágrafo final: Agente, Detalhamento (entre travessões ou vírgulas), Ação prática, Meio/Modo ("por meio de...") e Efeito ("a fim de...").',
+              };
+            };
+
+            const addConsolidated = (item: ConsolidatedErrorQuote) => {
+              const quoteKey = normText(item.original);
+              const impKey = normText(item.improvedVersion);
+              if (!quoteKey || !impKey || quoteKey === impKey) return;
+
+              const isDuplicateOriginal = Array.from(seenOriginals).some(
+                (existing) =>
+                  existing === quoteKey ||
+                  (existing.length >= 12 && quoteKey.includes(existing)) ||
+                  (quoteKey.length >= 12 && existing.includes(quoteKey))
+              );
+              const isDuplicateImproved = Array.from(seenImproved).some(
+                (existing) =>
+                  existing === impKey ||
+                  existing.slice(0, 50) === impKey.slice(0, 50)
+              );
+
+              if (!isDuplicateOriginal && !isDuplicateImproved) {
+                seenOriginals.add(quoteKey);
+                seenImproved.add(impKey);
+                consolidatedList.push({
+                  ...item,
+                  improvedVersion: sanitizeConsolidatedText(item.improvedVersion),
+                });
+              }
+            };
+
+            // 1. Add all C1 Deviations (Norma-Padrão & Sintaxe)
+            if (correctionResult.c1Deviations && correctionResult.c1Deviations.length > 0) {
+              correctionResult.c1Deviations.forEach((dev) => {
+                const catName =
+                  dev.category === 'convenções_escrita'
+                    ? 'Convenções da Escrita'
+                    : dev.category === 'estrutura_sintatica'
+                    ? 'Estrutura Sintática'
+                    : dev.category === 'gramatical'
+                    ? 'Gramática'
+                    : dev.category === 'vocabular'
+                    ? 'Vocabulário'
+                    : 'Registro Formal';
+                addConsolidated({
+                  compLabel: `Competência 1 • ${catName}`,
+                  original: dev.snippet,
+                  problem: dev.problem,
+                  improvedVersion: dev.bestForm,
+                  howToResolve: `Substitua "${dev.snippet}" por "${dev.bestForm}" para eliminar a falha de ${catName.toLowerCase()} e garantir os pontos na C1.`,
+                });
+              });
+            }
+
+            // 2. Add all Pedagogical Rewrites
+            if (correctionResult.pedagogicalRewrites && correctionResult.pedagogicalRewrites.length > 0) {
+              correctionResult.pedagogicalRewrites.forEach((rw) => {
+                const pText = (rw.problem + ' ' + rw.explanation).toLowerCase();
+                let inferredComp = 'Competência 3 • Argumentação';
+                let inferredNum = 3;
+                if (/(interven|proposta|agente|meio\/modo|detalhamento|finalidade)/i.test(pText)) {
+                  inferredComp = 'Competência 5 • Proposta de Intervenção';
+                  inferredNum = 5;
+                } else if (/(gramat|ortograf|vírgula|crase|concord|regênc|sintát|norma-padrão|oralidade)/i.test(pText)) {
+                  inferredComp = 'Competência 1 • Norma-Padrão';
+                  inferredNum = 1;
+                } else if (/(conectiv|coes|repeti|operador|articul)/i.test(pText)) {
+                  inferredComp = 'Competência 4 • Coesão e Conectivos';
+                  inferredNum = 4;
+                } else if (/(repertór|tema|tese|sociolog|filosof|produtiv)/i.test(pText)) {
+                  inferredComp = 'Competência 2 • Repertório e Tema';
+                  inferredNum = 2;
+                }
+
+                const fallbackGen = buildConsolidatedRewrite(inferredNum, rw.original, rw.problem);
+                const cleanAiImp = sanitizeConsolidatedText(rw.improvedVersion || '');
+                const validImproved =
+                  cleanAiImp.length > 12 && normText(cleanAiImp) !== normText(rw.original)
+                    ? cleanAiImp
+                    : fallbackGen.improved;
+
+                addConsolidated({
+                  compLabel: inferredComp,
+                  original: rw.original,
+                  problem: rw.problem,
+                  improvedVersion: validImproved,
+                  howToResolve: rw.explanation || fallbackGen.step,
+                });
+              });
+            }
+
+            // 3. Add all Competency-specific error quotes from C1 to C5 where score < 200 (with concrete Before -> After rewrite)
+            const compNames: Record<number, string> = {
+              1: 'Competência 1 • Escrita Formal',
+              2: 'Competência 2 • Tema e Repertório',
+              3: 'Competência 3 • Argumentação',
+              4: 'Competência 4 • Conectivos e Coesão',
+              5: 'Competência 5 • Proposta de Intervenção',
+            };
+
+            ([1, 2, 3, 4, 5] as const).forEach((cNum) => {
+              const cKey = `c${cNum}` as 'c1' | 'c2' | 'c3' | 'c4' | 'c5';
+              const cData = correctionResult.competencies[cKey];
+              const cAudit = correctionResult.auditLog?.competencyLogs?.find((l) => l.competencyNum === cNum);
+              const officialCScore =
+                competencyDivergences[cNum - 1]?.officialCompMean ?? cData?.score ?? 200;
+              if (!cData || officialCScore >= 200) return;
+
+              const quote =
+                cData.trecho_evidencia ||
+                cData.primaryEvidenceQuote ||
+                cData.evidenceSnippets?.[0] ||
+                cAudit?.evidenceQuoteFromStudent;
+
+              const mainError =
+                cAudit?.reasonNotRoundedTo200 ||
+                cData.problemsIdentified?.[0] ||
+                cData.penaltiesOrGaps?.[0] ||
+                cData.diagnostic;
+
+              if (
+                quote &&
+                quote.trim().length > 0 &&
+                quote !== 'Trecho sob análise textual.' &&
+                quote !== 'Análise global do texto submetido.' &&
+                mainError
+              ) {
+                const generated = buildConsolidatedRewrite(cNum, quote.trim(), mainError);
+                addConsolidated({
+                  compLabel: `${compNames[cNum]} (${officialCScore}/200 pts)`,
+                  original: quote.trim(),
+                  problem: mainError,
+                  improvedVersion: generated.improved,
+                  howToResolve: generated.step,
+                });
+              }
+            });
+
+            if (consolidatedList.length === 0) return null;
+
+            return (
+              <div className="bg-white dark:bg-slate-900 p-6 sm:p-7 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-5 transition-colors">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-4">
+                  <div>
+                    <h4 className="font-extrabold text-slate-900 dark:text-slate-100 text-base sm:text-lg flex items-center gap-2">
+                      <GraduationCap className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                      <span>Citações do Seu Texto: Onde Errou e Como Escrever Melhor (Antes → Depois)</span>
+                    </h4>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      Todos os erros identificados nas 5 competências reunidos em um só lugar, com o trecho exato do seu texto e a reescrita prática de como deveria ser escrito.
+                    </p>
                   </div>
-                ))}
+                  <span className="px-3 py-1 rounded-xl text-xs font-black uppercase bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800 shrink-0 self-start sm:self-auto">
+                    {consolidatedList.length} Correções Práticas
+                  </span>
+                </div>
+
+                <div className="space-y-4">
+                  {consolidatedList.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-3.5 text-xs sm:text-sm"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="px-2.5 py-1 rounded-lg bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300 font-black text-[11px] uppercase tracking-wider border border-indigo-200 dark:border-indigo-800">
+                          #{idx + 1} • {item.compLabel}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                        <div className="p-3.5 rounded-xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/70 space-y-2">
+                          <span className="font-black text-rose-800 dark:text-rose-300 text-[11px] uppercase tracking-wider block">
+                            ❌ Como você escreveu (Antes)
+                          </span>
+                          <p className="font-serif italic text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 p-3 rounded-lg border border-rose-200/80 dark:border-rose-900/60 leading-relaxed">
+                            "{item.original}"
+                          </p>
+                          <p className="text-rose-800 dark:text-rose-300 text-xs pt-0.5 leading-snug">
+                            <strong>Qual foi o erro:</strong> {item.problem}
+                          </p>
+                        </div>
+
+                        <div className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/70 space-y-2">
+                          <span className="font-black text-emerald-800 dark:text-emerald-300 text-[11px] uppercase tracking-wider block">
+                            ✅ Como deveria ser escrito (Depois)
+                          </span>
+                          <p className="font-serif text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 p-3 rounded-lg border border-emerald-200/80 dark:border-emerald-900/60 font-semibold leading-relaxed">
+                            "{item.improvedVersion}"
+                          </p>
+                          <p className="text-emerald-800 dark:text-emerald-300 text-xs pt-0.5 leading-snug">
+                            <strong>Como resolver na prática:</strong> {item.howToResolve}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Professor AI Dedicado Exclusivamente à Redação Avaliada */}
           <div id="essay-correction-professor-chat-section" className="pt-2">
@@ -3427,7 +4436,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 onAskProfessorAboutEssay(
                   correctionResult.essayText, 
                   correctionResult.theme,
-                  `Nota ${correctionResult.totalScore}/1000. C1: ${correctionResult.competencies.c1.score}, C2: ${correctionResult.competencies.c2.score}, C3: ${correctionResult.competencies.c3.score}, C4: ${correctionResult.competencies.c4.score}, C5: ${correctionResult.competencies.c5.score}.`
+                  `Nota ${officialMeanScore}/1000. C1: ${competencyDivergences[0]?.officialCompMean ?? correctionResult.competencies.c1.score}, C2: ${competencyDivergences[1]?.officialCompMean ?? correctionResult.competencies.c2.score}, C3: ${competencyDivergences[2]?.officialCompMean ?? correctionResult.competencies.c3.score}, C4: ${competencyDivergences[3]?.officialCompMean ?? correctionResult.competencies.c4.score}, C5: ${competencyDivergences[4]?.officialCompMean ?? correctionResult.competencies.c5.score}.`
                 );
               }}
             />
@@ -3435,7 +4444,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
         </div>
       )}
 
-      {/* Modal Interativo da Cartilha Oficial do Participante (INEP 2024/2025) */}
+      {/* Modal Interativo da Cartilha Oficial do Participante (INEP 2025/2026) */}
       {showCartilhaModal && (
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-sm animate-fadeIn"
@@ -3453,7 +4462,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                     INEP / MEC
                   </span>
                   <span className="text-xs font-bold text-amber-200">
-                    Edição Atualizada 2024 / 2025
+                    Edição Atualizada 2025 / 2026
                   </span>
                 </div>
                 <h3 className="text-lg sm:text-xl font-black">

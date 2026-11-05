@@ -47,10 +47,10 @@ export interface CartilhaScoreProfile {
 }
 
 export const CARTILHA_METADATA = {
-  edition: 'Cartilha Oficial do Participante - A Redação no ENEM 2024/2025',
+  edition: 'Cartilha Oficial do Participante - A Redação no ENEM 2025/2026',
   governingBody: 'INEP - Instituto Nacional de Estudos e Pesquisas Educacionais Anísio Teixeira',
   ministry: 'MEC - Ministério da Educação',
-  version: '2024-2025-V.Oficial',
+  version: '2025-2026-V.Oficial',
   totalCompetencies: 5,
   maxTotalScore: 1000,
   passingScoreReference: 700,

@@ -1,6 +1,6 @@
 {
-  "summary":  "Plano de correção cirúrgica para garantir que as redações Nota 1000 do sistema (e redações com as 5 competências em 200) apresentem Nota Oficial a Considerar = 1000 no Corretor, sem alterar nenhuma regra ou critério do motor de avaliação existente.",
-  "updatedAt":  "2026-10-31T13:22:17.047979167Z",
-  "requestFeedback":  true,
-  "userFacing":  true
+  "summary": "Plano de simplificação e clareza visual dos resultados do Corretor Especializado e do Treino de Trechos, preservando 100% do motor de avaliação e geração de notas.",
+  "updatedAt": "2026-11-05T13:59:55.053797652Z",
+  "requestFeedback": true,
+  "userFacing": true
 }

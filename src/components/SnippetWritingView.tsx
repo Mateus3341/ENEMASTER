@@ -404,10 +404,10 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
 
   const evalAiProgress = useAiProgress({
     steps: [
-      'Ativando motor oficial do Corretor INEP (Cartilha 2024/2025)...',
+      'Ativando motor oficial do Corretor INEP (Cartilha 2025/2026)...',
       'Executando simulação de Duplo Avaliador independente...',
-      'Auditando evidências literais, desvios C1 e critérios do trecho...',
-      'Gerando diagnóstico analítico e Reescrita Nota 200...'
+      'Verificando trechos do parágrafo e pontos de melhoria...',
+      'Gerando explicação simplificada e Reescrita Nota 200...'
     ],
     estimatedDurationMs: 6500
   });
@@ -1553,15 +1553,15 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
               </div>
             </div>
 
-            {/* 2. Active Competencies Detailed Breakdown (2x2 Grid on Desktop instead of a tall single column) */}
+            {/* 2. Active Competencies Detailed Breakdown (Simplified & Direct) */}
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
                 <div>
                   <h4 className="text-base font-extrabold text-slate-900 dark:text-slate-100">
-                    Diagnóstico Analítico por Competência Ativa (0 a 200)
+                    Resultado por Competência Avaliada (0 a 200)
                   </h4>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Análise individualizada com justificativa textual explícita, evidências do seu rascunho e critérios oficiais de nível INEP
+                    Veja de forma simples o que você acertou, o que precisa melhorar e os trechos avaliados no seu parágrafo
                   </p>
                 </div>
               </div>
@@ -1570,7 +1570,7 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
                 {evaluationResult.activeCompetencies.map((comp) => (
                   <div
                     key={comp.code}
-                    className="p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-800/30 flex flex-col justify-between space-y-3.5"
+                    className="p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-800/30 flex flex-col justify-between space-y-4"
                   >
                     <div className="space-y-3.5">
                       <div className="flex items-start justify-between gap-3">
@@ -1614,104 +1614,121 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
                         </div>
                       </div>
 
-                      {/* Verbatim Evidence Quote from Student's Text */}
-                      {comp.evidenceQuote && (
-                        <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300 flex items-start gap-2.5">
-                          <Quote className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
-                          <div>
-                            <span className="font-bold text-slate-800 dark:text-slate-200 block mb-0.5">
-                              Evidência textual auditada no seu rascunho:
-                            </span>
-                            <span className="italic">“{comp.evidenceQuote}”</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Explicit Textual Score Justification (Official INEP Criterion) */}
-                      {comp.scoreJustification && (
-                        <div className="p-3.5 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/70 text-xs text-slate-800 dark:text-slate-200 space-y-1">
-                          <div className="flex items-center gap-1.5 font-extrabold text-indigo-900 dark:text-indigo-300">
-                            <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                            <span>Justificativa Textual Explícita da Nota ({comp.score}/200):</span>
-                          </div>
-                          <p className="leading-relaxed text-slate-700 dark:text-slate-200">
-                            {comp.scoreJustification}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Deduction or Level Ceiling Criterion */}
-                      {comp.deductionOrCeilingReason && (
-                        <div
-                          className={`p-3 rounded-xl border text-xs leading-relaxed ${
-                            comp.score === 200
-                              ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200/80 dark:border-emerald-800/70 text-emerald-900 dark:text-emerald-200'
-                              : 'bg-amber-50/70 dark:bg-amber-950/30 border-amber-200/80 dark:border-amber-800/70 text-amber-900 dark:text-amber-200'
-                          }`}
-                        >
-                          <span className="font-extrabold block mb-0.5">
-                            {comp.score === 200
-                              ? 'Auditoria de Teto (Nível 5 — Sem Descontos):'
-                              : 'Critério de Desconto / Limite de Nível INEP:'}
-                          </span>
-                          <span>{comp.deductionOrCeilingReason}</span>
-                        </div>
-                      )}
-
-                      {/* Detailed Analytical Feedback */}
-                      <div className="space-y-1">
-                        <span className="text-xs font-extrabold text-slate-800 dark:text-slate-200 block">
-                          Análise Técnica da Competência:
+                      {/* 1. Resumo simples: Por que você tirou esta nota */}
+                      <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 space-y-1.5 text-xs">
+                        <span className="font-extrabold text-indigo-700 dark:text-indigo-400 uppercase tracking-wider text-[11px] block">
+                          Por que você tirou {comp.score} de 200 pontos:
                         </span>
-                        <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                        <p className="text-slate-700 dark:text-slate-200 leading-relaxed font-medium">
                           {comp.feedback}
                         </p>
+                        {comp.score < 200 && comp.deductionOrCeilingReason && (
+                          <p className="text-rose-700 dark:text-rose-300 bg-rose-50/70 dark:bg-rose-950/30 p-2 rounded-lg border border-rose-200/60 dark:border-rose-900/50 mt-1 leading-snug">
+                            <strong>Onde perdeu pontos:</strong> {comp.deductionOrCeilingReason}
+                          </p>
+                        )}
                       </div>
 
-                      {/* Side-by-side Strengths & Improvements inside the Competency Card */}
-                      {((comp.strengths && comp.strengths.length > 0) ||
-                        (comp.improvements && comp.improvements.length > 0)) && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                          {comp.strengths && comp.strengths.length > 0 && (
-                            <div className="p-3 rounded-xl bg-white dark:bg-slate-900/90 border border-emerald-200/70 dark:border-emerald-900/50 space-y-1.5">
-                              <span className="text-[11px] font-extrabold text-emerald-700 dark:text-emerald-400 block">
-                                Acertos comprovados:
-                              </span>
-                              <ul className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                                {comp.strengths.map((st, idx) => (
-                                  <li key={idx} className="flex items-start gap-1.5">
-                                    <span className="text-emerald-500 font-bold">✓</span>
-                                    <span>{st}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          {comp.improvements && comp.improvements.length > 0 && (
-                            <div className="p-3 rounded-xl bg-white dark:bg-slate-900/90 border border-amber-200/70 dark:border-amber-900/50 space-y-1.5">
-                              <span className="text-[11px] font-extrabold text-amber-700 dark:text-amber-400 block">
-                                O que ajustar:
-                              </span>
-                              <ul className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                                {comp.improvements.map((imp, idx) => (
-                                  <li key={idx} className="flex items-start gap-1.5">
-                                    <span className="text-amber-500 font-bold">•</span>
-                                    <span>{imp}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
+                      {/* 2. Trecho citado do seu parágrafo */}
+                      {comp.evidenceQuote && (
+                        <div className="p-3 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/25 border border-indigo-200/70 dark:border-indigo-800/60 text-xs text-slate-700 dark:text-slate-200 flex items-start gap-2.5">
+                          <Quote className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-bold text-indigo-900 dark:text-indigo-300 block mb-0.5 text-[11px] uppercase tracking-wider">
+                              Trecho do seu parágrafo avaliado:
+                            </span>
+                            <span className="italic font-serif">“{comp.evidenceQuote}”</span>
+                          </div>
                         </div>
                       )}
+
+                      {/* 3. O que você acertou vs.Todos os erros e como resolvê-los */}
+                      <div className="space-y-3 pt-0.5">
+                        {comp.strengths && comp.strengths.length > 0 && (
+                          <div className="p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-800/60 space-y-1.5">
+                            <span className="text-[11px] font-extrabold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider block">
+                              ✓ O que você acertou
+                            </span>
+                            <ul className="space-y-1 text-xs text-slate-700 dark:text-slate-200">
+                              {comp.strengths.map((st, idx) => (
+                                <li key={idx} className="flex items-start gap-1.5 leading-snug">
+                                  <span className="text-emerald-600 dark:text-emerald-400 font-bold shrink-0">✓</span>
+                                  <span>{st}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* Todos os Erros e Como Resolvê-los nesta Competência */}
+                        {((comp.improvements && comp.improvements.length > 0) ||
+                          (comp.code === 'C1' && evaluationResult.c1Deviations && evaluationResult.c1Deviations.length > 0) ||
+                          (comp.score < 200 && comp.deductionOrCeilingReason)) && (
+                          <div className="p-3.5 rounded-xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-800/60 space-y-2.5">
+                            <span className="text-[11px] font-extrabold text-rose-800 dark:text-rose-300 uppercase tracking-wider block">
+                              ⚠️ Erros identificados na {comp.code} e como resolvê-los
+                            </span>
+
+                            {comp.code === 'C1' &&
+                              evaluationResult.c1Deviations &&
+                              evaluationResult.c1Deviations.length > 0 && (
+                                <div className="space-y-2">
+                                  {evaluationResult.c1Deviations.map((dev, dIdx) => (
+                                    <div
+                                      key={dIdx}
+                                      className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-rose-200/70 dark:border-rose-900/50 text-xs space-y-1.5"
+                                    >
+                                      <p className="font-bold text-rose-800 dark:text-rose-300">
+                                        Desvio #{dIdx + 1}: {dev.problem}
+                                      </p>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                        <div className="p-2 rounded bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-800/50">
+                                          <span className="text-[10px] font-black uppercase text-rose-700 dark:text-rose-300 block">
+                                            ❌ Antes:
+                                          </span>
+                                          <span className="font-serif italic text-slate-800 dark:text-slate-200">
+                                            “{dev.snippet}”
+                                          </span>
+                                        </div>
+                                        <div className="p-2 rounded bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-800/50">
+                                          <span className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-300 block">
+                                            ✅ Como resolver:
+                                          </span>
+                                          <span className="font-serif font-semibold text-emerald-900 dark:text-emerald-200">
+                                            “{dev.bestForm}”
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                            {comp.improvements && comp.improvements.length > 0 && (
+                              <ul className="space-y-1.5 text-xs text-slate-700 dark:text-slate-200">
+                                {comp.improvements.map((imp, idx) => (
+                                  <li
+                                    key={idx}
+                                    className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-start gap-2 leading-snug"
+                                  >
+                                    <span className="text-rose-600 dark:text-rose-400 font-bold shrink-0">•</span>
+                                    <span>
+                                      <strong>Ajuste prático:</strong> {imp}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
-                    {/* How to reach 200 in this competency */}
+                    {/* 4. Como chegar aos 200 pontos */}
                     {comp.howToReach200 && (
-                      <div className="p-3 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-800/60 text-xs text-indigo-950 dark:text-indigo-200 mt-3">
-                        <span className="font-extrabold block mb-0.5">
-                          Como chegar aos 200 pts na {comp.code}:
+                      <div className="p-3 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-800/60 text-xs text-indigo-950 dark:text-indigo-200 mt-3">
+                        <span className="font-extrabold block mb-0.5 text-indigo-800 dark:text-indigo-300">
+                          🚀 Como resolver e chegar aos 200 pontos na {comp.code}:
                         </span>
                         <span>{comp.howToReach200}</span>
                       </div>
@@ -1729,15 +1746,15 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
                     <ShieldCheck className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                     <div>
                       <h4 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
-                        Auditoria Oficial dos 5 Elementos da Proposta de Intervenção (C5 INEP)
+                        Checklist dos 5 Elementos da Proposta de Intervenção (C5)
                       </h4>
                       <p className="text-xs text-slate-600 dark:text-slate-400">
-                        Cada elemento válido e articulado na conclusão equivale a +40 pontos na Competência 5
+                        Cada elemento completo encontrado na sua conclusão soma +40 pontos na Competência 5
                       </p>
                     </div>
                   </div>
                   <span className="px-3 py-1 rounded-xl bg-amber-100 dark:bg-amber-900/70 text-amber-900 dark:text-amber-200 text-xs sm:text-sm font-black font-mono">
-                    {evaluationResult.c5Structure.validElementsCount} / 5 Elementos Válidos
+                    {evaluationResult.c5Structure.validElementsCount} / 5 Elementos Encontrados
                   </span>
                 </div>
 
@@ -1767,7 +1784,7 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
                                 : 'bg-rose-100 dark:bg-rose-950/80 text-rose-700 dark:text-rose-300'
                             }`}
                           >
-                            {el.data?.present ? '+40 pts' : '0 pts'}
+                            {el.data?.present ? '+40 pts' : 'Faltou'}
                           </span>
                         </div>
                         <span className="text-[11px] text-slate-400 dark:text-slate-500 block">
@@ -1804,7 +1821,7 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
                     } space-y-3`}
                   >
                     <h4 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
-                      Raio-X Estrutural do Parágrafo
+                      Checklist da Estrutura do Parágrafo
                     </h4>
                     <div
                       className={`grid grid-cols-1 ${
@@ -1842,7 +1859,7 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
                   </div>
                 )}
 
-                {/* Auditoria da Norma-Padrão (Desvios C1 Detectados) */}
+                {/* Citações do Erro e Como Escrever Melhor (Antes -> Depois) */}
                 {evaluationResult.c1Deviations && evaluationResult.c1Deviations.length > 0 && (
                   <div
                     className={`${
@@ -1852,28 +1869,42 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
                     } space-y-3`}
                   >
                     <h4 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
-                      Auditoria da Norma-Padrão (Desvios C1 Detectados)
+                      Citações do Erro e Como Corrigir (Antes → Depois)
                     </h4>
                     <div className="grid grid-cols-1 gap-3">
                       {evaluationResult.c1Deviations.map((dev, idx) => (
                         <div
                           key={idx}
-                          className="p-4 rounded-2xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200/70 dark:border-rose-900/50 text-xs space-y-1.5"
+                          className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs space-y-2.5"
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="font-extrabold text-rose-800 dark:text-rose-300">
-                              Trecho: “{dev.snippet}”
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div className="p-2.5 rounded-xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/60 space-y-1">
+                              <span className="text-[10px] font-black uppercase text-rose-700 dark:text-rose-300 block">
+                                ❌ Como você escreveu
+                              </span>
+                              <p className="font-serif italic text-rose-950 dark:text-rose-100 font-medium">
+                                “{dev.snippet}”
+                              </p>
+                            </div>
+                            <div className="p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 space-y-1">
+                              <span className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-300 block">
+                                ✅ Como escrever melhor
+                              </span>
+                              <p className="font-serif text-emerald-950 dark:text-emerald-100 font-semibold">
+                                “{dev.bestForm}”
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 text-slate-600 dark:text-slate-400">
+                            <p className="leading-relaxed">
+                              <strong className="text-slate-800 dark:text-slate-200">Motivo:</strong> {dev.problem}
                             </p>
                             {dev.category && (
-                              <span className="px-2.5 py-0.5 rounded-md bg-rose-100 dark:bg-rose-900/60 text-rose-800 dark:text-rose-200 text-[10px] font-bold">
+                              <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-bold uppercase shrink-0">
                                 {dev.category}
                               </span>
                             )}
                           </div>
-                          <p className="text-slate-600 dark:text-slate-400 leading-relaxed">{dev.problem}</p>
-                          <p className="text-emerald-700 dark:text-emerald-300 font-semibold">
-                            Correção recomendada: {dev.bestForm}
-                          </p>
                         </div>
                       ))}
                     </div>

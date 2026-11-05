@@ -4240,25 +4240,72 @@ Recorte: "${thematicCut || ''}"`;
 // -------------------------------------------------------------
 app.post("/api/generate-snippets", async (req, res) => {
   try {
-    const { count = 3, excludeIds = [] } = req.body;
+    const {
+      count = 4,
+      category = "all",
+      excludeSnippets = [],
+      excludeThemes = []
+    } = req.body || {};
     const ai = getGeminiClient();
 
-    const systemInstruction = `Você é um avaliador e formulador sênior da banca de correção da Redação do ENEM (INEP/MEC).
-Seu objetivo é gerar ${count} questões inéditas e altamente desafiadoras de "Treino de Trechos & Diagnóstico" para estudantes do ENEM.
+    const thematicAxes = [
+      "Saúde Mental, Burnout, Uso de Telas e Bem-Estar Público",
+      "Meio Ambiente, Justiça Climática, Biomas, Transição Energética e Saneamento",
+      "Tecnologia, Inteligência Artificial, Algoritmos, Cibersegurança e Desinformação",
+      "Educação, Evasão Escolar, Inclusão Digital, Valorização Docente e Leitura",
+      "Cidadania, Direitos Humanos, Envelhecimento, Acessibilidade, Moradia e Trabalho",
+      "Cultura, Patrimônio Histórico, Povos Originários, Quilombolas e Identidade Nacional",
+      "Segurança Alimentar, Agricultura Familiar, Mobilidade Urbana e Desigualdade Regional"
+    ];
+    // Pick 2 random axes per request to guarantee fresh variety across days and attempts
+    const shuffledAxes = [...thematicAxes].sort(() => Math.random() - 0.5).slice(0, 2);
 
-DIRETRIZES TÉCNICAS E REGRAS CRÍTICAS DE BALANCEAMENTO:
-1. "snippet": Um trecho autêntico de 1 a 3 períodos contendo um caso real de avaliação (ex: truncamento, justaposição, crase proibida/omitida, paralelismo sintático, repertório sem produtividade, lacuna argumentativa, tese não defendida, conector inadequado, proposta condicional ou incompleta).
-2. "competencyFocus": A competência central (ex: "Competência 1 (Estrutura Sintática)", "Competência 2 (Repertório Sociocultural)", "Competência 3 (Projeto de Texto)", "Competência 4 (Coesão e Conectivos)", "Competência 5 (Proposta de Intervenção)").
-3. "options": Exatamente 4 opções de múltipla escolha (A, B, C, D) concisas, claras e verossímeis.
-   REQUISITO MANDATÓRIO DE EQUILÍBRIO DE TAMANHO: Todas as 4 opções DEVEM ter extensões em caracteres muito próximas (entre 120 e 170 caracteres cada). A resposta correta JAMAIS deve ser mais longa que os distratores errados! Todos os distratores devem ser convincentes e técnicos, baseados em armadilhas reais da matriz do INEP.
-4. "correctOptionIndex": O índice numérico (0, 1, 2 ou 3) da alternativa correta.
-5. "explanation": Explicação técnica e pedagógica citando as regras oficiais e critérios do INEP.
-6. "improvedSnippet": A reescrita ideal do trecho demonstrando o padrão Nota 1000.`;
+    const recentExclusions = [
+      ...(Array.isArray(excludeThemes) ? excludeThemes.slice(-25) : []),
+      ...(Array.isArray(excludeSnippets) ? excludeSnippets.slice(-25) : [])
+    ].filter(Boolean);
+
+    const exclusionInstruction =
+      recentExclusions.length > 0
+        ? `\nPROIBIÇÃO ESTRITA DE REPETIÇÃO (O usuário já viu estes temas/trechos recentemente — CRIE TEMAS, REPERTÓRIOS E FRASES TOTALMENTE DIFERENTES DESTES):\n- ${recentExclusions.join("\n- ")}\n`
+        : "";
+
+    const categoryInstruction =
+      category && category !== "all"
+        ? `Foque ESTRITAMENTE na categoria prática "${category}":
+- Se "conectivos": crie exercícios de PREENCHER LACUNA ([ _____ ]) com conectivos inter ou intraparágrafos (oposição, causa, conclusão, concessão, adição, pronome relativo "na qual/em que").
+- Se "repertorio": apresente um tema inédito do ENEM + um argumento em construção com [ _____ ] e peça para o aluno escolher qual repertório sociocultural (filósofo, sociólogo, livro, conceito histórico, pensador brasileiro) se aplica de forma legítima e produtiva àquele tema.
+- Se "completar_trecho": crie exercícios de PREENCHER LACUNA ([ _____ ]) para completar uma Tese de Introdução (com 2 argumentos D1/D2), um Tópico Frasal de desenvolvimento ou o elemento faltante de uma Proposta de Intervenção da C5 (Detalhamento entre travessões, Meio/Modo "mediante..." ou Efeito "a fim de...").
+- Se "reescrita": apresente um "Trecho original fraco: ..." (com senso comum, repetição vocabular, período truncado com gerúndio ou proposta condicional "Se o governo...") e peça para o aluno escolher a reescrita madura de nível Nota 1000.`
+        : `Gere ${count} questões variadas cobrindo as 4 categorias práticas de uso real na escrita da redação:
+1. "conectivos" (categoryLabel: "Lacunas: Conectivos") — parágrafo com lacuna [ _____ ] para preencher com o conectivo ou pronome relativo exato.
+2. "repertorio" (categoryLabel: "Qual Repertório Usar?") — parágrafo sobre um tema específico com [ _____ ] perguntando qual repertório sociocultural fundamenta produtivamente o argumento.
+3. "completar_trecho" (categoryLabel: "Completar Tese / C5") — parágrafo com lacuna [ _____ ] para completar fechamento de tese, tópico frasal ou elemento faltante da Proposta de Intervenção (C5).
+4. "reescrita" (categoryLabel: "Fortalecer Trecho") — substituir um trecho de senso comum ou com falha prática por uma reescrita madura Nota 1000.`;
+
+    const systemInstruction = `Você é um professor prático de Redação do ENEM focado em ensinar escrita aplicada e de uso imediato na prova.
+Seu objetivo é gerar ${count} exercícios 100% INÉDITOS e PRÁTICOS para o "Quiz do Trecho".
+PROIBIDO criar perguntas teóricas sobre nomenclaturas técnicas da banca. Todas as questões devem simular decisões reais de quem está escrevendo a redação no dia da prova!
+
+Eixos temáticos prioritários para inspirar temas inéditos nesta rodada: ${shuffledAxes.join(" | ")}.
+${exclusionInstruction}
+${categoryInstruction}
+
+REGRAS OBRIGATÓRIAS PARA CADA QUESTÃO:
+1. "category": Uma dentre "conectivos", "repertorio", "completar_trecho" ou "reescrita".
+2. "categoryLabel": Rótulo curto correspondente ("Lacunas: Conectivos", "Qual Repertório Usar?", "Completar Tese / C5" ou "Fortalecer Trecho").
+3. "themeContext": Um tema estilo ENEM específico e inédito ao qual o parágrafo pertence.
+4. "questionPrompt": A pergunta prática e direta para o aluno responder.
+5. "snippet": O parágrafo de redação. Nas categorias "conectivos", "repertorio" e "completar_trecho", inclua obrigatoriamente o marcador literal "[ _____ ]" onde o aluno deve preencher! Na categoria "reescrita", apresente o trecho fraco que precisa ser reescrito.
+6. "options": Exatamente 4 opções (A, B, C, D) de tamanho muito equilibrado entre si. A opção correta NUNCA deve ser visivelmente mais longa que as demais.
+7. "correctOptionIndex": Índice numérico (0, 1, 2 ou 3) da opção correta.
+8. "explanation": Dica prática e direta explicando por que a resposta funciona na prática e por que evitar as outras.
+9. "improvedSnippet": O parágrafo completo já preenchido com a resposta correta (ou reescrito com excelência Nota 1000).`;
 
     const response = await generateContentWithRetry(
       ai,
       {
-        contents: `Gere ${count} questões desafiadoras de diagnóstico de trechos do ENEM.`,
+        contents: `Gere ${count} exercícios práticos totalmente inéditos de redação ENEM (categoria: ${category}, semente de variedade: ${Date.now()}-${Math.floor(Math.random() * 10000)}).`,
         config: {
           systemInstruction,
           responseMimeType: "application/json",
@@ -4271,6 +4318,10 @@ DIRETRIZES TÉCNICAS E REGRAS CRÍTICAS DE BALANCEAMENTO:
                   type: Type.OBJECT,
                   properties: {
                     id: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                    categoryLabel: { type: Type.STRING },
+                    themeContext: { type: Type.STRING },
+                    questionPrompt: { type: Type.STRING },
                     competencyFocus: { type: Type.STRING },
                     snippet: { type: Type.STRING },
                     options: {
@@ -4283,6 +4334,10 @@ DIRETRIZES TÉCNICAS E REGRAS CRÍTICAS DE BALANCEAMENTO:
                   },
                   required: [
                     "id",
+                    "category",
+                    "categoryLabel",
+                    "themeContext",
+                    "questionPrompt",
                     "competencyFocus",
                     "snippet",
                     "options",
@@ -4297,22 +4352,40 @@ DIRETRIZES TÉCNICAS E REGRAS CRÍTICAS DE BALANCEAMENTO:
           }
         }
       },
-      ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+      ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"]
     );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
-    const snippets = (parsed.snippets || []).map((s: any, idx: number) => ({
-      ...s,
-      id: s.id || `ai-snippet-${Date.now()}-${idx}`,
-      isAiGenerated: true
-    }));
+    const validCategories = ["conectivos", "repertorio", "completar_trecho", "reescrita"];
+    const defaultLabels: Record<string, string> = {
+      conectivos: "Lacunas: Conectivos",
+      repertorio: "Qual Repertório Usar?",
+      completar_trecho: "Completar Tese / C5",
+      reescrita: "Fortalecer Trecho"
+    };
+
+    const snippets = (parsed.snippets || []).map((s: any, idx: number) => {
+      const cat = validCategories.includes(s.category) ? s.category : (category !== "all" && validCategories.includes(category) ? category : "conectivos");
+      return {
+        ...s,
+        id: `ai-snippet-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${idx}`,
+        category: cat,
+        categoryLabel: s.categoryLabel || defaultLabels[cat] || "Treino Aplicado",
+        questionPrompt: s.questionPrompt || "Qual alternativa preenche ou aprimora este trecho de forma prática na redação?",
+        isAiGenerated: true
+      };
+    });
+
+    if (snippets.length === 0) {
+      return res.status(502).json({ error: "Não foi possível gerar novas questões inéditas no momento. Tente novamente." });
+    }
 
     return res.json({ snippets });
   } catch (error: any) {
-    console.log("[Snippets] Usando acervo homologado INEP para treino de trechos.");
-    // Return shuffled curated snippets
-    const shuffled = [...PRACTICE_SNIPPETS].sort(() => 0.5 - Math.random()).slice(0, 3);
-    return res.json({ snippets: shuffled });
+    console.error("[Snippets AI Error]:", error?.message || error);
+    return res.status(500).json({
+      error: "Instabilidade momentânea ao gerar novas questões inéditas por IA. Clique em Tentar Novamente."
+    });
   }
 });
 
