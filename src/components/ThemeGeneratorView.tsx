@@ -79,15 +79,30 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
   const [keywordsStyle, setKeywordsStyle] = useState<string>(savedConfig?.keywordsStyle || 'aleatorio');
   const [subFocus, setSubFocus] = useState<string>(savedConfig?.subFocus || '');
   
-  // Persist across tabs
+  const isCuratedDbTheme = (t: GeneratedThemeResponse | null | undefined) => {
+    if (!t || !t.title) return true;
+    const tid = String(t.id || '');
+    if (tid.startsWith('theme-curated-') || tid.startsWith('curated-')) return true;
+    return CURATED_THEME_PROPOSALS.some(
+      (c) => c.title.trim().toLowerCase() === t.title.trim().toLowerCase()
+    );
+  };
+
+  // Persist across tabs (only AI-generated themes)
   const [currentTheme, setCurrentTheme] = useState<GeneratedThemeResponse | null>(() => {
-    if (savedWork.generatedTheme) return savedWork.generatedTheme;
+    if (savedWork.generatedTheme && !isCuratedDbTheme(savedWork.generatedTheme)) {
+      return savedWork.generatedTheme;
+    }
     try {
       const storedCurrent = localStorage.getItem('enem_current_generated_theme_v1');
-      if (storedCurrent) return JSON.parse(storedCurrent);
+      if (storedCurrent) {
+        const parsed = JSON.parse(storedCurrent);
+        if (!isCuratedDbTheme(parsed)) return parsed;
+      }
     } catch {}
     if (savedWork.generatedThemesHistory && savedWork.generatedThemesHistory.length > 0) {
-      return savedWork.generatedThemesHistory[0];
+      const firstAi = savedWork.generatedThemesHistory.find((h) => !isCuratedDbTheme(h));
+      if (firstAi) return firstAi;
     }
     return null;
   });
@@ -293,22 +308,8 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
       }
     } catch (err: any) {
       themeProgress.resetProgress();
-      console.warn('Network error, fallbacking to curated theme:', err);
-      // Fallback: pick a matching curated proposal if network error occurs
-      const randomCurated = CURATED_THEME_PROPOSALS[Math.floor(Math.random() * CURATED_THEME_PROPOSALS.length)];
-      const fallbackData = {
-        ...randomCurated,
-        motivatingTexts: includeMotivatingTexts ? randomCurated.motivatingTexts : []
-      };
-      setCurrentTheme(fallbackData);
-      setPersistedTheme(fallbackData);
-      addGeneratedThemeToHistory(fallbackData);
-      try {
-        localStorage.setItem('enem_current_generated_theme_v1', JSON.stringify(fallbackData));
-      } catch {}
-      completeTask(taskId, fallbackData);
-      setActiveSubTab('generator');
-      setErrorMessage('Tema carregado com sucesso do Acervo Oficial Homologado INEP!');
+      console.warn('Aviso ao gerar tema inédito por IA:', err);
+      setErrorMessage('Não foi possível gerar o tema inédito com a IA neste instante. Clique em "Gerar Tema Inédito" novamente.');
     } finally {
       setIsLoading(false);
     }
@@ -348,7 +349,7 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
       }
     } catch (err: any) {
       motivatingProgress.resetProgress();
-      console.error('Erro ao gerar textos motivadores:', err);
+      console.warn('Aviso ao gerar textos motivadores:', err);
       setErrorMessage('Não foi possível gerar a coletânea de textos motivadores no momento. Tente novamente.');
     } finally {
       setIsLoadingMotivatingTexts(false);
@@ -402,7 +403,7 @@ export const ThemeGeneratorView: React.FC<ThemeGeneratorViewProps> = ({
       setShowPedagogicalGuide(true);
     } catch (err: any) {
       guideProgress.resetProgress();
-      console.error('Error fetching pedagogical guide:', err);
+      console.warn('Aviso ao carregar guia pedagógico:', err);
       setErrorMessage('Não foi possível carregar o guia no momento. Tente novamente.');
     } finally {
       setIsLoadingGuide(false);

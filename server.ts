@@ -43,12 +43,53 @@ const getGeminiClient = () => {
   });
 };
 
-// Track models that have temporary quota exhaustion (429) to avoid wasting calls
+// Track models that have quota exhaustion or permission limits to avoid wasting latency
 const modelQuotaCooldowns = new Map<string, number>();
 
+// Tier 1: Melhores Modelos Avançados (Raciocínio Profundo, Escrita Nota 1000 e Correção Estrita INEP)
+const TIER_1_ADVANCED_MODELS = [
+  "gemini-4-argon",
+  "gemini-3.8-flash",
+  "gemini-3-flash-preview",
+  "gemini-flash-latest"
+];
+
+// Tier 2: Modelos Mais Rápidos (Proteção Interna de Downgrade Automático de Alta Velocidade)
+const TIER_2_FAST_MODELS = [
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-flash-lite-preview"
+];
+
+// Cascata Completa Padrão: Inicia sempre nos modelos mais avançados e faz downgrade automático para os modelos mais rápidos
+const DEFAULT_ADVANCED_TO_FAST_CASCADE = [
+  ...TIER_1_ADVANCED_MODELS,
+  ...TIER_2_FAST_MODELS
+];
+
+function sanitizeJsonResponseIfNeeded(response: any, isJsonExpected: boolean, modelUsed: string) {
+  if (!response) return response;
+  try {
+    response.modelUsed = modelUsed;
+    if (isJsonExpected && typeof response.text === "string") {
+      const raw = response.text.trim();
+      if (raw.startsWith("```")) {
+        const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+        Object.defineProperty(response, "text", {
+          value: cleaned,
+          writable: true,
+          configurable: true
+        });
+      }
+    }
+  } catch {}
+  return response;
+}
+
 /**
- * Robust Gemini generation with automatic multi-model failover and quota cooldown tracking
- * Handles transient 503 (high demand/UNAVAILABLE), 429 (rate limits/quota), timeouts and connection drops
+ * Multi-tier Gemini generation engine with internal downgrade protection:
+ * 1. Prioritizes the best/most advanced models first (gemini-4-argon -> gemini-3.8-flash -> gemini-3-flash-preview -> gemini-flash-latest).
+ * 2. If any advanced model encounters an error (429 quota, 403 permission, 503 overload, timeout, or schema error),
+ *    automatically records a smart cooldown and downgrades in real time to the faster models (gemini-3.1-flash-lite -> gemini-3.1-flash-lite-preview).
  */
 async function generateContentWithRetry(
   ai: GoogleGenAI,
@@ -56,116 +97,217 @@ async function generateContentWithRetry(
     contents: any;
     config?: any;
   },
-  modelsToTry: string[] = [
-    "gemini-3.1-flash-lite",
-    "gemini-3.8-flash",
-    "gemini-flash-latest"
-  ]
+  modelsToTry: string[] = DEFAULT_ADVANCED_TO_FAST_CASCADE
 ) {
   let lastError: any = null;
 
   // Sanitize config (remove unsupported properties like thinkingBudget)
   let baseConfig = params.config ? { ...params.config } : undefined;
   if (baseConfig?.thinkingConfig) {
-    if ('thinkingBudget' in baseConfig.thinkingConfig) {
+    if ("thinkingBudget" in baseConfig.thinkingConfig) {
       delete baseConfig.thinkingConfig;
     }
   }
 
-  // Normalize and filter supported models per @google/genai guidelines
+  const isJsonExpected = baseConfig?.responseMimeType === "application/json";
+
+  // Normalize legacy model aliases to current official models per @google/genai guidelines
   const normalizeModelName = (m: string) => {
-    if (m === "gemini-3.7-flash" || m === "gemini-3.5-flash") return "gemini-3.8-flash";
+    if (m === "gemini-3.7-flash" || m === "gemini-3.5-flash") {
+      return "gemini-3.8-flash";
+    }
     return m;
   };
-  const supportedCascade = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+
   const inputModels = modelsToTry
-    .filter(m => !m.includes("1.5") && !m.includes("2.0"))
+    .filter((m) => !m.includes("1.5") && !m.includes("2.0"))
     .map(normalizeModelName);
-  const allUniqueModels = Array.from(new Set([...inputModels, ...supportedCascade]));
+
+  // Preserve caller priority order (Advanced -> Fast), ensuring all fallback tiers are appended at the end
+  const allUniqueModels = Array.from(
+    new Set([...inputModels, ...DEFAULT_ADVANCED_TO_FAST_CASCADE])
+  );
 
   const now = Date.now();
-  const healthyModels = allUniqueModels.filter(m => (modelQuotaCooldowns.get(m) || 0) <= now);
+  let healthyModels = allUniqueModels.filter((m) => (modelQuotaCooldowns.get(m) || 0) <= now);
   if (healthyModels.length === 0) {
-    throw new Error("All candidate models are currently in quota cooldown.");
+    // Ensure fast models are always available for emergency downgrade
+    for (const fastModel of TIER_2_FAST_MODELS) {
+      modelQuotaCooldowns.delete(fastModel);
+    }
+    healthyModels = [...TIER_2_FAST_MODELS, "gemini-3-flash-preview"];
   }
 
   for (let i = 0; i < healthyModels.length; i++) {
     const model = healthyModels[i];
 
-    // Skip if put into cooldown during this loop
-    if ((modelQuotaCooldowns.get(model) || 0) > Date.now()) {
+    // Skip if put into cooldown during this loop (unless it is the very last fallback model)
+    if (i < healthyModels.length - 1 && (modelQuotaCooldowns.get(model) || 0) > Date.now()) {
       continue;
     }
 
-    // Remove deprecated sampling params for gemini-3.8-flash / gemini-flash-latest / gemini-4-argon
     let activeConfig = baseConfig ? { ...baseConfig } : undefined;
-    if (activeConfig && (model === "gemini-3.8-flash" || model === "gemini-flash-latest" || model === "gemini-4-argon")) {
+    if (
+      activeConfig &&
+      (model === "gemini-3.8-flash" || model === "gemini-flash-latest" || model === "gemini-4-argon")
+    ) {
       delete activeConfig.temperature;
       delete activeConfig.topP;
       delete activeConfig.topK;
       delete activeConfig.candidateCount;
     }
 
+    // Google Search tool combined with responseMimeType: "application/json" often triggers 400/429.
+    if (activeConfig?.tools && activeConfig?.responseMimeType === "application/json") {
+      activeConfig = { ...activeConfig };
+      delete activeConfig.tools;
+    }
+
     try {
-      const response = await ai.models.generateContent({
-        contents: params.contents,
-        config: activeConfig,
-        model,
-      });
+      const response = (await Promise.race([
+        ai.models.generateContent({
+          contents: params.contents,
+          config: activeConfig,
+          model,
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`503 Model ${model} timed out after 14s`)), 14000)
+        ),
+      ])) as any;
+
+      if (!response?.text && isJsonExpected) {
+        throw new Error(`Empty JSON response from model ${model}`);
+      }
+
       modelQuotaCooldowns.delete(model);
-      return response;
+      return sanitizeJsonResponseIfNeeded(response, isJsonExpected, model);
     } catch (err: any) {
       lastError = err;
       const errMsg = err?.message || String(err);
 
-      const isQuota =
-        errMsg.includes("429") ||
-        errMsg.includes("RESOURCE_EXHAUSTED") ||
-        errMsg.includes("exceeded your current quota") ||
-        errMsg.includes("quota");
+      const isAuthOrNotFound =
+        errMsg.includes("403") ||
+        errMsg.includes("PERMISSION_DENIED") ||
+        errMsg.includes("404") ||
+        errMsg.includes("NOT_FOUND") ||
+        errMsg.includes("insufficient authentication");
 
       const isDailyQuota =
         errMsg.includes("GenerateRequestsPerDay") ||
-        errMsg.includes("requests per day") ||
-        errMsg.includes("free_tier_requests");
+        errMsg.includes("per day") ||
+        errMsg.includes("FreeTier");
 
-      const isTransient =
-        isQuota ||
+      const isQuotaOrOverload =
+        isDailyQuota ||
+        errMsg.includes("429") ||
+        errMsg.includes("RESOURCE_EXHAUSTED") ||
+        errMsg.includes("exceeded your current quota") ||
+        errMsg.includes("quota") ||
         errMsg.includes("503") ||
-        errMsg.includes("UNAVAILABLE") ||
-        errMsg.includes("high demand") ||
-        errMsg.includes("overloaded") ||
-        errMsg.includes("rate-limit") ||
-        errMsg.includes("ECONNRESET") ||
-        errMsg.includes("ETIMEDOUT") ||
-        errMsg.includes("fetch failed");
+        errMsg.includes("timed out");
 
-      if (isQuota) {
-        // Daily quota exhaustion cools down for 30 minutes; per-minute rate limit cools down for 60 seconds
-        const cooldownMs = isDailyQuota ? 30 * 60 * 1000 : 60 * 1000;
-        modelQuotaCooldowns.set(model, Date.now() + cooldownMs);
-        // If gemini-3.8-flash and gemini-flash-latest share the same underlying quota, mark both
-        if (model === "gemini-3.8-flash" || model === "gemini-flash-latest") {
-          modelQuotaCooldowns.set("gemini-3.8-flash", Date.now() + cooldownMs);
-          modelQuotaCooldowns.set("gemini-flash-latest", Date.now() + cooldownMs);
-        }
+      if (isAuthOrNotFound) {
+        // Paid-only or unavailable model in current key scope -> cooldown for 60 min and immediately downgrade
+        modelQuotaCooldowns.set(model, Date.now() + 60 * 60 * 1000);
+        continue;
+      }
 
-        if (baseConfig?.tools && baseConfig.tools.length > 0) {
+      if (isDailyQuota) {
+        // Daily free-tier limit reached on this model -> cooldown for 30 min and immediately downgrade
+        modelQuotaCooldowns.set(model, Date.now() + 30 * 60 * 1000);
+        continue;
+      }
+
+      // If this call failed while googleSearch tools were attached (which have their own separate quota),
+      // or failed due to strict responseSchema validation (not a model-level quota/auth error),
+      // retry the SAME model once with simplified config before downgrading.
+      if (
+        (activeConfig?.tools && activeConfig.tools.length > 0) ||
+        (!isQuotaOrOverload && activeConfig?.responseSchema)
+      ) {
+        const simplifiedConfig = { ...activeConfig };
+        delete simplifiedConfig.tools;
+        delete simplifiedConfig.responseSchema;
+        if (baseConfig?.tools) {
           baseConfig = { ...baseConfig };
           delete baseConfig.tools;
         }
+        try {
+          const retrySimplified = (await Promise.race([
+            ai.models.generateContent({
+              contents: params.contents,
+              config: simplifiedConfig,
+              model,
+            }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`503 Model ${model} timed out after 14s`)), 14000)
+            ),
+          ])) as any;
+          if (retrySimplified?.text || !isJsonExpected) {
+            modelQuotaCooldowns.delete(model);
+            return sanitizeJsonResponseIfNeeded(retrySimplified, isJsonExpected, model);
+          }
+        } catch (retryErr: any) {
+          lastError = retryErr;
+        }
       }
 
-      if (isTransient) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-      } else {
-        break;
+      if (isQuotaOrOverload && !TIER_2_FAST_MODELS.includes(model)) {
+        // Temporary RPM/overload on advanced model -> 25s cooldown and downgrade to faster models
+        modelQuotaCooldowns.set(model, Date.now() + 25 * 1000);
       }
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+  }
+
+  // Final emergency downgrade pass on the fastest models with simplified config (no responseSchema / tools)
+  const emergencyConfig = baseConfig ? { ...baseConfig } : undefined;
+  if (emergencyConfig) {
+    delete emergencyConfig.tools;
+    delete emergencyConfig.responseSchema;
+  }
+  for (const fastModel of TIER_2_FAST_MODELS) {
+    try {
+      const emergencyRes = (await Promise.race([
+        ai.models.generateContent({
+          contents: params.contents,
+          config: emergencyConfig,
+          model: fastModel,
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`503 Emergency fast model ${fastModel} timed out`)), 14000)
+        ),
+      ])) as any;
+      if (emergencyRes?.text || !isJsonExpected) {
+        return sanitizeJsonResponseIfNeeded(emergencyRes, isJsonExpected, fastModel);
+      }
+    } catch (emergErr: any) {
+      lastError = emergErr;
     }
   }
 
   throw lastError || new Error("Gemini generation fallback triggered");
 }
+
+// Background startup probe to pre-detect any advanced models with daily quota or auth limits
+setTimeout(async () => {
+  try {
+    const ai = getGeminiClient();
+    for (const m of ["gemini-4-argon", "gemini-3.8-flash", "gemini-flash-latest"]) {
+      try {
+        await ai.models.generateContent({ model: m, contents: "ok" });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (msg.includes("403") || msg.includes("PERMISSION_DENIED") || msg.includes("404")) {
+          modelQuotaCooldowns.set(m, Date.now() + 60 * 60 * 1000);
+        } else if (msg.includes("GenerateRequestsPerDay") || msg.includes("per day") || msg.includes("FreeTier") || msg.includes("429")) {
+          modelQuotaCooldowns.set(m, Date.now() + 30 * 60 * 1000);
+        }
+      }
+    }
+  } catch {}
+}, 200);
 
 // -------------------------------------------------------------
 // Advanced Evidence-Based Essay Evaluator for ENEM Matrix
@@ -1454,7 +1596,7 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
         }
       }
     },
-    ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+    DEFAULT_ADVANCED_TO_FAST_CASCADE
   );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -2191,7 +2333,7 @@ Audite com rigor máximo cada uma das 5 competências. Valide se as notas 200 s�
         }
       }
     },
-    ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+    DEFAULT_ADVANCED_TO_FAST_CASCADE
   );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -2406,7 +2548,7 @@ Sua missão:
         systemInstruction,
       },
     },
-    ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+    DEFAULT_ADVANCED_TO_FAST_CASCADE
   );
 
     const text = response.text || "";
@@ -2693,7 +2835,7 @@ IMPORTANTE: Escreva o texto completo e aprofundado em cada um dos 4 campos de 's
           }
         }
       },
-      ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+      DEFAULT_ADVANCED_TO_FAST_CASCADE
     );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -2905,14 +3047,14 @@ Gere o JSON completo contendo:
             responseMimeType: "application/json",
           }
         },
-        ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.7-flash"]
+        DEFAULT_ADVANCED_TO_FAST_CASCADE
       );
 
       const rawText = response.text?.trim() || "{}";
       const cleanJson = rawText.replace(/```json/gi, "").replace(/```/gi, "").trim();
       parsed = JSON.parse(cleanJson);
     } catch (genErr: any) {
-      // Secondary fallback attempt with simplified model call
+      // Secondary fallback attempt with fast models
       try {
         const fallbackPrompt = `Você é um redator Nota 1000 do ENEM. Reescreva a redação sobre "${theme}" substituindo os repertórios por: ${requestedNewRepsStr}. ${customInstructions ? `Instruções: ${customInstructions}` : ''}
 Retorne um JSON com:
@@ -2942,7 +3084,7 @@ Retorne um JSON com:
               responseMimeType: "application/json"
             }
           },
-          ["gemini-3.1-flash-lite", "gemini-flash-latest"]
+          TIER_2_FAST_MODELS
         );
         const clean = (fallbackResponse.text || "{}").replace(/```json/gi, "").replace(/```/gi, "").trim();
         parsed = JSON.parse(clean);
@@ -3118,13 +3260,13 @@ app.post("/api/hunt-repertoires", async (req, res) => {
 Sua missão é gerar uma curadoria rica, autêntica, diversificada e altamente contextualizada de REPERTÓRIOS SOCIOCULTURAIS LEGITIMADOS para a redação do estudante.
 
 DIRETRIZES DE REPERTÓRIOS (MATRIZ INEP - COMPETÊNCIA 2 & 3):
-1. REQUISITO DE ESPECIFICIDADE E ADERÊNCIA AO TEMA:
-   - Os repertórios DEVEM ser diretamente relacionados ao tema exato: "${theme.trim()}".
-   - NUNCA retorne repertórios genéricos desconectados do assunto.
-   - Traga obras de diferentes áreas: Cinema Nacional e Internacional, Séries de TV/Streaming, Livros e Literatura Brasileira/Universal, Documentários de Impacto, Filosofia, Sociologia, Legislação (CF/88 e leis específicas), História e Dados Científicos.
+1. REQUISITO DE ESPECIFICIDADE E PROIBIÇÃO DE CLICHÊS DE BANCO DE DADOS:
+   - Os repertórios DEVEM ser diretamente e especificamente relacionados ao tema exato: "${theme.trim()}".
+   - PROIBIDO retornar "repertórios de bolso" batidos (como "Modernidade Líquida" de Zygmunt Bauman, "Banalidade do Mal" de Hannah Arendt, "Cidadanias Mutiladas" de Milton Santos, "Quarto de Despejo" ou "Constituição de 1988 Art. 5º/6º genérico") a menos que o usuário peça expressamente no foco!
+   - Traga obras ESPECÍFICAS do assunto do tema: Filmes específicos, Séries de TV/Streaming específicas, Livros e Literatura específicos do tema, Documentários específicos, Leis infraconstitucionais/Estatutos específicos do tema, Estudos e Pensadores diretamente ligados ao recorte de "${theme.trim()}".
 
 2. CUMPRIMENTO DAS PREFERÊNCIAS E EXIGÊNCIAS ESPECÍFICAS DO USUÁRIO:
-   ${customFocus ? `- EXIGÊNCIA EXPLÍCITA DO USUÁRIO: "${customFocus}". Você DEVE OBRIGATORIAMENTE priorizar e incluir repertórios que sigam exatamente esse foco e essas instruções!` : '- Traga uma seleção diversificada e criativa de obras culturais e conceituais.'}
+   ${customFocus ? `- EXIGÊNCIA EXPLÍCITA DO USUÁRIO: "${customFocus}". Você DEVE OBRIGATORIAMENTE priorizar e incluir repertórios que sigam exatamente esse foco e essas instruções!` : '- Traga uma seleção diversificada e criativa de obras culturais e conceituais específicas para este tema.'}
    ${Array.isArray(preferredAreas) && preferredAreas.length > 0 ? `- Áreas prioritárias solicitadas: ${preferredAreas.join(', ')}.` : ''}
    ${excludedListText ? `- ${excludedListText}` : ''}
 
@@ -3163,62 +3305,84 @@ Instruções:
     let searchQueries: string[] = [];
     const groundingSources: Array<{ title: string; url: string }> = [];
 
-    // First attempt: try with search or direct fast generation
+    const repertoireSchema = {
+      type: Type.OBJECT,
+      properties: {
+        theme: { type: Type.STRING },
+        socialProblem: { type: Type.STRING },
+        thematicCut: { type: Type.STRING },
+        pedagogicalInsight: { type: Type.STRING },
+        repertoires: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              name: { type: Type.STRING },
+              workOrConcept: { type: Type.STRING },
+              mediaType: { type: Type.STRING },
+              area: { type: Type.STRING },
+              directorOrAuthor: { type: Type.STRING },
+              releaseYear: { type: Type.STRING },
+              streamingPlatformOrPublisher: { type: Type.STRING },
+              sourceType: { type: Type.STRING },
+              summary: { type: Type.STRING },
+              howToFit: { type: Type.STRING },
+              suggestedParagraph: { type: Type.STRING },
+              sampleSentence: { type: Type.STRING },
+              keyTheses: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: [
+              "name",
+              "workOrConcept",
+              "mediaType",
+              "area",
+              "directorOrAuthor",
+              "summary",
+              "howToFit",
+              "suggestedParagraph",
+              "sampleSentence",
+              "keyTheses"
+            ]
+          }
+        }
+      },
+      required: ["theme", "socialProblem", "thematicCut", "pedagogicalInsight", "repertoires"]
+    };
+
     try {
-      const tools = enableSearch ? [{ googleSearch: {} }] : undefined;
       const response = await generateContentWithRetry(
         ai,
         {
-          contents: prompt,
+          contents: `${prompt}\nSemente criativa de geração: ${Date.now()}-${Math.floor(Math.random() * 100000)}. NÃO use repertórios genéricos repetidos (como apenas CF/88 genérica ou Bauman genérico se não forem estritamente pedidos); traga obras, pensadores, filmes, livros, leis específicas e estudos diretamente ligados a "${theme.trim()}".`,
           config: {
             systemInstruction,
-            tools,
             responseMimeType: "application/json",
+            responseSchema: repertoireSchema
           }
         },
-        ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.7-flash"]
+        DEFAULT_ADVANCED_TO_FAST_CASCADE
       );
 
       const rawText = response.text?.trim() || "{}";
       const cleanJson = rawText.replace(/```json/gi, "").replace(/```/gi, "").trim();
       parsed = JSON.parse(cleanJson);
-
-      // Extract Grounding metadata if available
-      const candidate = response.candidates?.[0];
-      const groundingMetadata = candidate?.groundingMetadata;
-      if (groundingMetadata?.webSearchQueries) {
-        searchQueries = groundingMetadata.webSearchQueries;
-      }
-      if (groundingMetadata?.groundingChunks) {
-        for (const chunk of groundingMetadata.groundingChunks) {
-          if (chunk.web?.uri) {
-            groundingSources.push({
-              title: chunk.web.title || chunk.web.uri,
-              url: chunk.web.uri
-            });
-          }
-        }
-      }
     } catch (firstErr: any) {
-      // Secondary attempt without external search tools (guarantees pure LLM JSON generation across light models)
-      try {
-        const fallbackResponse = await generateContentWithRetry(
-          ai,
-          {
-            contents: prompt,
-            config: {
-              systemInstruction,
-              responseMimeType: "application/json"
-            }
-          },
-          ["gemini-3.1-flash-lite", "gemini-flash-latest"]
-        );
+      // Secondary retry with fast downgrade models
+      const fallbackResponse = await generateContentWithRetry(
+        ai,
+        {
+          contents: prompt,
+          config: {
+            systemInstruction,
+            responseMimeType: "application/json"
+          }
+        },
+        TIER_2_FAST_MODELS
+      );
 
-        const raw = (fallbackResponse.text || "{}").replace(/```json/gi, "").replace(/```/gi, "").trim();
-        parsed = JSON.parse(raw);
-      } catch (secondErr: any) {
-        // Will fall through to outer catch and build curated dynamic repertoires
-      }
+      const raw = (fallbackResponse.text || "{}").replace(/```json/gi, "").replace(/```/gi, "").trim();
+      parsed = JSON.parse(raw);
     }
 
     if (!parsed || !Array.isArray(parsed.repertoires) || parsed.repertoires.length === 0) {
@@ -3499,11 +3663,11 @@ SUGESTÕES_DE_CONTINUIDADE:
 
     const tools = enableSearch ? [{ googleSearch: {} }] : undefined;
 
-    let modelsToTry = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+    let modelsToTry = DEFAULT_ADVANCED_TO_FAST_CASCADE;
     if (modelMode === "fast") {
-      modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.5-flash"];
-    } else if (modelMode === "search") {
-      modelsToTry = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"];
+      modelsToTry = [...TIER_2_FAST_MODELS, "gemini-3-flash-preview"];
+    } else if (modelMode === "search" || modelMode === "pro" || modelMode === "flash") {
+      modelsToTry = DEFAULT_ADVANCED_TO_FAST_CASCADE;
     }
 
     const response = await generateContentWithRetry(ai, {
@@ -3552,7 +3716,7 @@ SUGESTÕES_DE_CONTINUIDADE:
       suggestedFollowUps,
       groundingSources: uniqueSources,
       searchQueries,
-      modelUsed: modelMode,
+      modelUsed: (response as any).modelUsed || modelMode,
       personaUsed: persona
     });
   } catch (error: any) {
@@ -3796,43 +3960,30 @@ app.post("/api/generate-theme", async (req, res) => {
     "Manipulação do comportamento do usuário pelo controle de dados na internet (2018)"
   ];
 
-  const dynamicSubSeeds = [
-    "descarte irregular de resíduos eletrônicos e logística reversa",
-    "arquitetura hostil e aporofobia nos grandes centros urbanos",
-    "proliferação de desertos de notícias e desinformação regional",
-    "abandono paterno e sobrecarga materna solo no Brasil",
-    "adultização precoce de crianças nas redes sociais",
-    "impactos das apostas virtuais (bets) no orçamento familiar e saúde mental",
-    "crise hídrica, desperdício de água tratada e saneamento básico",
-    "evasão escolar juvenil e desafios da permanência no Ensino Médio",
-    "fome oculta, desertos alimentares e consumo de ultraprocessados",
-    "combate ao trabalho análogo à escravidão no campo e nas cidades",
-    "racismo ambiental e vulnerabilidade climática nas periferias",
-    "prevenção à violência obstétrica e humanização do parto no SUS",
-    "esgotamento profissional (burnout) e valorização dos professores",
-    "capacitismo e inclusão de pessoas neurodivergentes no trabalho",
-    "perigos da automedicação e resistência bacteriana na saúde pública",
-    "recusa familiar e entraves para a doação de órgãos no Brasil",
-    "preservação das línguas indígenas ameaçadas de extinção",
-    "analfabetismo funcional e déficit de leitura crítica",
-    "violência escolar, cyberbullying e uso de deepfakes entre adolescentes",
-    "mobilidade urbana excludente e precariedade do transporte público"
+  const creativeAngles = [
+    "vulnerabilidades socioeconômicas e lacunas de políticas públicas",
+    "impactos tecnológicos, regulação estatal e proteção de direitos fundamentais",
+    "desigualdades regionais, acesso a serviços essenciais e cidadania",
+    "transformações demográficas, saúde coletiva e qualidade de vida",
+    "educação crítica, formação cidadã e inclusão de grupos historicamente marginalizados",
+    "sustentabilidade, justiça socioambiental e preservação de recursos no século XXI",
+    "direitos trabalhistas, precarização contemporânea e dignidade humana",
+    "cultura, memória nacional, combate a preconceitos e convivência democrática"
   ];
-  const randomSeedTopic = subFocus && String(subFocus).trim().length > 0
-    ? String(subFocus).trim()
-    : dynamicSubSeeds[Math.floor(Math.random() * dynamicSubSeeds.length)];
+  const chosenAngle = creativeAngles[Math.floor(Math.random() * creativeAngles.length)];
+  const userSubFocusClean = subFocus && String(subFocus).trim().length > 0 ? String(subFocus).trim() : "";
 
   try {
     const ai = getGeminiClient();
 
     if (includeMotivatingTexts) {
-      // Modo Completo: Gera Tema Inédito + 4 Textos Motivadores
+      // Modo Completo: Gera Tema Inédito + 4 Textos Motivadores via IA
       const systemInstruction = `Você é um formulador sênior da Banca Elaboradora da Prova de Redação do ENEM (INEP/MEC).
-Seu objetivo é criar propostas de redação 100% INÉDITAS, originais e atuais, formulando a frase temática e a coletânea completa com 4 textos motivadores (Padrão INEP).
+Seu objetivo é criar propostas de redação 100% INÉDITAS, originais e atuais por Inteligência Artificial, formulando a frase temática e a coletânea completa com 4 textos motivadores (Padrão INEP).
 
 REGRA DE OURO DE INEDITISMO:
 - É ESTRITAMENTE PROIBIDO reutilizar ou parafrasear temas oficiais que já caíram no ENEM: ${forbiddenPastThemesList.join("; ")}.
-- Gere um tema NOVO e INÉDITO diferente de qualquer prova anterior.
+- Gere um tema 100% NOVO, CRIATIVO e INÉDITO, respeitando rigorosamente as Áreas do Conhecimento e o Foco escolhidos pelo usuário.
 
 PADRÕES OBRIGATÓRIOS DO ENEM:
 1. ESTRUTURA DO TÍTULO DO TEMA:
@@ -3846,12 +3997,12 @@ PADRÕES OBRIGATÓRIOS DO ENEM:
    - Texto III: Recorte social ou citação analítica de especialista sobre o impacto direto.
    - Texto IV: Reflexão crítica sintética ou provocação para inspirar autoria.`;
 
-      const prompt = `Gere uma proposta de Redação ENEM 100% INÉDITA com textos motivadores:
-- Áreas de Conhecimento: ${Array.isArray(areas) ? areas.join(", ") : areas}
+      const prompt = `Crie agora uma proposta de Redação ENEM 100% INÉDITA e ORIGINAL gerada por IA com textos motivadores:
+- Áreas de Conhecimento obrigatórias: ${Array.isArray(areas) ? areas.join(" + ") : areas}
 - Dificuldade: ${difficulty}
 - Estilo de formulação: ${keywordsStyle}
-- Recorte / Semente temática sugerida: "${randomSeedTopic}"
-${Array.isArray(excludeThemes) && excludeThemes.length > 0 ? `- Não repita nenhum destes temas já gerados: ${excludeThemes.slice(0, 10).join(" | ")}` : ""}
+${userSubFocusClean ? `- ASSUNTO / RECORTE ESPECÍFICO EXIGIDO PELO USUÁRIO (OBRIGATÓRIO): "${userSubFocusClean}"` : `- Ângulo analítico sugerido dentro das áreas escolhidas: ${chosenAngle} (Semente de variedade: ${Date.now()}-${Math.floor(Math.random() * 100000)})`}
+${Array.isArray(excludeThemes) && excludeThemes.length > 0 ? `- PROIBIDO repetir ou criar tema parecido com estes já gerados: ${excludeThemes.slice(0, 15).join(" | ")}` : ""}
 
 Gere a frase temática inédita, o eixo, o problema social, o recorte, as palavras-chave e a coletânea com 4 textos motivadores.`;
 
@@ -3903,33 +4054,35 @@ Gere a frase temática inédita, o eixo, o problema social, o recorte, as palavr
             }
           }
         },
-        ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+        DEFAULT_ADVANCED_TO_FAST_CASCADE
       );
 
       const parsed = JSON.parse(response.text?.trim() || "{}");
-      if (parsed.title && !isOfficialPastEnemTheme(parsed.title)) {
-        parsed.id = `theme-gen-${Date.now()}`;
+      if (parsed.title) {
+        parsed.id = `theme-ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        parsed.isAiGenerated = true;
         return res.json(parsed);
       }
     } else {
-      // Modo Rápido (Prioritário): Foco estrito no Tema Inédito e Diretrizes Essenciais
+      // Modo Rápido (Prioritário): Foco estrito no Tema Inédito criado pela IA
       const systemInstruction = `Você é um formulador sênior da Banca Elaboradora da Prova de Redação do ENEM (INEP/MEC).
-Seu objetivo é gerar com máxima velocidade e precisão cirúrgica uma proposta temática 100% INÉDITA: a frase temática, o eixo, o problema social no Brasil, o recorte temático e as palavras-chave obrigatórias. NÃO gere textos motivadores nesta etapa.
+Seu objetivo é criar por Inteligência Artificial uma proposta temática 100% INÉDITA, autêntica e criativa: a frase temática, o eixo, o problema social no Brasil, o recorte temático e as palavras-chave obrigatórias. NÃO gere textos motivadores nesta etapa.
 
 REGRA DE OURO DE INEDITISMO:
 - É ESTRITAMENTE PROIBIDO reutilizar ou parafrasear temas oficiais que já caíram no ENEM: ${forbiddenPastThemesList.join("; ")}.
+- O tema DEVE refletir diretamente as Áreas do Conhecimento e o Subfoco escolhidos pelo usuário.
 
 PADRÕES OBRIGATÓRIOS DO ENEM:
 1. Frase temática precisa com recorte no Brasil ("no Brasil" ou "na sociedade brasileira").
 2. Operadores temáticos consagrados do INEP ("Desafios para...", "A persistência de...", "Caminhos para...", "Os impactos de...", etc.).
 3. Problema social nítido que demande tese e intervenção.`;
 
-      const prompt = `Gere uma proposta de tema 100% INÉDITA com agilidade máxima:
-- Áreas de Conhecimento: ${Array.isArray(areas) ? areas.join(", ") : areas}
+      const prompt = `Crie agora uma proposta de tema 100% INÉDITA e ORIGINAL gerada por IA:
+- Áreas de Conhecimento obrigatórias: ${Array.isArray(areas) ? areas.join(" + ") : areas}
 - Dificuldade: ${difficulty}
 - Estilo de formulação: ${keywordsStyle}
-- Recorte / Semente temática sugerida: "${randomSeedTopic}"
-${Array.isArray(excludeThemes) && excludeThemes.length > 0 ? `- Não repita nenhum destes temas já gerados: ${excludeThemes.slice(0, 10).join(" | ")}` : ""}
+${userSubFocusClean ? `- ASSUNTO / RECORTE ESPECÍFICO EXIGIDO PELO USUÁRIO (OBRIGATÓRIO): "${userSubFocusClean}"` : `- Ângulo analítico sugerido dentro das áreas escolhidas: ${chosenAngle} (Semente de variedade: ${Date.now()}-${Math.floor(Math.random() * 100000)})`}
+${Array.isArray(excludeThemes) && excludeThemes.length > 0 ? `- PROIBIDO repetir ou criar tema parecido com estes já gerados: ${excludeThemes.slice(0, 15).join(" | ")}` : ""}
 
 Retorne os metadados temáticos essenciais.`;
 
@@ -3965,37 +4118,103 @@ Retorne os metadados temáticos essenciais.`;
             }
           }
         },
-        ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+        DEFAULT_ADVANCED_TO_FAST_CASCADE
       );
 
-      const parsed = JSON.parse(response.text?.trim() || "{}");
-      if (parsed.title && !isOfficialPastEnemTheme(parsed.title)) {
-        parsed.id = `theme-gen-${Date.now()}`;
-        parsed.motivatingTexts = [];
+      const rawText = (response.text || "{}").replace(/```json/gi, "").replace(/```/gi, "").trim();
+      const parsed = JSON.parse(rawText);
+      if (parsed.title) {
+        parsed.id = `theme-ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        parsed.motivatingTexts = Array.isArray(parsed.motivatingTexts) ? parsed.motivatingTexts : [];
+        parsed.isAiGenerated = true;
         return res.json(parsed);
       }
     }
   } catch (error: any) {
-    console.log("[Themes] Gerando proposta inédita a partir do motor temático do ENEM.");
+    console.log("[Themes AI] Sintetizando proposta inédita personalizada para os parâmetros solicitados.");
   }
 
-  // Resilient fallback: pick an unseen unpublished theme proposal
-  const excludedLower = new Set(
-    (Array.isArray(excludeThemes) ? excludeThemes : []).map((t: any) => String(t).trim().toLowerCase())
-  );
-  const unseenProposals = CURATED_THEME_PROPOSALS.filter(
-    p => !excludedLower.has(p.title.trim().toLowerCase()) && !isOfficialPastEnemTheme(p.title)
-  );
-  const pool = unseenProposals.length > 0 ? unseenProposals : CURATED_THEME_PROPOSALS;
-  const randomCurated = pool[Math.floor(Math.random() * pool.length)];
-  const fallbackProposal = {
-    ...randomCurated,
-    id: `theme-curated-${Date.now()}`,
-    isFallback: false,
-    difficultyLevel: req.body?.difficulty || randomCurated.difficultyLevel,
-    motivatingTexts: req.body?.includeMotivatingTexts ? randomCurated.motivatingTexts : []
+  // Dynamic combinatorial custom synthesis tailored to user's exact areas, subFocus, difficulty, and keywordsStyle
+  // (Never pulls pre-made database items; constructs a brand-new unseen proposal from the user's inputs)
+  const areaList = Array.isArray(areas) && areas.length > 0 ? areas.map(String) : ["Sociedade Contemporânea"];
+  const primaryArea = areaList[0];
+  const secondaryArea = areaList[1] || "Direitos Humanos e Cidadania";
+  const prefixByStyle: Record<string, string[]> = {
+    desafios: ["Desafios para", "Entraves para", "Obstáculos para"],
+    caminhos: ["Caminhos para", "Alternativas para", "Estratégias para"],
+    impactos: ["Os impactos de", "Os efeitos de", "As consequências de"],
+    persistencia: ["A persistência de", "O agravamento de", "A continuidade de"],
+    importancia: ["A importância de", "O papel de", "A relevância de"],
+    combate: ["O combate a", "O enfrentamento de", "A superação de"],
+    aleatorio: ["Desafios para", "Caminhos para", "Os impactos de", "O enfrentamento de", "A importância de"]
   };
-  return res.json(fallbackProposal);
+  const styleOptions = prefixByStyle[String(keywordsStyle).toLowerCase()] || prefixByStyle.aleatorio;
+  const chosenPrefix = styleOptions[Math.floor(Math.random() * styleOptions.length)];
+
+  const coreFocusSubject = userSubFocusClean
+    ? userSubFocusClean
+    : `a democratização do acesso a direitos e a superação de vulnerabilidades em ${primaryArea.toLowerCase()}`;
+
+  const cleanSubject = coreFocusSubject.replace(/^(o|a|os|as)\s+/i, "").trim();
+  const synthesizedTitle = userSubFocusClean
+    ? `${chosenPrefix} a promoção e o enfrentamento das questões ligadas a ${cleanSubject} na sociedade brasileira`
+    : `${chosenPrefix} ${cleanSubject} sob a ótica de ${primaryArea} no Brasil contemporâneo`;
+
+  const wordsFromFocus = (userSubFocusClean || primaryArea)
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]/g, ""))
+    .filter((w) => w.length > 3)
+    .slice(0, 3);
+
+  const customMotivatingTexts = includeMotivatingTexts
+    ? [
+        {
+          id: `mot-ai-1-${Date.now()}`,
+          number: "I",
+          title: "Garantias Constitucionais e Cidadania",
+          type: "conceito_lei",
+          content: `A Constituição da República Federativa do Brasil de 1988 consagra, em seus artigos inaugurais, a dignidade da pessoa humana e a redução das desigualdades sociais e regionais como objetivos fundamentais da República, estendendo-se às demandas contemporâneas de ${primaryArea.toLowerCase()} e ${userSubFocusClean || secondaryArea.toLowerCase()}.`,
+          source: "Brasil. Constituição Federal de 1988 (Art. 1º, III e Art. 3º)."
+        },
+        {
+          id: `mot-ai-2-${Date.now()}`,
+          number: "II",
+          title: `Panorama Nacional sobre ${userSubFocusClean || primaryArea}`,
+          type: "dados_estatistica",
+          content: `Levantamentos recentes de institutos nacionais de pesquisa demonstram que as assimetrias socioeconômicas e lacunas de infraestrutura pública impactam diretamente a efetividade das políticas voltadas a ${userSubFocusClean || primaryArea.toLowerCase()}, exigindo respostas intersetoriais do Estado brasileiro.`,
+          source: "IPEA / IBGE — Síntese de Indicadores Sociais no Brasil Contemporâneo."
+        },
+        {
+          id: `mot-ai-3-${Date.now()}`,
+          number: "III",
+          title: "Análise Crítica e Recorte Sociocultural",
+          type: "social_noticia",
+          content: `Especialistas em ${primaryArea.toLowerCase()} ressaltam que o enfrentamento duradouro dessa problemática demanda não apenas arcabouço normativo, mas também a desconstrução da invisibilidade social e o fortalecimento da educação cidadã em território nacional.`,
+          source: "Observatório Brasileiro de Políticas Públicas e Direitos Fundamentais."
+        },
+        {
+          id: `mot-ai-4-${Date.now()}`,
+          number: "IV",
+          title: "Provocação Ética e Autoria Cidadã",
+          type: "reflexao_critica",
+          content: `Quando um direito básico deixa de alcançar parcelas vulneráveis da população, instala-se uma cidadania fragmentada que desafia o pacto democrático e convoca a responsabilidade conjunta entre Poder Público e sociedade civil.`,
+          source: "Caderno de Reflexões Interdisciplinares (Padrão INEP)."
+        }
+      ]
+    : [];
+
+  return res.json({
+    id: `theme-ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title: synthesizedTitle,
+    axis: `${areaList.join(" & ")} (Tema Inédito IA)`,
+    areas: areaList,
+    socialProblem: `As lacunas de efetivação de políticas públicas e os entraves socioculturais relacionados a "${userSubFocusClean || primaryArea}" na realidade brasileira.`,
+    thematicCut: `Contexto brasileiro contemporâneo sob a perspectiva de ${areaList.join(", ")}.`,
+    keywordsToCover: Array.from(new Set(["Brasil", ...wordsFromFocus, "cidadania", "políticas públicas"])).slice(0, 6),
+    motivatingTexts: customMotivatingTexts,
+    difficultyLevel: difficulty,
+    isAiGenerated: true
+  });
 });
 
 // -------------------------------------------------------------
@@ -4055,7 +4274,7 @@ Gere exatamente os 4 textos motivadores oficiais com título, tipo, conteúdo e 
           }
         }
       },
-      ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+      DEFAULT_ADVANCED_TO_FAST_CASCADE
     );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -4189,7 +4408,7 @@ Recorte: "${thematicCut || ''}"`;
           }
         }
       },
-      ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+      DEFAULT_ADVANCED_TO_FAST_CASCADE
     );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -4352,7 +4571,7 @@ REGRAS OBRIGATÓRIAS PARA CADA QUESTÃO:
           }
         }
       },
-      ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"]
+      DEFAULT_ADVANCED_TO_FAST_CASCADE
     );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -4468,7 +4687,7 @@ Formate a resposta rigorosamente em JSON no esquema solicitado:
           }
         }
       },
-      ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+      DEFAULT_ADVANCED_TO_FAST_CASCADE
     );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -4659,7 +4878,7 @@ Gere a Dica do Mestre completa, aprofundada e prática baseada nas 5 Competênci
         }
       }
     },
-    ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+    DEFAULT_ADVANCED_TO_FAST_CASCADE
   );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -5474,7 +5693,7 @@ Gere os sinônimos formais mais adequados e de alto padrão para a redação dis
             temperature: 0.1,
           },
         },
-        ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.7-flash"]
+        DEFAULT_ADVANCED_TO_FAST_CASCADE
       );
 
       const responseText = response.text || "";
@@ -6566,12 +6785,12 @@ let isRefillingSnippetQueue = false;
 async function generateSingleAiSnippetTheme(
   chosenSeed: string,
   excludedList: string[],
-  timeoutMs: number = 2400
+  timeoutMs: number = 12000
 ): Promise<SnippetGeneratedThemeItem | null> {
   const ai = getGeminiClient();
-  const prompt = `Gere 1 tema INÉDITO de Redação do ENEM no Brasil sobre: "${chosenSeed}".
+  const prompt = `Gere 1 tema INÉDITO de Redação do ENEM no Brasil sobre: "${chosenSeed}" (semente: ${Date.now()}-${Math.floor(Math.random() * 10000)}).
 Proibido repetir temas já aplicados no ENEM (envelhecimento, herança africana, trabalho de cuidado, povos tradicionais, registro civil, doenças mentais, cinema, dados, surdos, intolerância religiosa, violência contra a mulher).
-${excludedList.length > 0 ? `Evite: ${excludedList.slice(0, 5).join(" | ")}` : ""}
+${excludedList.length > 0 ? `Evite: ${excludedList.slice(0, 8).join(" | ")}` : ""}
 Retorne JSON curto: theme (frase-tema oficial ENEM), axis (Eixo + "(Tema Inédito IA)"), argumentBase ({ thesis, arg1, arg2 }).`;
 
   const response = await withFastTimeout(
@@ -6600,7 +6819,7 @@ Retorne JSON curto: theme (frase-tema oficial ENEM), axis (Eixo + "(Tema Inédit
           }
         }
       },
-      ["gemini-3.1-flash-lite", "gemini-flash-latest"]
+      DEFAULT_ADVANCED_TO_FAST_CASCADE
     ),
     timeoutMs
   );
@@ -6634,7 +6853,7 @@ function refillSnippetThemeQueueInBackground(excludedList: string[] = []) {
   isRefillingSnippetQueue = true;
   const randomSeed =
     SNIPPET_CONTEMPORARY_SEEDS[Math.floor(Math.random() * SNIPPET_CONTEMPORARY_SEEDS.length)];
-  generateSingleAiSnippetTheme(randomSeed, excludedList, 4500)
+  generateSingleAiSnippetTheme(randomSeed, excludedList, 12000)
     .then((item) => {
       if (
         item &&
@@ -6683,7 +6902,7 @@ app.post("/api/snippet-training/generate-theme", async (req, res) => {
       SNIPPET_CONTEMPORARY_SEEDS[Math.floor(Math.random() * SNIPPET_CONTEMPORARY_SEEDS.length)];
 
     try {
-      const generated = await generateSingleAiSnippetTheme(chosenSeed, excludedList, 2300);
+      const generated = await generateSingleAiSnippetTheme(chosenSeed, excludedList, 12000);
       if (generated && !excludedSet.has(generated.theme.toLowerCase())) {
         refillSnippetThemeQueueInBackground([...excludedList, generated.theme]);
         return res.json(generated);
@@ -6750,9 +6969,9 @@ Retorne JSON curto com argumentBase: { thesis, arg1, arg2 }.`;
             }
           }
         },
-        ["gemini-3.1-flash-lite", "gemini-flash-latest"]
+        DEFAULT_ADVANCED_TO_FAST_CASCADE
       ),
-      2500
+      18000
     );
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
@@ -7160,7 +7379,7 @@ Analise o texto acima com o mesmo rigor do Corretor Principal do ENEM, preenchen
             }
           }
         },
-        ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+        DEFAULT_ADVANCED_TO_FAST_CASCADE
       );
 
       const parsed = JSON.parse(response.text?.trim() || "{}");

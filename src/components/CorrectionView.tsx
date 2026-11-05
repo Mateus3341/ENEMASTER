@@ -77,14 +77,14 @@ import { CorrectionSkeleton } from './SavedDataSkeleton';
  * com controle rigoroso de cota (limite de itens e bytes) no localStorage para evitar degradação de performance.
  */
 export const LOG_CONFIG = {
-  versao_modelo: 'gemini-2.5-flash-enem-v2.4-strict',
+  versao_modelo: 'gemini-4-argon / gemini-3.8-flash (auto-downgrade gemini-3.1-flash-lite)',
   storageKey: 'enem_ia_analysis_logs_v1',
   maxStoredLogs: 30, // Limite ótimo de registros históricos mantidos
   maxStorageSizeBytes: 300 * 1024, // Limite rígido de 300 KB para o histórico de auditoria
   maxSnippetLength: 400, // Limite de caracteres por snippet de evidência no log para evitar inchaço
   autoPersist: true,
   ambiente: 'producao-banca-inep',
-  banca_versao: 'Matriz_Referencia_INEP_2024_2025',
+  banca_versao: 'Matriz_Referencia_INEP_2025_2026',
 
   /**
    * Trunca trechos longos de texto para otimização de payload

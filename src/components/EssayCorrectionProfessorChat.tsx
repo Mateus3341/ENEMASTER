@@ -118,7 +118,7 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
           persona,
           history: historyPayload,
           enableSearch: false,
-          modelMode: 'flash',
+          modelMode: 'pro',
           essayContext: correctionResult.essayText,
           themeContext: correctionResult.theme,
           analysisContext: buildAnalysisContext(),

@@ -598,7 +598,7 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
     );
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3200);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
       const res = await fetch('/api/snippet-training/generate-theme', {
@@ -665,7 +665,7 @@ export const SnippetWritingView: React.FC<SnippetWritingViewProps> = ({
     );
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3600);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
       const res = await fetch('/api/snippet-training/generate-arguments', {

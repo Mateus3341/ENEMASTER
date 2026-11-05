@@ -99,7 +99,7 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
         return stored as any;
       }
     } catch {}
-    return 'flash';
+    return 'pro';
   });
 
   const [enableSearch, setEnableSearch] = useState<boolean>(() => {
@@ -845,16 +845,16 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
             {/* Model Mode Switcher */}
             <div className="flex items-center bg-white dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700">
               <button
-                onClick={() => setModelMode('flash')}
+                onClick={() => setModelMode('pro')}
                 className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                  modelMode === 'flash'
+                  modelMode === 'pro' || modelMode === 'flash'
                     ? 'bg-indigo-600 text-white shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
-                title="Modo Inteligente Equilibrado (Gemini Flash)"
+                title="Melhores Modelos Avançados (com proteção automática de downgrade para modelos mais rápidos)"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>Padrão</span>
+                <span>Avançado</span>
               </button>
 
               <button
@@ -864,7 +864,7 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
                     ? 'bg-indigo-600 text-white shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
-                title="Modo Ultra Rápido (Flash Lite)"
+                title="Modo Ultra Rápido (Flash Lite direto)"
               >
                 <Zap className="w-3.5 h-3.5 text-amber-300" />
                 <span>Rápido</span>
