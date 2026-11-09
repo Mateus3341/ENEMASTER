@@ -539,10 +539,10 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   const { startTask, updateTaskProgress, completeTask, failTask, getTaskByTab } = useBackgroundTasks();
 
   const [theme, setTheme] = useState<string>(() => {
-    if (initialCorrectionResult?.theme) return initialCorrectionResult.theme;
-    if (initialTheme) return initialTheme;
-    if (savedWork.activeCorrection?.theme) return savedWork.activeCorrection.theme;
-    if (savedWork.correctionDraftTheme) return savedWork.correctionDraftTheme;
+    const activeT = initialCorrectionResult?.theme || initialTheme || savedWork.activeCorrection?.theme || savedWork.correctionDraftTheme;
+    if (activeT && HISTORICAL_THEMES.some(t => t.title === activeT)) {
+      return activeT;
+    }
     return HISTORICAL_THEMES[0].title;
   });
 
@@ -565,7 +565,10 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   
   // Keep draft persisted in background
   useEffect(() => {
-    const activeThemeTitle = isCustomTheme ? customThemeInput : theme;
+    const validHistoricalTheme = HISTORICAL_THEMES.some(t => t.title === theme)
+      ? theme
+      : HISTORICAL_THEMES[0].title;
+    const activeThemeTitle = isCustomTheme ? customThemeInput : validHistoricalTheme;
     setCorrectionDraft(essayText, activeThemeTitle);
   }, [essayText, theme, isCustomTheme, customThemeInput, setCorrectionDraft]);
 
@@ -608,34 +611,54 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   const [cartilhaModalTab, setCartilhaModalTab] = useState<'matrix' | 'zero' | 'rules'>('matrix');
   const [selectedCartilhaComp, setSelectedCartilhaComp] = useState<1 | 2 | 3 | 4 | 5>(1);
 
+  // Sync if initialTheme prop changes (e.g. when selecting a theme on Dashboard or Theme Generator)
+  useEffect(() => {
+    if (initialTheme) {
+      setCorrectionResult(null);
+      if (HISTORICAL_THEMES.some(t => t.title === initialTheme)) {
+        setTheme(initialTheme);
+        setIsCustomTheme(false);
+      } else {
+        setIsCustomTheme(true);
+        setCustomThemeInput(initialTheme);
+      }
+    }
+  }, [initialTheme]);
+
   // Sync if initialCorrectionResult prop changes
   useEffect(() => {
     if (initialCorrectionResult) {
       setCorrectionResult(initialCorrectionResult);
       setActiveCorrection(initialCorrectionResult);
-      setTheme(initialCorrectionResult.theme);
       setEssayText(initialCorrectionResult.essayText || '');
       setIsSaved(true);
       if (!HISTORICAL_THEMES.some(t => t.title === initialCorrectionResult.theme)) {
         setIsCustomTheme(true);
         setCustomThemeInput(initialCorrectionResult.theme);
       } else {
+        setTheme(initialCorrectionResult.theme);
         setIsCustomTheme(false);
       }
     }
   }, [initialCorrectionResult, setActiveCorrection]);
 
+  const lastSyncedActiveIdRef = useRef<string | undefined>(savedWork.activeCorrection?.id);
+
   // Sync state if background task completed while user was on another tab
   useEffect(() => {
-    if (savedWork.activeCorrection && (!correctionResult || savedWork.activeCorrection.id !== correctionResult.id)) {
+    if (
+      savedWork.activeCorrection &&
+      savedWork.activeCorrection.id !== lastSyncedActiveIdRef.current
+    ) {
+      lastSyncedActiveIdRef.current = savedWork.activeCorrection.id;
       setCorrectionResult(savedWork.activeCorrection);
       setIsSaved(true);
       if (savedWork.activeCorrection.theme) {
-        setTheme(savedWork.activeCorrection.theme);
         if (!HISTORICAL_THEMES.some(t => t.title === savedWork.activeCorrection?.theme)) {
           setIsCustomTheme(true);
           setCustomThemeInput(savedWork.activeCorrection.theme);
         } else {
+          setTheme(savedWork.activeCorrection.theme);
           setIsCustomTheme(false);
         }
       }
@@ -838,7 +861,10 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   };
 
   const handleRunCorrection = async () => {
-    const activeTheme = isCustomTheme ? customThemeInput.trim() : theme.trim();
+    const validHistoricalTheme = HISTORICAL_THEMES.some(t => t.title === theme)
+      ? theme.trim()
+      : HISTORICAL_THEMES[0].title;
+    const activeTheme = isCustomTheme ? customThemeInput.trim() : validHistoricalTheme;
     if (!activeTheme) {
       setErrorMsg('Por favor, informe o tema da redação.');
       return;
@@ -1364,7 +1390,6 @@ ESTRUTURA C5 (PROPOSTA DE INTERVENÇÃO):
                       type="button"
                       onClick={() => {
                         setCorrectionResult(saved);
-                        setTheme(saved.theme);
                         setEssayText(saved.essayText || '');
                         setIsSaved(true);
                         setShowHistoryDropdown(false);
@@ -1375,6 +1400,7 @@ ESTRUTURA C5 (PROPOSTA DE INTERVENÇÃO):
                           setIsCustomTheme(true);
                           setCustomThemeInput(saved.theme);
                         } else {
+                          setTheme(saved.theme);
                           setIsCustomTheme(false);
                         }
                       }}
@@ -1417,6 +1443,7 @@ ESTRUTURA C5 (PROPOSTA DE INTERVENÇÃO):
             <button
               onClick={() => {
                 setCorrectionResult(null);
+                setActiveCorrection(null);
                 setEssayText('');
                 setOcrFileName('');
                 try {
@@ -1456,7 +1483,12 @@ ESTRUTURA C5 (PROPOSTA DE INTERVENÇÃO):
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
-                  onClick={() => setIsCustomTheme(false)}
+                  onClick={() => {
+                    setIsCustomTheme(false);
+                    if (!HISTORICAL_THEMES.some(t => t.title === theme)) {
+                      setTheme(HISTORICAL_THEMES[0].title);
+                    }
+                  }}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                     !isCustomTheme 
                       ? 'bg-indigo-600 text-white shadow-xs' 
@@ -1481,7 +1513,7 @@ ESTRUTURA C5 (PROPOSTA DE INTERVENÇÃO):
               {!isCustomTheme ? (
                 <select
                   id="select-historical-theme"
-                  value={theme}
+                  value={HISTORICAL_THEMES.some(t => t.title === theme) ? theme : HISTORICAL_THEMES[0].title}
                   onChange={(e) => setTheme(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 text-xs sm:text-sm font-medium bg-slate-50/50 dark:bg-slate-800 focus:bg-white dark:focus:bg-slate-800 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-hidden transition-all"
                 >

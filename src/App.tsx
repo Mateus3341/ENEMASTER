@@ -628,7 +628,7 @@ export default function App() {
           <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2 sm:gap-4 text-center sm:text-right">
             <div className="flex items-center gap-1.5 font-medium">
               <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-              <span>Matriz Oficial INEP 2018–2025</span>
+              <span>Matriz Oficial INEP 2018–2026</span>
             </div>
             <span className="hidden sm:inline text-slate-300 dark:text-slate-700">•</span>
             <p className="text-slate-400 dark:text-slate-500">

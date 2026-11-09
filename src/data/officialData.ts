@@ -18,6 +18,12 @@ export type {
 
 export const HISTORICAL_THEMES = [
   {
+    year: '2026',
+    title: 'A valorização do Sistema Único de Saúde (SUS) como direito universal',
+    axis: 'Saúde Pública, Cidadania e Direitos Sociais',
+    keyPoints: 'Universalidade, integralidade e equidade do SUS (Art. 196 da CF/88 e Lei nº 8.080/1990), enfrentamento ao subfinanciamento crônico e às filas de atendimento, combate à estigmatização do serviço público e defesa da saúde gratuita de qualidade.',
+  },
+  {
     year: '2025',
     title: 'Perspectivas acerca do envelhecimento na sociedade brasileira',
     axis: 'Demografia, Direitos e Saúde Pública',

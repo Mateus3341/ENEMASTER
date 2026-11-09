@@ -511,9 +511,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 dark:bg-indigo-400"></span>
-              <h3 className="text-base font-extrabold text-slate-900 dark:text-slate-100">Temas Oficiais do ENEM (2018–2025)</h3>
+              <h3 className="text-base font-extrabold text-slate-900 dark:text-slate-100">Temas Oficiais do ENEM (2018–2026)</h3>
               <span className="px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/80 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 text-[10px] font-black">
-                Inclui 2025
+                Inclui 2026
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Selecione um tema para carregar diretamente no Corretor ou no Criador de Redações</p>
@@ -530,8 +530,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {HISTORICAL_THEMES.slice(0, 8).map((theme) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          {HISTORICAL_THEMES.map((theme) => (
             <div
               key={theme.year}
               id={`theme-preset-card-${theme.year}`}
@@ -540,7 +540,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 setActiveTab('correction');
               }}
               className={`p-4 rounded-2xl border transition-all cursor-pointer group flex flex-col justify-between ${
-                theme.year === '2025' 
+                theme.year === '2026' 
                   ? 'border-indigo-300 dark:border-indigo-700 bg-gradient-to-b from-indigo-50/80 to-white dark:from-indigo-950/50 dark:to-slate-800/90 shadow-2xs hover:border-indigo-500 ring-1 ring-indigo-200 dark:ring-indigo-800'
                   : 'border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/70 hover:bg-indigo-50/60 dark:hover:bg-slate-750 hover:border-indigo-300 dark:hover:border-indigo-600'
               }`}
@@ -548,7 +548,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full transition-colors ${
-                    theme.year === '2025'
+                    theme.year === '2026'
                       ? 'bg-indigo-600 text-white'
                       : 'bg-slate-200/80 text-slate-800 dark:bg-slate-700 dark:text-slate-200 group-hover:bg-indigo-600 group-hover:text-white'
                   }`}>

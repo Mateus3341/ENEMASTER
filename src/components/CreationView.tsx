@@ -67,9 +67,8 @@ export const CreationView: React.FC<CreationViewProps> = ({
   const { startTask, updateTaskProgress, completeTask, failTask } = useBackgroundTasks();
 
   const [theme, setTheme] = useState<string>(() => {
-    if (initialTheme) return initialTheme;
-    if (savedWork.creationTheme) return savedWork.creationTheme;
-    if (savedWork.generatedEssay?.theme) return savedWork.generatedEssay.theme;
+    const activeT = initialTheme || savedWork.creationTheme || savedWork.generatedEssay?.theme;
+    if (activeT && HISTORICAL_THEMES.some(t => t.title === activeT)) return activeT;
     return HISTORICAL_THEMES[0].title;
   });
 
@@ -100,8 +99,10 @@ export const CreationView: React.FC<CreationViewProps> = ({
   // Sync with initialTheme
   useEffect(() => {
     if (initialTheme) {
-      setTheme(initialTheme);
-      if (!HISTORICAL_THEMES.some(t => t.title === initialTheme)) {
+      if (HISTORICAL_THEMES.some(t => t.title === initialTheme)) {
+        setIsCustomTheme(false);
+        setTheme(initialTheme);
+      } else {
         setIsCustomTheme(true);
         setCustomThemeInput(initialTheme);
       }
@@ -113,8 +114,10 @@ export const CreationView: React.FC<CreationViewProps> = ({
     if (savedWork.generatedEssay && (!generatedEssay || (savedWork.generatedEssay.id && generatedEssay.id ? savedWork.generatedEssay.id !== generatedEssay.id : savedWork.generatedEssay.fullText !== generatedEssay.fullText))) {
       setGeneratedEssay(savedWork.generatedEssay);
       if (savedWork.generatedEssay.theme) {
-        setTheme(savedWork.generatedEssay.theme);
-        if (!HISTORICAL_THEMES.some(t => t.title === savedWork.generatedEssay?.theme)) {
+        if (HISTORICAL_THEMES.some(t => t.title === savedWork.generatedEssay?.theme)) {
+          setIsCustomTheme(false);
+          setTheme(savedWork.generatedEssay.theme);
+        } else {
           setIsCustomTheme(true);
           setCustomThemeInput(savedWork.generatedEssay.theme);
         }
@@ -181,7 +184,10 @@ export const CreationView: React.FC<CreationViewProps> = ({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const activeTheme = isCustomTheme ? customThemeInput.trim() : theme.trim();
+  const validHistoricalTheme = HISTORICAL_THEMES.some(t => t.title === theme)
+    ? theme
+    : HISTORICAL_THEMES[0].title;
+  const activeTheme = isCustomTheme ? customThemeInput.trim() : validHistoricalTheme.trim();
 
   // Save focus draft and active theme to localStorage and SavedWorkContext
   useEffect(() => {
@@ -637,7 +643,12 @@ export const CreationView: React.FC<CreationViewProps> = ({
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => setIsCustomTheme(false)}
+              onClick={() => {
+                setIsCustomTheme(false);
+                if (!HISTORICAL_THEMES.some(t => t.title === theme)) {
+                  setTheme(HISTORICAL_THEMES[0].title);
+                }
+              }}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                 !isCustomTheme 
                   ? 'bg-indigo-600 text-white shadow-xs' 

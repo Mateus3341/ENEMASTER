@@ -3950,6 +3950,7 @@ app.post("/api/generate-theme", async (req, res) => {
   } = req.body || {};
 
   const forbiddenPastThemesList = [
+    "A valorização do Sistema Único de Saúde (SUS) como direito universal (2026)",
     "Perspectivas acerca do envelhecimento na sociedade brasileira (2025)",
     "Desafios para a valorização da herança africana no Brasil (2024)",
     "Desafios para o enfrentamento da invisibilidade do trabalho de cuidado realizado pela mulher no Brasil (2023)",
@@ -5789,6 +5790,8 @@ function isOfficialPastEnemTheme(candidateTitle: string): boolean {
   if (!norm) return false;
 
   const pastEnemPatterns = [
+    /valorizacao do sistema unico de saude/,
+    /sistema unico de saude.*como direito universal/,
     /perspectivas acerca do envelhecimento/,
     /envelhecimento na sociedade brasileira/,
     /valorizacao da heranca africana/,

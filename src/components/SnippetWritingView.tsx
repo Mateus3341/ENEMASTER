@@ -114,6 +114,11 @@ export interface SnippetEvaluationResult {
 const SNIPPET_STORAGE_KEY = 'enem_snippet_writing_state_v1';
 
 const HISTORICAL_ARGUMENT_BASES: Record<string, ArgumentBase> = {
+  '2026': {
+    thesis: 'A plena valorização do Sistema Único de Saúde (SUS) como direito universal no Brasil esbarra no subfinanciamento crônico da rede pública somado à desinformação social acerca da abrangência integral do sistema.',
+    arg1: 'Insuficiência de investimentos governamentais e desigualdade regional na oferta de insumos, consultas especializadas e infraestrutura no SUS.',
+    arg2: 'Estigmatização midiática e desconhecimento de parte da população sobre o papel estratégico do SUS em vacinação, vigilância sanitária e transplantes.'
+  },
   '2025': {
     thesis: 'Os desafios acerca do envelhecimento na sociedade brasileira decorrem da mentalidade utilitarista que alimenta o etarismo somada à insuficiência de políticas públicas de saúde geriátrica e amparo social.',
     arg1: 'Preconceito etário (etarismo) e marginalização simbólica da pessoa idosa em uma sociedade pautada pela produtividade imediata.',
