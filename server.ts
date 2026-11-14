@@ -17,6 +17,16 @@ import {
   getCartilhaBenchmarkForScore
 } from "./src/data/officialData";
 import { OFFICIAL_ENEM_TIPS } from "./src/data/officialTips";
+import {
+  auditDiagnosticVsEvidenceConsistency,
+  crossValidateEvidenceSemanticCorrelation,
+  groundC3AndC5FeedbackInEssayFacts,
+  reconcileEvaluationWithConsistencyAudit
+} from "./src/utils/consistencyAuditor";
+import {
+  calibrateDualEvaluatorProfiles,
+  calibrateSnippetCompetencyPair
+} from "./src/utils/dualEvaluatorCalibrator";
 
 dotenv.config();
 
@@ -310,6 +320,1437 @@ setTimeout(async () => {
 }, 200);
 
 // -------------------------------------------------------------
+// Official ENEM Calibration Engine:
+// 1. Theme Decomposition & 4-Level Classification (Abordagem Completa, Parcial, Tangenciamento, Fuga Total)
+// 2. Official Zero Score Situations (Cartilha do Participante)
+// 3. Competency V Human Rights Audit & Independent C5=0 Isolation Rule
+// -------------------------------------------------------------
+interface EnemCalibrationAuditResult {
+  themeDecomposition: {
+    centralTheme: string;
+    generalSubjectWords: string[];
+    specificCutWords: string[];
+    matchedSpecificCutWords: string[];
+    matchedGeneralAxisWords: string[];
+  };
+  thematicClassification: 'abordagem_completa' | 'abordagem_parcial' | 'tangenciamento' | 'fuga_total';
+  thematicEvidenceSnippet: string;
+  thematicJustification: string;
+  zeroScoreCondition: {
+    isZeroScore: boolean;
+    reasonCode: 'none' | 'folha_em_branco' | 'texto_insuficiente_7_linhas' | 'fuga_total_ao_tema' | 'nao_dissertativo_argumentativo' | 'texto_desconectado_sem_proposito' | 'identificacao_indevida';
+    officialReasonTitle: string;
+    evidenceSnippet: string;
+    analyticalJustification: string;
+  };
+  humanRightsAudit: {
+    respectsHumanRights: boolean;
+    violationSnippet: string;
+    violationReason: string;
+    isLawfulAdministrativeMeasureOnly: boolean;
+  };
+}
+
+function auditEnemThematicZeroAndHumanRights(
+  essayText: string,
+  theme: string,
+  options?: { isSnippet?: boolean; sectionType?: string }
+): EnemCalibrationAuditResult {
+  const isSnippet = Boolean(options?.isSnippet);
+  const cleanText = (essayText || "").trim();
+  const cleanTheme = (theme || "").trim();
+  const lowerText = cleanText.toLowerCase();
+  const lowerTheme = cleanTheme.toLowerCase();
+
+  const paragraphs = cleanText.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  const sentences = cleanText.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+  const words = cleanText.split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  const estimatedLines = Math.max(
+    cleanText ? cleanText.split(/\n/).filter(l => l.trim().length > 0).length : 0,
+    Math.ceil(cleanText.length / 68)
+  );
+
+  // 1. Decompose Theme into General Axis vs. Specific Thematic Cut
+  const framingStopwords = new Set([
+    "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
+    "por", "para", "com", "sem", "sob", "sobre", "entre", "como", "que", "se", "ao", "aos", "pelo", "pela",
+    "pelos", "pelas", "desafios", "desafio", "caminhos", "caminho", "combater", "combate", "enfrentamento",
+    "enfrentar", "questão", "questoes", "problemática", "problema", "impactos", "impacto", "efeitos", "efeito",
+    "consequências", "consequencias", "perspectivas", "importância", "papel", "brasil", "brasileiro", "brasileira",
+    "sociedade", "contemporânea", "contemporaneo", "século", "atual", "atuais", "promoção", "garantia", "acesso"
+  ]);
+
+  const rawThemeTokens = lowerTheme
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !framingStopwords.has(w));
+
+  // Semantic expansion dictionary for specific thematic cuts & legitimate alternative arguments
+  const semanticCutExpansions: Array<{ trigger: RegExp; specificSynonyms: string[]; broadAxisSynonyms: string[]; tangentialTraps?: RegExp }> = [
+    {
+      // Exemplo Oficial: "Os desafios para combater a evasão escolar no Brasil"
+      trigger: /\b(evasão escolar|abandono escolar|permanência escolar|evasão)\b/i,
+      specificSynonyms: [
+        "evasão", "evadir", "evadem", "abandono escolar", "abandonar a escola", "abandonam a escola",
+        "abandonam os estudos", "abandonar os estudos", "deixar a escola", "deixam a escola", "deixar de estudar",
+        "permanência escolar", "permanência estudantil", "permanecer na escola", "permanência dos jovens na escola",
+        "frequência escolar", "frequentar as aulas", "frequentar a escola", "desistência escolar", "fora da escola",
+        "exclusão escolar", "afastamento escolar"
+      ],
+      broadAxisSynonyms: [
+        "escola", "escolar", "escolas", "ensino", "educação", "educacional", "professores", "professor",
+        "alunos", "estudantes", "sala de aula", "aprendizagem", "pedagógico", "currículo", "bibliotecas", "infraestrutura"
+      ],
+      tangentialTraps: /\b(qualidade do ensino|falta de bibliotecas|infraestrutura precária|desvalorização dos professores|salário dos professores|merenda|quadra esportiva)\b/i
+    },
+    {
+      // Tema 2026: "A valorização do Sistema Único de Saúde (SUS) como direito universal"
+      trigger: /\b(sistema único de saúde|\bsus\b|saúde pública)\b/i,
+      specificSynonyms: [
+        "sus", "sistema único de saúde", "saúde pública", "rede pública de saúde", "universalidade da saúde",
+        "atendimento público de saúde", "direito universal à saúde", "atenção básica", "ubs", "postos de saúde", "acesso universal à saúde"
+      ],
+      broadAxisSynonyms: ["saúde", "médico", "médicos", "hospitais", "hospital", "doença", "doenças", "tratamento", "pacientes", "medicina", "enfermagem"]
+    },
+    {
+      // Tema 2024: "Desafios para a valorização da herança africana no Brasil"
+      trigger: /\b(herança africana|cultura afro|matriz africana|afro-brasileir)\b/i,
+      specificSynonyms: [
+        "herança africana", "cultura africana", "matriz africana", "afro-brasileira", "afro-brasileiro",
+        "ancestralidade africana", "contribuição africana", "história africana", "povos africanos", "memória afro", "quilombola", "racismo"
+      ],
+      broadAxisSynonyms: ["cultura", "história", "patrimônio", "preconceito", "discriminação", "sociedade", "identidade", "diversidade"]
+    },
+    {
+      // Tema 2023: "Desafios para o enfrentamento da invisibilidade do trabalho de cuidado realizado pela mulher no Brasil"
+      trigger: /\b(trabalho de cuidado|invisibilidade do trabalho|cuidado realizado pela mulher)\b/i,
+      specificSynonyms: [
+        "trabalho de cuidado", "cuidado doméstico", "economia do cuidado", "afazeres domésticos", "cuidar dos filhos",
+        "cuidar de idosos", "trabalho não remunerado", "dupla jornada", "sobrecarga feminina", "trabalho reprodutivo", "cuidado familiar"
+      ],
+      broadAxisSynonyms: ["mulher", "mulheres", "feminino", "feminina", "gênero", "machismo", "patriarcado", "trabalho", "mercado de trabalho", "salário"]
+    },
+    {
+      // Tema 2022: "Desafios para a valorização de comunidades e povos tradicionais no Brasil"
+      trigger: /\b(comunidades e povos tradicionais|povos tradicionais|comunidades tradicionais)\b/i,
+      specificSynonyms: [
+        "povos tradicionais", "comunidades tradicionais", "indígenas", "povos originários", "quilombolas",
+        "ribeirinhos", "extrativistas", "caiçaras", "seringueiros", "terras indígenas", "demarcação", "ancestral"
+      ],
+      broadAxisSynonyms: ["meio ambiente", "floresta", "amazônia", "natureza", "desmatamento", "cultura", "biodiversidade", "território"]
+    },
+    {
+      // Tema 2021: "Invisibilidade e registro civil: garantia de acesso à cidadania no Brasil"
+      trigger: /\b(registro civil|certidão de nascimento|invisibilidade.*cidadania)\b/i,
+      specificSynonyms: [
+        "registro civil", "certidão de nascimento", "documentação", "documento", "sub-registro",
+        "indocumentados", "existência legal", "identificação civil", "cartório", "cidadania formal"
+      ],
+      broadAxisSynonyms: ["cidadania", "direitos", "desigualdade", "pobreza", "vulnerabilidade", "estado", "constituição", "invisibilidade"]
+    },
+    {
+      // Exemplo Oficial: "Os desafios para combater a insegurança alimentar no Brasil"
+      trigger: /\b(insegurança alimentar|segurança alimentar|combate à fome|fome no brasil)\b/i,
+      specificSynonyms: [
+        "insegurança alimentar", "segurança alimentar", "fome", "subnutrição", "desnutrição", "inanição",
+        "mapa da fome", "acesso aos alimentos", "dificuldade de acesso", "falta de acesso aos alimentos",
+        "escassez de alimentos", "falta de alimentos", "vulnerabilidade alimentar", "vulnerabilidade socioeconômica",
+        "pobreza", "extrema pobreza", "miséria", "desperdício de alimentos", "direito à alimentação",
+        "cesta básica", "fome crônica", "carestia", "insegurança nutricional"
+      ],
+      broadAxisSynonyms: [
+        "alimentação", "alimentar", "alimentares", "alimentos", "alimento", "nutrição", "nutricional",
+        "nutricionais", "obesidade", "sobrepeso", "hábitos alimentares", "educação nutricional",
+        "alimentação equilibrada", "alimentação saudável", "produtos industrializados", "ultraprocessados",
+        "dieta", "saúde", "consumo", "comida", "refeição", "fast food"
+      ],
+      tangentialTraps: /\b(hábitos alimentares|obesidade|educação nutricional|alimentação equilibrada|alimentação saudável|produtos industrializados|ultraprocessados|dieta balanceada|fast food|sedentarismo)\b/i
+    },
+    {
+      // Tema 2020: "O estigma associado às doenças mentais na sociedade brasileira"
+      trigger: /\b(estigma.*doenças mentais|saúde mental|transtornos mentais)\b/i,
+      specificSynonyms: [
+        "doenças mentais", "doença mental", "saúde mental", "transtornos mentais", "transtorno mental",
+        "psicológico", "psiquiátrico", "depressão", "ansiedade", "estigma", "psicofobia", "sofrimento psíquico"
+      ],
+      broadAxisSynonyms: ["saúde", "doença", "preconceito", "sociedade", "tratamento", "médico", "bem-estar"]
+    }
+  ];
+
+  let specificCutWords: string[] = [...rawThemeTokens];
+  let generalSubjectWords: string[] = [...rawThemeTokens];
+
+  const matchedExpansion = semanticCutExpansions.find(exp => exp.trigger.test(cleanTheme));
+  if (matchedExpansion) {
+    specificCutWords = Array.from(new Set([...specificCutWords, ...matchedExpansion.specificSynonyms]));
+    generalSubjectWords = Array.from(new Set([...generalSubjectWords, ...matchedExpansion.broadAxisSynonyms]));
+  } else {
+    // Generic decomposition: domain-specific words without overly generic catch-all nouns
+    const broadDomainMap: Array<{ test: RegExp; broad: string[] }> = [
+      { test: /\b(escola|educa|ensino|estudant|aprendiz|universid|alfabetiz)\b/i, broad: ["educação", "escola", "escolas", "ensino", "estudantes", "professores", "alunos", "aprendizagem", "pedagógico", "infraestrutura escolar"] },
+      { test: /\b(aliment|fome|nutri|obesidad|desperd[íi]cio|gastron)\b/i, broad: ["alimentação", "alimentar", "alimentos", "alimento", "nutrição", "nutricional", "obesidade", "hábitos alimentares", "dieta", "saúde", "consumo", "industrializados", "ultraprocessados", "comida"] },
+      { test: /\b(saúde|médic|doença|vacina|epidemia|hospital|mental|nutri)\b/i, broad: ["saúde", "médico", "médicos", "hospitais", "hospital", "doenças", "prevenção", "tratamento"] },
+      { test: /\b(ambient|florest|água|clima|sustent|lixo|desmatamento|fauna|bioma)\b/i, broad: ["meio ambiente", "natureza", "sustentabilidade", "poluição", "recursos naturais", "ecossistema", "florestas", "clima"] },
+      { test: /\b(tecnolog|internet|digital|dados|algoritm|redes sociais|inteligência artificial|virtual)\b/i, broad: ["tecnologia", "internet", "redes sociais", "digital", "usuários", "conectividade", "algoritmos"] },
+      { test: /\b(trabalh|empreg|uberiz|informal|profiss|economia|renda)\b/i, broad: ["trabalho", "trabalhadores", "emprego", "renda", "economia", "mercado de trabalho", "direitos trabalhistas"] },
+      { test: /\b(violência|segurança|crime|intolerância|racismo|preconceito|mulher|infância|idoso|deficiência)\b/i, broad: ["preconceito", "violência", "discriminação", "segurança", "proteção", "vulnerabilidade"] },
+      { test: /\b(moradia|habitaç|urbano|mobilidade|transporte|saneamento|cidade|trânsito)\b/i, broad: ["cidade", "cidades", "urbano", "infraestrutura", "transporte", "mobilidade", "moradia", "habitação", "saneamento", "espaço público"] },
+      { test: /\b(cultura|arte|cinema|leitura|livro|patrimônio|esporte|lazer)\b/i, broad: ["cultura", "cultural", "arte", "lazer", "entretenimento", "formação", "esporte", "leitura"] },
+      { test: /\b(consum|publicidade|propaganda|consumismo|mercado|mídia)\b/i, broad: ["consumo", "consumidor", "publicidade", "propaganda", "mercado", "compras", "produtos", "mídia", "comunicação"] }
+    ];
+    generalSubjectWords = rawThemeTokens.filter(t => !new Set(["sociedade", "estado", "brasil", "direitos", "cidadania", "população", "governo", "país"]).has(t));
+    for (const d of broadDomainMap) {
+      if (d.test.test(cleanTheme)) {
+        generalSubjectWords = Array.from(new Set([...generalSubjectWords, ...d.broad]));
+      }
+    }
+  }
+
+  const matchesPhraseOrStem = (textToSearch: string, term: string): boolean => {
+    const cleanTerm = term.trim().toLowerCase();
+    if (!cleanTerm) return false;
+    if (cleanTerm.includes(" ")) {
+      return textToSearch.includes(cleanTerm);
+    }
+    if (cleanTerm.length <= 4) {
+      return new RegExp(`\\b${cleanTerm}\\b`, "i").test(textToSearch);
+    }
+    const stem = cleanTerm.slice(0, Math.max(4, cleanTerm.length - 2));
+    return textToSearch.includes(stem);
+  };
+
+  const matchedSpecificCutWords = specificCutWords.filter(w => matchesPhraseOrStem(lowerText, w));
+  const matchedGeneralAxisWords = generalSubjectWords.filter(w => matchesPhraseOrStem(lowerText, w));
+  const broadAxisSentenceCount = sentences.filter(s =>
+    generalSubjectWords.some(w => matchesPhraseOrStem(s.toLowerCase(), w))
+  ).length;
+
+  // Check special case: Theme has a specific multi-part cut (like "evasão escolar", "registro civil", "trabalho de cuidado")
+  // If matchedExpansion exists, check whether any of matchedExpansion.specificSynonyms was matched vs ONLY broadAxisSynonyms
+  let hasSpecificCutDevelopment = matchedSpecificCutWords.length > 0;
+  if (matchedExpansion) {
+    const matchedStrictCut = matchedExpansion.specificSynonyms.some(syn => matchesPhraseOrStem(lowerText, syn));
+    hasSpecificCutDevelopment = matchedStrictCut;
+  } else if (rawThemeTokens.length >= 2) {
+    // Check if the core distinctive tokens of the theme are addressed
+    const matchedRawTokens = rawThemeTokens.filter(t => matchesPhraseOrStem(lowerText, t));
+    hasSpecificCutDevelopment = matchedRawTokens.length >= Math.min(2, rawThemeTokens.length) ||
+      (rawThemeTokens.length === 1 && matchedRawTokens.length === 1);
+  }
+
+  // Regra Prioritária: Nunca classificar como tangenciamento por 1 palavra genérica isolada em texto alheio ao tema.
+  // Exige concentração temática real no campo semântico amplo (múltiplos termos do eixo ou armadilha tangencial explícita).
+  const minBroadWordsForTangency = generalSubjectWords.length >= 4 ? (isSnippet ? 2 : 3) : Math.max(1, Math.min(generalSubjectWords.length, isSnippet ? 1 : 2));
+  const minBroadSentencesForTangency = isSnippet ? 1 : 2;
+  const hasTangentialTrap = Boolean(matchedExpansion?.tangentialTraps?.test(cleanText));
+  const hasBroadAxisPresence = hasSpecificCutDevelopment || hasTangentialTrap || (
+    matchedGeneralAxisWords.length >= minBroadWordsForTangency &&
+    broadAxisSentenceCount >= minBroadSentencesForTangency
+  );
+
+  // Determine 4-level Thematic Classification
+  let thematicClassification: 'abordagem_completa' | 'abordagem_parcial' | 'tangenciamento' | 'fuga_total' = 'abordagem_completa';
+  let thematicEvidenceSnippet = sentences[0] || cleanText.slice(0, 140) || "Texto avaliado";
+  let thematicJustification = `O texto aborda integralmente o tema central e desenvolve o recorte temático específico ("${cleanTheme}"), articulando argumentos pertinentes ao problema proposto.`;
+
+  if (!cleanText || (!hasSpecificCutDevelopment && !hasBroadAxisPresence)) {
+    thematicClassification = 'fuga_total';
+    thematicEvidenceSnippet = sentences[0] || cleanText.slice(0, 140) || "Texto sem elementos do tema proposto";
+    thematicJustification = `FUGA TOTAL AO TEMA IDENTIFICADA: O texto desenvolve assunto efetivamente alheio à proposta ("${cleanTheme}"), sem relação temática suficiente, direta ou contextual. Trecho analisado: "${thematicEvidenceSnippet}". Conforme a Cartilha do Participante do ENEM, boa estrutura dissertativa, gramática, coesão, repertório ou proposta de intervenção NÃO anulam a condição de fuga total: resultado obrigatório é NOTA ZERO INTEGRAL.`;
+  } else if (!hasSpecificCutDevelopment && hasBroadAxisPresence) {
+    thematicClassification = 'tangenciamento';
+    const tangentSentence = sentences.find(s => matchedGeneralAxisWords.some(w => matchesPhraseOrStem(s.toLowerCase(), w))) || sentences[0] || cleanText.slice(0, 140);
+    thematicEvidenceSnippet = tangentSentence;
+    thematicJustification = `TANGENCIAMENTO TEMÁTICO IDENTIFICADO (NÃO É FUGA TOTAL): No trecho "${tangentSentence}", o texto pertence ao campo semântico e temático do assunto geral (${matchedGeneralAxisWords.slice(0, 4).join(", ")}), mas desloca a discussão para outro problema sem desenvolver efetivamente o recorte específico solicitado na proposta ("${cleanTheme}"). Segundo os critérios oficiais do ENEM, o tangenciamento NÃO zera a redação inteira, mas impõe penalização na Competência II (Nível 1 — 40 pontos) e repercussão oficial nos tetos da Competência III (máx. 40 pts) e Competência V (máx. 40 pts), mantendo-se a avaliação normal das Competências I e IV.`;
+  } else {
+    // Has specific cut development: differentiate Abordagem Completa vs Abordagem Parcial
+    // Note: Alternative arguments (like child labor or teenage pregnancy for school dropout) are Abordagem Completa as long as they link to the specific cut!
+    const cutSentences = sentences.filter(s => specificCutWords.some(w => matchesPhraseOrStem(s.toLowerCase(), w)));
+    if (cutSentences.length > 0) {
+      thematicEvidenceSnippet = cutSentences[0];
+    }
+    const minWordsForFull = isSnippet ? 30 : 120;
+    if (wordCount < minWordsForFull || (!isSnippet && paragraphs.length < 2)) {
+      thematicClassification = 'abordagem_parcial';
+      thematicJustification = `ABORDAGEM PARCIAL DO TEMA: O texto menciona o recorte temático específico ("${cleanTheme}") no trecho "${thematicEvidenceSnippet}", mas desenvolve apenas parte de seus aspectos de forma incipiente ou superficial. Diferencia-se do tangenciamento e da fuga ao tema, recebendo pontuação intermediária na Competência II sem anulação.`;
+    } else {
+      thematicClassification = 'abordagem_completa';
+      thematicJustification = `ABORDAGEM COMPLETA DO TEMA: O texto desenvolve efetivamente o tema e respeita seu recorte específico ("${cleanTheme}"), estabelecendo relação direta e legítima entre os argumentos escolhidos e o problema central proposto (evidenciado em: "${thematicEvidenceSnippet}").`;
+    }
+  }
+
+  // 2. Verify Official ENEM Zero-Score Conditions (Situações de Nota Zero da Cartilha do Participante)
+  let isZeroScore = false;
+  let reasonCode: EnemCalibrationAuditResult['zeroScoreCondition']['reasonCode'] = 'none';
+  let officialReasonTitle = '';
+  let zeroEvidenceSnippet = '';
+  let zeroAnalyticalJustification = '';
+
+  // Check improper identification in body/end of text
+  const idMatch = cleanText.match(/(?:^|\n)\s*(assinado\s*:|assinatura\s*:|candidato\s*:|aluno\s*:|meu nome é\s+[A-ZÀ-Ú][a-zà-ú]+\s+[A-ZÀ-Ú][a-zà-ú]+|att\.?\s*,\s*[A-ZÀ-Ú][a-zà-ú]+)/i);
+  // Check non-dissertative text types (poem in short verses, recipe, letter with greeting/sign-off)
+  const rawLines = cleanText.split(/\n/).map(l => l.trim()).filter(Boolean);
+  const shortVerseLines = rawLines.filter(l => l.length > 0 && l.length < 42);
+  const isPoemOrVerses = !isSnippet && rawLines.length >= 8 && (shortVerseLines.length / rawLines.length) >= 0.75;
+  const isPersonalLetter = /^(prezado\(a\)?|caro\(a\)?|querido\(a\)?|olá,?\s+aval|senhor\(a\)?\s+corretor)/i.test(cleanText) && /(atenciosamente,?|um abraço,?|cordialmente,?|com carinho,?)\s*$/i.test(cleanText);
+  // Check disconnected / gibberish text without communicative purpose
+  const gibberishTokens = words.filter(w => w.length > 22 || /(.)\1{4,}/i.test(w));
+  const isDisconnectedGibberish = wordCount > 0 && (gibberishTokens.length / Math.max(1, wordCount) > 0.25 || words.length < 5);
+
+  if (!cleanText || wordCount === 0) {
+    isZeroScore = true;
+    reasonCode = 'folha_em_branco';
+    officialReasonTitle = 'Folha de Redação em Branco';
+    zeroEvidenceSnippet = '[Texto em branco]';
+    zeroAnalyticalJustification = 'ANULAÇÃO INTEGRAL (NOTA ZERO OFICIAL — CARTILHA DO PARTICIPANTE): A folha de redação foi enviada em branco, sem texto redigido.';
+  } else if (isDisconnectedGibberish) {
+    isZeroScore = true;
+    reasonCode = 'texto_desconectado_sem_proposito';
+    officialReasonTitle = 'Texto Predominantemente Desconectado do Tema e Sem Propósito Comunicativo';
+    zeroEvidenceSnippet = cleanText.slice(0, 120);
+    zeroAnalyticalJustification = `ANULAÇÃO INTEGRAL (NOTA ZERO OFICIAL — CARTILHA DO PARTICIPANTE): O fragmento apresentado ("${cleanText.slice(0, 100)}") é desconectado e destituído de propósito comunicativo em língua portuguesa.`;
+  } else if (!isSnippet && (estimatedLines <= 7 || wordCount < 45)) {
+    isZeroScore = true;
+    reasonCode = 'texto_insuficiente_7_linhas';
+    officialReasonTitle = 'Texto Insuficiente (Até 7 Linhas Manuscritas)';
+    zeroEvidenceSnippet = cleanText.slice(0, 140);
+    zeroAnalyticalJustification = `ANULAÇÃO INTEGRAL (NOTA ZERO OFICIAL — CARTILHA DO PARTICIPANTE): O texto apresenta extensão equivalente a ${estimatedLines} linha(s) (${wordCount} palavras) no trecho "${cleanText.slice(0, 100)}...". Pelas regras oficiais do ENEM, qualquer redação com até 7 linhas manuscritas é considerada texto insuficiente e recebe Nota Zero integral (0/1000).`;
+  } else if (!isSnippet && idMatch) {
+    isZeroScore = true;
+    reasonCode = 'identificacao_indevida';
+    officialReasonTitle = 'Identificação Indevida do Participante no Corpo do Texto';
+    zeroEvidenceSnippet = idMatch[0].trim();
+    zeroAnalyticalJustification = `ANULAÇÃO INTEGRAL (NOTA ZERO OFICIAL — CARTILHA DO PARTICIPANTE): Foi identificada marca de assinatura ou identificação pessoal no corpo da redação ("${idMatch[0].trim()}"). Conforme o edital oficial do ENEM, a identificação do participante fora do local apropriado acarreta anulação da redação (0/1000).`;
+  } else if (!isSnippet && (isPoemOrVerses || isPersonalLetter)) {
+    isZeroScore = true;
+    reasonCode = 'nao_dissertativo_argumentativo';
+    officialReasonTitle = 'Não Atendimento ao Tipo Textual Dissertativo-Argumentativo';
+    zeroEvidenceSnippet = rawLines.slice(0, 3).join(" / ");
+    zeroAnalyticalJustification = `ANULAÇÃO INTEGRAL (NOTA ZERO OFICIAL — CARTILHA DO PARTICIPANTE): No trecho "${rawLines.slice(0, 3).join(" / ")}", o texto foi redigido em estrutura incompatível com o tipo dissertativo-argumentativo em prosa exigido pelo ENEM (${isPoemOrVerses ? 'estrutura em versos/poema' : 'estrutura epistolar/carta'}).`;
+  } else if (thematicClassification === 'fuga_total') {
+    isZeroScore = true;
+    reasonCode = 'fuga_total_ao_tema';
+    officialReasonTitle = 'Fuga Total ao Tema Proposto';
+    zeroEvidenceSnippet = thematicEvidenceSnippet;
+    zeroAnalyticalJustification = `ANULAÇÃO INTEGRAL (NOTA ZERO OFICIAL — CARTILHA DO PARTICIPANTE): No trecho "${thematicEvidenceSnippet}", o texto desenvolve assunto completamente alheio tanto ao eixo geral quanto ao recorte específico da proposta ("${cleanTheme}"), caracterizando Fuga Total ao Tema (0/1000).`;
+  }
+
+  // 3. Human Rights Audit in Competency V (Desrespeito aos Direitos Humanos — C5)
+  // Regra Fundamental:
+  // - Defesa de violência física, castigos físicos, tortura, execução sumária, pena de morte ou linchamento;
+  // - Propostas de humilhação, perseguição ou exposição degradante de indivíduos ("humilhações públicas");
+  // - Defesa de discriminação, segregação ou exclusão de grupos sociais ("impedir que crianças de famílias pobres frequentem determinadas escolas");
+  // - Supressão de direitos fundamentais ou liberdades individuais;
+  // - Medidas coercitivas incompatíveis com a dignidade humana.
+  // Exceção explícita (Exemplo D): Medidas administrativas, multas legais e acompanhamento obrigatório aos responsáveis legais que descumprirem deveres previstos em lei NÃO caracterizam automaticamente violação de Direitos Humanos.
+  const humanRightsViolationPatterns: Array<{ regex: RegExp; categoryDescription: string }> = [
+    {
+      regex: /\b(castigos?\s+f[ií]sicos?|puni[çc][õo]es?\s+f[ií]sicas?|agress[ãa]o\s+f[ií]sica|espancamento|tortura|torturar|pena\s+de\s+morte|execu[çc][ãa]o\s+sum[áa]ria|linchamento|linchar|justi[çc]amento|fazer\s+justi[çc]a\s+com\s+as\s+pr[óo]prias\s+m[ãa]os|trabalho\s+for[çc]ado|escravid[ãa]o)\b/i,
+      categoryDescription: "defesa de violência física, castigos corporais, tortura ou medidas coercitivas incompatíveis com a dignidade humana"
+    },
+    {
+      regex: /\b(humilha[çc][õo]es?\s+p[úu]blicas?|humilhar\s+publicamente|exposi[çc][ãa]o\s+degradante|expor\s+ao\s+rid[ií]culo|vexame\s+p[úu]blico|persegui[çc][ãa]o\s+de\s+indiv[ií]duos|execra[çc][ãa]o\s+p[úu]blica)\b/i,
+      categoryDescription: "proposta de humilhação pública, perseguição ou exposição degradante de indivíduos"
+    },
+    {
+      regex: /\b(impedir\s+que\s+(crian[çc]as|jovens|alunos|estudantes|pessoas| cidad[ãa]os|fam[ií]lias)\s+(de\s+fam[ií]lias\s+pobres|pobres|carentes|negros|ind[ií]genas|vulner[áa]veis)\s+frequentem|proibir\s+(pobres|crian[çc]as\s+pobres|vulner[áa]veis)\s+de\s+(frequentar|estudar|acessar)|segregar\s+(alunos|estudantes|pobres|grupos)|excluir\s+grupos\s+sociais|expulsar\s+do\s+pa[ií]s|eliminar\s+os\s+(pobres|criminosos|dependentes|doentes|vulner[áa]veis)|privar\s+de\s+direitos\s+fundamentais|suprimir\s+direitos\s+fundamentais|censura\s+pr[ée]via\s+total)\b/i,
+      categoryDescription: "defesa de discriminação, exclusão de grupos sociais ou supressão de direitos fundamentais"
+    }
+  ];
+
+  const lawfulAdministrativePattern = /\b(medidas\s+administrativas|acompanhamento\s+obrigat[óo]rio\s+aos\s+respons[áa]veis\s+legais|descumprirem\s+deveres\s+previstos\s+em\s+lei|san[çc][õo]es\s+previstas\s+em\s+lei|multas?\s+previstas?\s+em\s+lei|rigor\s+da\s+lei|estatuto\s+da\s+crian[çc]a|conselho\s+tutelar)\b/i;
+
+  let respectsHumanRights = true;
+  let violationSnippet = "";
+  let violationReason = "";
+  const isLawfulAdministrativeMeasureOnly = lawfulAdministrativePattern.test(cleanText);
+
+  for (const pattern of humanRightsViolationPatterns) {
+    const match = cleanText.match(pattern.regex);
+    if (match) {
+      respectsHumanRights = false;
+      const matchingSentence = sentences.find(s => pattern.regex.test(s)) || match[0];
+      violationSnippet = matchingSentence;
+      violationReason = `DESRESPEITO AOS DIREITOS HUMANOS IDENTIFICADO NA COMPETÊNCIA V: No trecho "${matchingSentence}", a proposta de intervenção apresenta ${pattern.categoryDescription} ("${match[0]}"). Conforme as diretrizes oficiais do ENEM e da Cartilha do Participante, essa conduta fere a dignidade humana e acarreta NOTA ZERO EXCLUSIVAMENTE NA COMPETÊNCIA V (0/200 pontos). Ressalta-se que, pela regra oficial vigente do INEP, a nota zero na Competência V NÃO anula a redação inteira: as Competências I, II, III e IV continuam sendo avaliadas e pontuadas normalmente de acordo com o desempenho do texto.`;
+      break;
+    }
+  }
+
+  return {
+    themeDecomposition: {
+      centralTheme: cleanTheme,
+      generalSubjectWords,
+      specificCutWords,
+      matchedSpecificCutWords,
+      matchedGeneralAxisWords,
+    },
+    thematicClassification,
+    thematicEvidenceSnippet,
+    thematicJustification,
+    zeroScoreCondition: {
+      isZeroScore,
+      reasonCode,
+      officialReasonTitle,
+      evidenceSnippet: zeroEvidenceSnippet,
+      analyticalJustification: zeroAnalyticalJustification,
+    },
+    humanRightsAudit: {
+      respectsHumanRights,
+      violationSnippet,
+      violationReason,
+      isLawfulAdministrativeMeasureOnly: respectsHumanRights && isLawfulAdministrativeMeasureOnly,
+    }
+  };
+}
+
+// -------------------------------------------------------------
+// Holistic Conclusion Intervention Auditor (C5 - Matriz Oficial INEP)
+// Identifies ALL proposals (multiple agents/actions, complementary clauses/sentences)
+// across the full conclusion text before scoring, never confusing missing detailing with missing action.
+// -------------------------------------------------------------
+function cleanSingleAgentCandidate(raw: string): string {
+  let out = String(raw || "")
+    .replace(/^["'“”(\s]+|["'“”)\s,.;:—\-]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!out || out === "/" || /^ausente/i.test(out)) return "";
+  if (out.includes("/") || out.includes("|") || out.includes(";")) {
+    const parts = out
+      .split(/[\/|;]+/)
+      .map(p => cleanSingleAgentCandidate(p))
+      .filter(Boolean);
+    if (parts.length > 0) {
+      // Escolhe o agente institucional mais específico e completo
+      parts.sort((a, b) => b.length - a.length);
+      return parts[0];
+    }
+  }
+  out = out
+    .replace(/^(?:e\s+)?(?:cabe\s+(?:ao|à|aos|às)|deve(?:m)?|deveria(?:m)?|precisa(?:m)?|compete\s+(?:ao|à)|[ée]\s+dever\s+d(?:o|a)|por\s+parte\s+d(?:o|a)|a|ao|[àa]|aos|[àa]s|o|os|as|pel[oa]s?|com)\s+/i, "")
+    .replace(/\s+(?:deve|devem|deveria|deveriam|cabe|cabem|precisa|precisam|necessita|necessitam|urge|pode|podem|promover|promova|criar|crie|implementar|implemente|ampliar|amplie|desenvolver|desenvolva|garantir|garanta|oferecer|ofere[çc]a|expandir|expanda|fiscalizar|fiscalize|investir|invista|conscientizar|conscientize|realizar|realize)\b.*$/iu, "")
+    .replace(/[,.;:—\-]+$/g, "")
+    .trim();
+  return out;
+}
+
+function findAnaphoricMesmoExcerpts(text: string): Array<{ match: string; sentence: string; locationTag: string }> {
+  const cleanText = (text || "").trim();
+  if (!cleanText) return [];
+  const results: Array<{ match: string; sentence: string; locationTag: string }> = [];
+  const anaphoricRegex = /\b(?:(?:para|com|entre|sobre|ante|d[eoa]s?|n[eoa]s?|pel[oa]s?|a(?:o|os|[àa]s)?)\s+(?:o|os|a|as)?\s*mesm(?:o|os|a|as)(?!\s+(?:tempo|sentido|modo|jeito|n[íi]vel|patamar|grau|caso|problema|fen[ôo]meno|tema|assunto|local|espa[çc]o|contexto|passo|dia|ano|momento|aspecto|fator|tipo|direito|valor|princ[íi]pio|objetivo|forma|maneira|medida|caminh(?:o|os)|ponto|eixo|mecanismo|padr[ãa]o|cen[áa]rio|contexto|impacto|efeito|papel|processo|sistema|recurso|espaço|grupo|p[úu]blico|setor)\b)|(?:o|os|a|as)\s+mesm(?:o|os|a|as)\s+(?:foi|foram|[ée]|s[ãa]o|tem|t[êe]m|fez|fizeram|pode|podem|deve|devem|acaba|acabam|gera|geram|causa|causam|se|n[ãa]o|est[áa]|est[ãa]o|passa|passam|precisa|precisam|sofre|sofrem))\b/giu;
+  const matches = cleanText.match(anaphoricRegex) || [];
+  const seenSent = new Set<string>();
+  for (const m of matches) {
+    const loc = locateSnippetInEssay(m, cleanText);
+    const sent = (loc.found && loc.fullSentenceContext ? loc.fullSentenceContext : m).trim();
+    const key = sent.toLowerCase();
+    if (!seenSent.has(key)) {
+      seenSent.add(key);
+      results.push({
+        match: m.trim(),
+        sentence: sent,
+        locationTag: loc.found ? loc.locationTag : "Texto"
+      });
+    }
+  }
+  return results;
+}
+
+function checkMissingInterParagraphOperators(text: string): Array<{ paragraphNumber: number; label: string }> {
+  const paragraphs = (text || "").trim().split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  if (paragraphs.length < 3) return [];
+  const d1d2OpRegex = /^(?:em\s+primeir[ao]\s+(?:an[áa]lise|lugar|plano|inst[âa]ncia)|em\s+segund[ao]\s+(?:an[áa]lise|lugar|plano|inst[âa]ncia)|primeiramente|segundamente|inicialmente|a\s+princ[íi]pio|de\s+in[íi]cio|antes\s+de\s+tudo|sob\s+ess[ea]\s+(?:[óo]tica|prisma|vi[ée]s|perspectiva|aspecto)|sob\s+est[ea]\s+(?:[óo]tica|prisma|vi[ée]s|perspectiva)|ness[ea]\s+(?:contexto|sentido|cen[áa]rio|vi[ée]s|perspectiva|seara|[âa]mbito|l[óo]gica|realidade|conjuntura)|diante\s+d(?:esse|isso|essa|o\s+exposto|a\s+situa[çc][ãa]o)|ademais|outrossim|al[ée]m\s+disso|soma-se\s+a\s+isso|somado\s+a\s+isso|acrescenta-se|paralelamente|por\s+outro\s+lado|em\s+contrapartida|contudo|todavia|entretanto|no\s+entanto|não\s+obstante|nesse\s+entanto|vale\s+(?:ressaltar|destacar|salientar|pontuar)|cabe\s+(?:ressaltar|destacar|salientar|pontuar|analisar)|conv[ée]m\s+(?:ressaltar|destacar|salientar|analisar)|[ée]\s+(?:preciso|necess[áa]rio|fundamental|imperativo)\s+(?:ressaltar|destacar|analisar|considerar)|com\s+efeito|em\s+vista\s+disso|portanto|desse\s+modo|dessa\s+forma|assim)\b/i;
+  const conclOpRegex = /^(?:portanto|logo|dessarte|destarte|dessa\s+forma|desse\s+modo|dessa\s+maneira|em\s+suma|assim|assim\s+sendo|por\s+conseguinte|infere-se|depreende-se|conclui-se|torna-se\s+(?:evidente|imperioso|necess[áa]rio)|urgem?\s+medidas|diante\s+d(?:o\s+exposto|esse\s+cen[áa]rio|isso|essa\s+realidade)|frente\s+a\s+esse\s+cen[áa]rio|sendo\s+assim|em\s+virtude\s+d(?:isso|esse))\b/i;
+
+  const missing: Array<{ paragraphNumber: number; label: string }> = [];
+  if (paragraphs[1] && !d1d2OpRegex.test(paragraphs[1])) {
+    missing.push({ paragraphNumber: 2, label: "Desenvolvimento 1 (2º parágrafo)" });
+  }
+  if (paragraphs.length >= 4 && paragraphs[2] && !d1d2OpRegex.test(paragraphs[2])) {
+    missing.push({ paragraphNumber: 3, label: "Desenvolvimento 2 (3º parágrafo)" });
+  }
+  const lastIdx = paragraphs.length - 1;
+  if (paragraphs[lastIdx] && !conclOpRegex.test(paragraphs[lastIdx])) {
+    missing.push({ paragraphNumber: lastIdx + 1, label: `Conclusão (${lastIdx + 1}º parágrafo)` });
+  }
+  return missing;
+}
+
+function detectLiteralD1D2CentralRepetition(d1: string, d2: string, cutWords: string[] = []): boolean {
+  if (!d1 || !d2) return false;
+  const themeStop = new Set(cutWords.map(w => w.toLowerCase().slice(0, 5)));
+  const genericStop = new Set([
+    "sobre", "entre", "porque", "assim", "desse", "dessa", "nesse", "nessa", "forma", "maneira",
+    "ainda", "outros", "outras", "muito", "todos", "todas", "também", "apenas", "através",
+    "social", "brasil", "estado", "governo", "sociedade", "problema", "pessoas", "cidadãos",
+    "brasileiro", "brasileira", "contexto", "realidade", "cenario", "cenário", "portanto",
+    "ademais", "outrossim", "alem", "além", "entanto", "todavia", "contudo", "porem", "porém",
+    "causa", "efeito", "consequencia", "consequência", "impasse", "questao", "questão", "desafio"
+  ]);
+  const extractStems = (txt: string) => new Set(
+    (txt || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z\s]/g, " ")
+      .split(/\s+/)
+      .filter(w => w.length >= 6 && !genericStop.has(w))
+      .map(w => w.slice(0, 6))
+      .filter(stem => !themeStop.has(stem.slice(0, 5)))
+  );
+  const s1 = extractStems(d1);
+  const s2 = extractStems(d2);
+  if (s1.size < 6 || s2.size < 6) return false;
+  const shared = Array.from(s1).filter(s => s2.has(s));
+  const minRatio = shared.length / Math.min(s1.size, s2.size);
+  const unionSize = new Set([...s1, ...s2]).size;
+  const jaccard = unionSize > 0 ? shared.length / unionSize : 0;
+
+  // Diferencia eixos causais distintos (ex: estatal/econômico/legal vs sociocultural/educacional/midiático/tecnológico)
+  const axisGroups = [
+    /\b(estado|govern|lei|legisl|constitui|fiscaliza|verba|or[çc]ament|pol[íi]tica\s+p[úu]blica|administrativ|jur[íi]dic|estatal|minist[ée]rio|poder\s+p[úu]blico)\b/i,
+    /\b(educa[çc][ãa]o|escola|ensino|pedag[óo]gic|informa[çc][ãa]o|conscientiza|alfabetiza|forma[çc][ãa]o|universidade)\b/i,
+    /\b(cultura|preconceit|estigma|estere[óo]tipo|comportament|mentalidade|fam[íi]lia|hist[óo]ric|patrimonial|machism|racism)\b/i,
+    /\b(econom|renda|desigualdade|pobreza|mercado|consumo|lucro|empresa|capital|trabalho|emprego|infraestrutura|saneamento)\b/i,
+    /\b(m[íi]dia|rede\s+social|internet|algoritmo|tecnologia|digital|televis|imprensa|publicidade|desinforma)\b/i
+  ];
+  const d1Axes = axisGroups.map((re, idx) => (re.test(d1) ? idx : -1)).filter(x => x >= 0);
+  const d2Axes = axisGroups.map((re, idx) => (re.test(d2) ? idx : -1)).filter(x => x >= 0);
+  const hasDistinctAxis = d1Axes.some(a => !d2Axes.includes(a)) || d2Axes.some(a => !d1Axes.includes(a));
+
+  if (hasDistinctAxis && minRatio < 0.78) return false;
+  return minRatio >= 0.72 && jaccard >= 0.52;
+}
+
+function stripGenericC3Cliches(text: string, theme: string = ""): string {
+  let out = String(text || "").trim();
+  if (!out) return out;
+  const cleanTheme = (theme || "").replace(/^["'“”]+|["'“”.]+$/g, "").trim();
+  out = out
+    .replace(/\b(?:a\s+)?omiss[ãa]o\s+institucional\b/gi, "a ausência de ações efetivas voltadas ao tema")
+    .replace(/\b(?:a\s+)?naturaliza[çc][ãa]o\s+social\b/gi, "a persistência desse cenário no cotidiano")
+    .replace(/\b(?:a|essa)\s+problem[áa]tica\s+na\s+contemporaneidade\b/gi, cleanTheme ? `os desafios ligados a ${cleanTheme}` : "esse cenário específico")
+    .replace(/\bna\s+contemporaneidade\b/gi, "no cenário atual")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return out;
+}
+
+function inferRewriteCompetencyNum(rw: { problem?: string; explanation?: string; original?: string }): 1 | 2 | 3 | 4 | 5 {
+  const probText = `${rw.problem || ""} ${rw.explanation || ""}`.toLowerCase();
+  if (/(interven[çc]|proposta|agente|meio\/modo|meio ou modo|detalhamento|finalidade|efeito social|\bc5\b)/i.test(probText)) {
+    return 5;
+  }
+  if (/(gramat|ortograf|v[íi]rgula|crase|concord|reg[êe]nc|sint[áa]t|norma-padr[ãa]o|norma culta|acentua|pontua[çc]|oralidade|coloquial|informal|truncament|paralelismo|\bc1\b)/i.test(probText)) {
+    return 1;
+  }
+  if (/(conectiv|coes[ãa]o|coesiv|operador|transi[çc]|articulador|repeti[çc][ãa]o de palavra|an[áa]fora|interpar[áa]grafo|intrapar[áa]grafo|\bc4\b)/i.test(probText)) {
+    return 4;
+  }
+  if (/(repert[óo]r|recorte tem[áa]tico|tangencia|senso comum|legitimad|alinhad|produtiv|fil[óo]sof|soci[óo]log|constitui[çc][ãa]o|tema central|\bc2\b)/i.test(probText)) {
+    return 2;
+  }
+  return 3;
+}
+
+function isVagueOrAcronymDetailing(text: string): boolean {
+  const clean = String(text || "").replace(/^[,\s—–(]+|[—–)\s.,;]+$/g, "").trim();
+  if (clean.length < 6) return true;
+  // Siglas isoladas ou rótulos curtos (ex.: CAPS III, IPHAN, Ancine, SUS, Housing First)
+  if (/^[A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9.\-\/\s]{2,18}$/.test(clean) && !/[a-záéíóúâêôãõç]{3,}\s+[a-záéíóúâêôãõç]{2,}/.test(clean)) {
+    return true;
+  }
+  if (/^(?:[A-Za-zÀ-ú]{2,14})(?:\s+[A-Za-zÀ-ú0-9]{1,12})?$/.test(clean) && !/\b(?:gratuit[oa]|integral|semanais|mensais|peri[óo]dic|obrigat[óo]ri|periferia|rural|rurais|p[úu]blic[oa]s|24\s+horas)\b/i.test(clean)) {
+    return true;
+  }
+  // Frases vazias / preenchimento genérico explicitamente vetado pela Cartilha e Glossário
+  if (/^(?:isso\s+[ée]\s+muito\s+importante|o\s+que\s+[ée]\s+(?:muito\s+)?importante|com\s+muito\s+esfor[çc]o|de\s+(?:forma|maneira)\s+(?:eficaz|eficiente|adequada|r[áa]pida|urgente)|o\s+quanto\s+antes|sem\s+medir\s+esfor[çc]os|para\s+o\s+bem\s+de\s+todos|como\s+todos\s+sabem|algo\s+(?:muito\s+)?(?:importante|necess[áa]rio|urgente))$/iu.test(clean)) {
+    return true;
+  }
+  return false;
+}
+
+function extractDetailingFromTextSpan(spanText: string): { cleanedCore: string; detailingExtracted: string | null; targetHint: string } {
+  const raw = String(spanText || "").trim();
+  if (!raw) return { cleanedCore: "", detailingExtracted: null, targetHint: "Ação / Meio" };
+
+  // 1. Bloco explicativo entre travessões (— ... —) ou hífens duplos
+  const dashMatch = raw.match(/(?:^|\s)[—–]\s*([^—–\n]{8,180}?)\s*[—–](?=[,.;:\s]|$)/u) || raw.match(/—([^—\n]{8,180})—/u);
+  if (dashMatch && dashMatch[1]?.trim() && !isVagueOrAcronymDetailing(dashMatch[1])) {
+    const det = dashMatch[1].trim();
+    const core = raw.replace(dashMatch[0], " ").replace(/\s*,\s*,/g, ",").replace(/\s+/g, " ").trim();
+    return { cleanedCore: core, detailingExtracted: det, targetHint: "Elemento especificado entre travessões" };
+  }
+
+  // 2. Bloco explicativo substantivo entre parênteses (...) — exige 3+ palavras (exclui siglas e termos curtos como "(Housing First)" ou "(CAPS III)")
+  const parenMatches = Array.from(raw.matchAll(/\(([^()\n]{14,160})\)/gu));
+  for (const pm of parenMatches) {
+    const det = pm[1]?.trim() || "";
+    if (det && !isVagueOrAcronymDetailing(det) && /\S+\s+\S+\s+\S+/u.test(det) && /[a-záéíóúâêôãõç]{3,}\s+[a-záéíóúâêôãõç]{2,}/u.test(det)) {
+      const core = raw.replace(pm[0], " ").replace(/\s+/g, " ").trim();
+      return { cleanedCore: core, detailingExtracted: det, targetHint: "Elemento especificado entre parênteses" };
+    }
+  }
+
+  // 3. Exemplificações ("como...", "a exemplo de...", "tais como...", "por exemplo...", "incluindo...")
+  const exMatch = raw.match(/,\s*(?:a\s+exemplo\s+de|por\s+exemplo|tais\s+como|incluindo|especificamente|sobretudo|especialmente)\s+[^.!?;—()]{6,140}(?=[,.;!?]|$)/iu)
+    || raw.match(/,\s*como\s+(?!forma\s+de|meio\s+de|objetivo|intuito|os\s+filhos|a\s+protagonista|retratado|visto\s+em|ocorreu)[^.!?;—()]{8,140}(?=[,.;!?]|$)/iu);
+  if (exMatch && exMatch[0]?.trim() && !isVagueOrAcronymDetailing(exMatch[0])) {
+    const det = exMatch[0].replace(/^,\s*/, "").trim();
+    const core = raw.replace(exMatch[0], "").replace(/\s+/g, " ").trim();
+    return { cleanedCore: core, detailingExtracted: det, targetHint: "Ação / Meio (Exemplificação)" };
+  }
+
+  // 4. Aposto explicativo entre vírgulas (", órgão responsável por...", ", instituição que...", ", o qual...", etc.)
+  const apposMatch = raw.match(/,\s*((?:(?:[óo]rg[ãa]o|institui[çc][ãa]o|pasta|entidade|autarquia|minist[ée]rio|conselho)\s+(?:que|respons[áa]vel|encarregad|gestor|voltad|federal|estadual|municipal|p[úu]blic)|(?:ferramenta|iniciativa|medida|estrat[ée]gia|espa[çc]o)\s+(?:que|essencial|indispens[áa]vel|voltad|capaz|destinad|respons[áa]vel)|respons[áa]vel\s+por|encarregad[oa]\s+de|(?:o|a)\s+qual\s+\w+|(?:os|as)\s+quais\s+\w+|que\s+(?:visa|tem\s+como|atua|assegura|promove|permite|contempla|ocorrer[áã]o|funcionar[áã]o)|cuj[oa]\s+(?:atribui[çc][ãa]o|fun[çc][ãa]o|papel|objetivo|compet[êe]ncia))[^,.;!?]{5,140})(?=[,;.]|$)/iu);
+  if (apposMatch && apposMatch[1]?.trim() && !isVagueOrAcronymDetailing(apposMatch[1])) {
+    const det = apposMatch[1].trim();
+    const core = raw.replace(apposMatch[0], "").replace(/\s+/g, " ").trim();
+    return { cleanedCore: core, detailingExtracted: det, targetHint: "Agente / Ação (Aposto explicativo)" };
+  }
+
+  // 5. Justificativa explicativa ligada a um elemento (", haja vista que...", ", uma vez que...", ", visto que...")
+  const justMatch = raw.match(/,\s*((?:haja\s+vista\s+que|uma\s+vez\s+que|visto\s+que)\s+[^.!?;]{8,140})(?=[,.;!?]|$)/iu);
+  if (justMatch && justMatch[1]?.trim() && !isVagueOrAcronymDetailing(justMatch[1])) {
+    const det = justMatch[1].trim();
+    const core = raw.replace(justMatch[0], "").replace(/\s+/g, " ").trim();
+    return { cleanedCore: core, detailingExtracted: det, targetHint: "Elemento (Justificativa)" };
+  }
+
+  // 6. Efeito do efeito / desdobramento operacional (", o que garantirá...", ", possibilitando...", ", alterando...", ", tornando...")
+  const efeMatch = raw.match(/,\s*(o\s+que\s+(?:garantir[áa]|permitir[áa]|assegurar[áa]|reduzir[áa]|diminuir[áa]|promover[áa]|evitar[áa]|possibilitar[áa]|contribuir[áa]|viabilizar[áa]|culminar[áa]|resultar[áa]|trar[áa]|transformar[áa]|reverter[áa])[^.!?;]{6,140}|(?:possibilitando|contribuindo\s+para|assegurando|garantindo|promovendo|permitindo|resultando\s+em|evitando\s+que|alterando|tornando|viabilizando|disponibilizando|articulando|aplicando)\s+[^.!?;]{6,140})(?=[,.;!?]|$)/iu);
+  if (efeMatch && efeMatch[1]?.trim() && !isVagueOrAcronymDetailing(efeMatch[1])) {
+    const det = efeMatch[1].trim();
+    const core = raw.replace(efeMatch[0], "").replace(/\s+/g, " ").trim();
+    return { cleanedCore: core, detailingExtracted: det, targetHint: "Efeito / Desdobramento" };
+  }
+
+  return { cleanedCore: raw, detailingExtracted: null, targetHint: "Ação / Meio" };
+}
+
+function auditConclusionInterventions(conclusionText: string) {
+  const fullText = (conclusionText || "").trim();
+  const sentences = fullText.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+
+  const agentRegex = /\b(governo\s+federal|governo\s+estadual|governo\s+municipal|governo|estado\s+brasileiro|estado|minist[ée]rios?(?:\s+(?:da|de|do|dos|das)\s+[\p{L}\s]{2,40})?|poder\s+p[úu]blico|poder\s+executivo|poder\s+legislativo|poder\s+judici[áa]rio|congresso\s+nacional|minist[ée]rio\s+p[úu]blico|secretarias?(?:\s+(?:de|da|do)\s+[\p{L}\s]{2,35})?|escolas?|institui[çc][õo]es\s+de\s+ensino|redes?\s+de\s+ensino|universidades?|m[íi]dia\s+(?:brasileira|de\s+massa)?|imprensa|fam[íi]lias?|sociedade\s+civil|sociedade|ongs?|organiza[çc][õo]es\s+n[ãa]o\s+governamentais|prefeituras?|munic[íi]pios?|estados|empresas?|setor\s+privado|[óo]rg[ãa]os\s+competentes|conselhos\s+tutelares|hospitais?|agentes\s+comunit[áa]rios|profissionais\s+(?:da|de)\s+[\p{L}\s]{2,25}|respons[áa]veis\s+legais|comunidade\s+escolar|sistema\s+[úu]nico\s+de\s+sa[úu]de|sus)\b/giu;
+
+  const propositiveVerbStems = "(?:expandir|expanda|expandam|promover|promova|promovam|oferecer|ofere[çc]a|ofere[çc]am|implementar|implemente|implementem|ampliar|amplie|ampliem|desenvolver|desenvolva|desenvolvam|criar|crie|criem|elaborar|elabore|elaborem|garantir|garanta|garantam|viabilizar|viabilize|viabilizem|fomentar|fomente|fomentem|instituir|institua|instituam|refor[çc]ar|reforce|reforcem|intensificar|intensifique|intensifiquem|aplicar|aplique|apliquem|assegurar|assegure|assegurem|estruturar|estruture|estruturem|capacitar|capacite|capacitem|fiscalizar|fiscalize|fiscalizem|investir|invista|invistam|disponibilizar|disponibilize|disponibilizem|estabelecer|estabele[çc]a|estabele[çc]am|proporcionar|proporcione|proporcionem|realizar|realize|realizem|efetivar|efetive|efetivem|inserir|insira|insiram|incluir|inclua|incluam|reformular|reformule|reformulem|democratizar|democratize|democratizem|fortalecer|fortale[çc]a|fortale[çc]am|construir|construa|construam|destinar|destine|destinem|regulamentar|regulamente|regulamentem|coibir|co[íi]ba|co[íi]bam|conscientizar|conscientize|conscientizem)";
+  const actionRegex = new RegExp(
+    `(?:\\b(?:deve|devem|deveria|deveriam|cabe|cabem|precisa|precisam|necessita|necessitam|urge|[ée]\\s+preciso|[ée]\\s+necess[áa]rio|[ée]\\s+fundamental|[ée]\\s+imprescind[íi]vel|torna-se\\s+(?:necess[áa]rio|imperativo|imprescind[íi]vel|urgente)|faz-se\\s+necess[áa]rio|h[áa]\\s+de)\\b[^.!?;]{0,115}\\b${propositiveVerbStems}\\b[^.!?;]{3,115}|\\b${propositiveVerbStems}\\b\\s+(?:o|a|os|as|um|uma|uns|umas|projetos?|programas?|pol[íi]ticas?|campanhas?|medidas?|a[çc][õo]es|recursos?|verbas?|investimentos?|leis?|servi[çc]os?|atendimento|acesso|capacita[çc][ãa]o|infraestrutura|fiscaliza[çc][ãa]o|apoio|suporte|ensino|educa[çc][ãa]o|iniciativas?|espa[çc]os?|centros?|oficinas?|debates?|redes?)[^.!?;]{2,100})`,
+    "giu"
+  );
+
+  const modeRegex = /\b(?:por\s+meio\s+(?:de|da|do|dos|das)|mediante(?:\s+(?:o|a|os|as))?|por\s+interm[ée]dio\s+(?:de|da|do|dos|das)|atrav[ée]s\s+(?:de|da|do|dos|das)|com\s+o\s+aux[íi]lio\s+(?:de|da|do)|com\s+o\s+apoio\s+(?:de|da|do)|com\s+o\s+uso\s+(?:de|da|do)|utilizando|a\s+partir\s+(?:de|da|do|dos|das)|por\s+via\s+(?:de|da|do)|com\s+base\s+(?:em|na|no))\b[^.!?;]{4,115}/giu;
+
+  const finalityRegex = /\b(?:a\s+fim\s+de|com\s+(?:o\s+objetivo|a\s+finalidade|o\s+fito|o\s+intuito|o\s+prop[óo]sito)\s+de|no\s+intuito\s+de|para\s+que|visando(?:\s+(?:a|ao|[àa]))?|de\s+modo\s+a|com\s+vistas?\s+(?:a|ao|[àa])|buscando|para\s+(?:mitigar|combater|erradicar|garantir|reduzir|diminuir|solucionar|resolver|promover|melhorar|assegurar|evitar|conscientizar|incentivar|ampliar|fortalecer|reverter|superar|minimizar|prevenir|democratizar|incluir|transformar))\b[^.!?;]{4,115}/giu;
+
+  // Detailing recognizes valid explanations/exemplifications/specifications of ANY element (Agente, Ação, Meio/Modo ou Efeito):
+  // travessões (— ... —), parênteses substantivos (3+ palavras, não siglas), aposto explicativo, justificativa, exemplificações concretas,
+  // efeito do efeito (", o que permitirá...", ", alterando...", ou período conclusivo complementar "Assim, ..."),
+  // além de especificações concretas de público, localização, periodicidade/horário, critérios de prioridade ou condições operacionais.
+  const stopClause = `(?=,\\s*(?:a\\s+fim\\s+de|com\\s+(?:o\\s+objetivo|a\\s+finalidade|o\\s+fito|o\\s+intuito|o\\s+prop[óo]sito)\\s+de|para\\s+que|por\\s+meio\\s+de|mediante|por\\s+interm[ée]dio\\s+de)\\b|[.!?;]|$)`;
+  const detailingRegex = new RegExp(
+    [
+      `(?:[—–][^—–\\n]{8,180}[—–])`,
+      `(?:\\((?=[^()\\n]*\\S+\\s+\\S+\\s+\\S+)[^()\\n]{14,160}\\))`,
+      `(?:,\\s*(?:a\\s+exemplo\\s+de|por\\s+exemplo|tais\\s+como|incluindo|especificamente|sobretudo|especialmente)\\b[^.!?;—()]{6,140}?${stopClause})`,
+      `(?:,\\s*como\\s+(?!forma\\s+de|meio\\s+de|objetivo|intuito|os\\s+filhos|a\\s+protagonista|retratado|visto\\s+em|ocorreu)[^.!?;—()]{8,140}?${stopClause})`,
+      `(?:,\\s*(?:(?:[óo]rg[ãa]o|institui[çc][ãa]o|pasta|entidade|autarquia|minist[ée]rio|conselho)\\s+(?:que|respons[áa]vel|encarregad|gestor|voltad|federal|estadual|municipal|p[úu]blic)|(?:ferramenta|iniciativa|medida|estrat[ée]gia|espa[çc]o)\\s+(?:que|essencial|indispens[áa]vel|voltad|capaz|destinad|respons[áa]vel)|respons[áa]vel\\s+por|encarregad[oa]\\s+de|(?:o|a)\\s+qual\\s+\\w+|(?:os|as)\\s+quais\\s+\\w+|que\\s+(?:visa|tem\\s+como|atua|assegura|promove|permite|contempla|ocorrer[áã]o|funcionar[áã]o)|cuj[oa]\\s+(?:atribui[çc][ãa]o|fun[çc][ãa]o|papel|objetivo|compet[êe]ncia))[^,.;!?]{5,140})`,
+      `(?:,\\s*(?:haja\\s+vista\\s+que|uma\\s+vez\\s+que|visto\\s+que)\\s+[^.!?;]{8,140}?${stopClause})`,
+      `(?:,\\s*(?:o\\s+que\\s+(?:garantir[áa]|permitir[áa]|assegurar[áa]|reduzir[áa]|diminuir[áa]|promover[áa]|evitar[áa]|possibilitar[áa]|contribuir[áa]|viabilizar[áa]|culminar[áa]|resultar[áa]|trar[áa]|transformar[áa]|reverter[áa])|(?:possibilitando|contribuindo\\s+para|assegurando|garantindo|promovendo|permitindo|resultando\\s+em|evitando\\s+que|alterando|tornando|viabilizando|disponibilizando|articulando|aplicando)\\s+)[^.!?;]{6,140}?${stopClause})`,
+      `(?:\\b(?:voltad[oa]s?|destinad[oa]s?|direcionad[oa]s?)\\s+(?:[àa]s?|aos?|para)\\s+(?:estudantes|alunos|jovens|crian[çc]as|fam[íi]lias|comunidades|popula[çc][ãa]o|popula[çc][õo]es|trabalhadores|idosos|mulheres|moradores|professores|docentes|m[ãa]es|cuidadoras|cidad[ãa]os|pessoas\\s+em\\s+situa[çc][ãa]o|setores)[^.!?;]{3,120}?${stopClause})`,
+      `(?:\\b(?:priorizando|com\\s+prioridade\\s+para|constru[çc][ãa]o\\s+priorit[áa]ria|repasse\\s+priorit[áa]rio|com\\s+cotas\\s+obrigat[óo]rias\\s+de|conforme\\s+(?:crit[ée]rios|a\\s+renda)|a\\s+partir\\s+de\\s+(?:mapeamento|crit[ée]rios\\s+socioecon[ôo]micos)|inscrit[oa]s\\s+no\\s+cad[úu]nico|em\\s+extrema\\s+vulnerabilidade|de\\s+baixa\\s+renda)[^.!?;]{0,120}?${stopClause})`,
+      `(?:\\b(?:nas\\s+(?:escolas\\s+p[úu]blicas|unidades\\s+(?:b[áa]sicas\\s+)?de\\s+sa[úu]de|periferias|zonas\\s+(?:rurais|perif[ée]ricas)|regi[õo]es\\s+(?:norte|nordeste|mais\\s+vulner[áa]veis)|comunidades\\s+(?:rurais|perif[ée]ricas|ind[íi]genas|quilombolas|isoladas))|(?:nos|aos)\\s+(?:audit[óo]rios\\s+escolares|finais\\s+de\\s+semana|munic[íi]pios\\s+sem\\s+\\w+)|(?:para|em)\\s+(?:(?:as?|os?)\\s+)?(?:[áa]reas\\s+(?:de\\s+(?:alta\\s+)?vulnerabilidade|perif[ée]ricas)|aldeias\\s+remotas|comunidades\\s+isoladas|s[íi]tios\\s+hist[óo]ricos\\s+quilombolas|bibliotecas\\s+p[úu]blicas|cidades\\s+interioranas|zonas\\s+perif[ée]ricas\\s+e\\s+rurais|munic[íi]pios\\s+com\\s+menor|todo\\s+o\\s+territ[óo]rio\\s+nacional|tv\\s+aberta\\s+e\\s+plataformas\\s+digitais))[^.!?;]{0,120}?${stopClause})`,
+      `(?:\\b(?:em\\s+tempo\\s+integral|no\\s+contraturno\\s+escolar|funcionamento\\s+ininterrupto\\s+24\\s+horas|teleatendimento\\s+[^.!?;]{3,40}gratuito\\s+24\\s+horas|(?:sess[õo]es|encontros|palestras|oficinas|proje[çc][õo]es|cursos|audi[êe]ncias\\s+p[úu]blicas)\\s+(?:semanais|mensais|peri[óo]dic[oa]s|bimestrais|semestrais|anuais|obrigat[óo]ri[oa]s)(?:\\s+gratuit[oa]s)?|de\\s+(?:forma|maneira)\\s+(?:gratuita|cont[íi]nua|bimestral|semestral|anual|integrada)|(?:atendimento|emiss[ãa]o)\\s+gratuit[oa][^.!?;]{3,80}|(?:com\\s+)?monitoramento\\s+(?:ativo|por\\s+sat[ée]lite)|com\\s+(?:equipe\\s+multidisciplinar|psic[óo]logos|assistentes\\s+sociais|metas\\s+(?:anuais|semestrais)|verba\\s+vinculada|encontros\\s+(?:semanais|mensais)|debates\\s+orientados|atendimento\\s+gratuito|unidades\\s+m[óo]veis\\s+com\\s+peritos)|para\\s+fins\\s+de\\s+aposentadoria)\\b[^.!?;]{0,120}?${stopClause})`
+    ].join("|"),
+    "giu"
+  );
+
+  // 1. Extrair primeiramente os detalhamentos no texto integral e criar versão limpa apenas de apostos/travessões/parênteses embutidos (para não remover Meio/Finalidade)
+  const rawDetailingMatches = Array.from(fullText.match(detailingRegex) || []);
+  let textWithoutEmbeddedDetailing = fullText;
+  for (const dm of rawDetailingMatches) {
+    if (/^[—–]|^\(|^,\s*(?:a\s+exemplo|por\s+exemplo|tais\s+como|incluindo|[óo]rg[ãa]o|institui[çc][ãa]o|pasta|entidade|autarquia|minist[ée]rio|conselho|ferramenta|iniciativa|medida|estrat[ée]gia|respons[áa]vel|encarregad|o\s+qual|a\s+qual|os\s+quais|as\s+quais|cuj|haja\s+vista|uma\s+vez\s+que|visto\s+que)/i.test(dm.trim())) {
+      textWithoutEmbeddedDetailing = textWithoutEmbeddedDetailing.replace(dm, " ");
+    }
+  }
+  textWithoutEmbeddedDetailing = textWithoutEmbeddedDetailing.replace(/\s*,\s*,/g, ",").replace(/\s{2,}/g, " ").trim();
+
+  const rawAgents = Array.from(new Set((textWithoutEmbeddedDetailing.match(agentRegex) || []).map(s => cleanSingleAgentCandidate(s)).filter(Boolean)));
+  // Filtrar subcadeias redundantes (ex.: manter "Ministério da Educação" e não "Estado" se ambos aparecem)
+  const agentsFound = rawAgents
+    .filter((ag, _, arr) => !arr.some(other => other.length > ag.length && other.toLowerCase().includes(ag.toLowerCase())))
+    .slice(0, 6);
+
+  const trimTrailingConnectors = (txt: string) =>
+    txt
+      .replace(/,?\s*\b(?:por\s+meio\s+(?:de|da|do)|mediante|por\s+interm[ée]dio|atrav[ée]s\s+de|a\s+fim\s+de|com\s+(?:o\s+objetivo|a\s+finalidade|o\s+fito|o\s+intuito)|para\s+que|visando)\b.*$/i, "")
+      .replace(/[,\s—\-]+$/g, "")
+      .trim();
+
+  const actionsFound = Array.from(
+    new Set(
+      (textWithoutEmbeddedDetailing.match(actionRegex) || [])
+        .map(s => trimTrailingConnectors(s))
+        .filter(s => s.length >= 4)
+    )
+  ).slice(0, 6);
+  const modesFound = Array.from(
+    new Set(
+      (textWithoutEmbeddedDetailing.match(modeRegex) || [])
+        .map(s => s.replace(/,?\s*\b(?:a\s+fim\s+de|com\s+(?:o\s+objetivo|a\s+finalidade|o\s+fito|o\s+intuito)|para\s+que|visando)\b.*$/i, "").replace(/[,\s—\-]+$/g, "").trim())
+        .filter(s => s.length >= 6)
+    )
+  ).slice(0, 6);
+  const finalitiesFound = Array.from(
+    new Set((textWithoutEmbeddedDetailing.match(finalityRegex) || []).map(s => s.replace(/[,\s—\-]+$/g, "").trim()).filter(s => s.length >= 6))
+  ).slice(0, 6);
+
+  const filterValidDetailings = (rawMatches: string[], sentenceActions: string[], sentenceModes: string[], sentenceFinalities: string[]) => {
+    return rawMatches
+      .map(s => s.replace(/^[,\s—–(]+|[—–)\s.,;]+$/g, "").trim())
+      .filter(cand => {
+        if (cand.length < 6 || isVagueOrAcronymDetailing(cand)) return false;
+        const normCand = cand.toLowerCase();
+        const startsAsModeOrFinality = /^(por\s+meio\s+de|mediante|atrav[ée]s\s+de|por\s+interm[ée]dio\s+de|a\s+fim\s+de|com\s+(?:o\s+objetivo|a\s+finalidade|o\s+fito|o\s+intuito)\s+de|para\s+que|visando)\b/i.test(normCand);
+        if (startsAsModeOrFinality) return false;
+        const exactMatchMode = sentenceModes.some(m => m.toLowerCase().trim() === normCand);
+        const exactMatchAction = sentenceActions.some(a => a.toLowerCase().trim() === normCand);
+        const exactMatchFinality = sentenceFinalities.some(f => f.toLowerCase().trim() === normCand);
+        return !exactMatchMode && !exactMatchAction && !exactMatchFinality;
+      });
+  };
+
+  // Analyze each sentence/proposal individually before aggregating across the entire conclusion
+  const proposals = sentences.map((sent) => {
+    const sentDetsRaw = Array.from(sent.match(detailingRegex) || []);
+    let cleanSent = sent;
+    for (const dm of sentDetsRaw) {
+      if (/^[—–]|^\(|^,\s*(?:a\s+exemplo|por\s+exemplo|tais\s+como|incluindo|[óo]rg[ãa]o|institui[çc][ãa]o|pasta|entidade|autarquia|minist[ée]rio|conselho|ferramenta|iniciativa|medida|estrat[ée]gia|respons[áa]vel|encarregad|o\s+qual|a\s+qual|os\s+quais|as\s+quais|cuj|haja\s+vista|uma\s+vez\s+que|visto\s+que)/i.test(dm.trim())) {
+        cleanSent = cleanSent.replace(dm, " ");
+      }
+    }
+    const pAgents = Array.from(new Set((cleanSent.match(agentRegex) || []).map(s => cleanSingleAgentCandidate(s)).filter(Boolean)));
+    const pActions = Array.from(new Set((cleanSent.match(actionRegex) || []).map(s => trimTrailingConnectors(s)).filter(Boolean)));
+    const pModes = Array.from(new Set((cleanSent.match(modeRegex) || []).map(s => s.trim())));
+    const pFinalities = Array.from(new Set((cleanSent.match(finalityRegex) || []).map(s => s.trim())));
+    const pDetailings = filterValidDetailings(sentDetsRaw, pActions, pModes, pFinalities);
+    return {
+      sentence: sent,
+      isProposal: pAgents.length > 0 || pActions.length > 0,
+      agents: pAgents,
+      actions: pActions,
+      modes: pModes,
+      finalities: pFinalities,
+      detailings: pDetailings
+    };
+  }).filter(p => p.isProposal);
+
+  // Detectar também "efeito do efeito" em período conclusivo complementar após a proposta completa (ex.: "Assim, afastar-se-á...")
+  let secondaryEffectSentence: string | null = null;
+  if (proposals.length > 0 && sentences.length >= 2) {
+    const lastSent = sentences[sentences.length - 1];
+    const lastIsProposal = proposals.some(p => p.sentence === lastSent);
+    if (
+      !lastIsProposal &&
+      /^(?:assim|desse\s+modo|dessa\s+forma|com\s+isso|dessa\s+maneira|por\s+conseguinte),?\s+/i.test(lastSent) &&
+      lastSent.length >= 30 &&
+      !/\b(?:o\s+problema\s+ser[áa]\s+resolvido|tudo\s+melhorar[áa]|isso\s+[ée]\s+muito\s+importante)\b/i.test(lastSent)
+    ) {
+      secondaryEffectSentence = lastSent;
+    }
+  }
+
+  const detailingsFound = Array.from(new Set([
+    ...filterValidDetailings(rawDetailingMatches, actionsFound, modesFound, finalitiesFound),
+    ...(secondaryEffectSentence ? [secondaryEffectSentence] : [])
+  ])).slice(0, 4);
+
+  const hasAgent = agentsFound.length > 0;
+  const primaryAgent = hasAgent ? agentsFound[0] : "";
+  const hasAction = actionsFound.length > 0;
+  const hasMode = modesFound.length > 0;
+  const hasEffect = finalitiesFound.length > 0;
+  const hasDetailing = detailingsFound.length > 0;
+
+  let validElementsCount = 0;
+  if (hasAgent) validElementsCount++;
+  if (hasAction) validElementsCount++;
+  if (hasMode) validElementsCount++;
+  if (hasEffect) validElementsCount++;
+  if (hasDetailing) validElementsCount++;
+
+  return {
+    sentencesCount: sentences.length,
+    proposalsCount: Math.max(proposals.length, actionsFound.length, agentsFound.length > 1 && actionsFound.length > 0 ? actionsFound.length : (hasAction || hasAgent ? 1 : 0)),
+    proposals,
+    agentsFound,
+    primaryAgent,
+    actionsFound,
+    modesFound,
+    finalitiesFound,
+    detailingsFound,
+    hasAgent,
+    agentText: hasAgent ? primaryAgent : "Ausente no texto integral da conclusão",
+    hasAction,
+    actionText: hasAction ? actionsFound[0] : "Ausente no texto integral da conclusão",
+    hasMode,
+    modeText: hasMode ? modesFound[0] : "Ausente (falta especificação do modo/meio no texto integral da conclusão)",
+    hasEffect,
+    effectText: hasEffect ? finalitiesFound[0] : "Ausente (falta finalidade explícita no texto integral da conclusão)",
+    hasDetailing,
+    detailingText: hasDetailing ? detailingsFound[0] : "Ausente (falta especificação ou exemplificação adicional de um dos elementos)",
+    validElementsCount
+  };
+}
+
+function buildDynamicFeedbackLists(params: {
+  essayText: string;
+  theme: string;
+  finalTotal: number;
+  c1s: number;
+  c2s: number;
+  c3s: number;
+  c4s: number;
+  c5s: number;
+  isWholeEssayZero: boolean;
+  zeroReason?: string;
+  isTangenciamento: boolean;
+  tangenciamentoJustification?: string;
+  isHumanRightsViolationC5: boolean;
+  humanRightsSnippet?: string;
+  humanRightsReason?: string;
+  c1Deviations: Array<{ snippet?: string; problem?: string; bestForm?: string }>;
+  recognizedRepertoires: Array<{ name: string; matched: string; locationTag: string; fullSentence: string }>;
+  c2Usage?: string;
+  c3HasCrossParagraphRepetition?: boolean;
+  c3HasCausalDepth?: boolean;
+  c3EvidenceQuote?: string;
+  c4EvidenceQuote?: string;
+  c5MissingElements: string[];
+  c5DetailingText?: string;
+  existingTop3Problems?: string[];
+  existingActionPlan?: string[];
+}) {
+  const {
+    essayText,
+    theme,
+    finalTotal,
+    c1s,
+    c2s,
+    c3s,
+    c4s,
+    c5s,
+    isWholeEssayZero,
+    zeroReason,
+    isTangenciamento,
+    tangenciamentoJustification,
+    isHumanRightsViolationC5,
+    humanRightsSnippet,
+    humanRightsReason,
+    c1Deviations,
+    recognizedRepertoires,
+    c2Usage,
+    c3HasCrossParagraphRepetition,
+    c3HasCausalDepth,
+    c3EvidenceQuote,
+    c4EvidenceQuote,
+    c5MissingElements,
+    c5DetailingText,
+    existingTop3Problems = [],
+    existingActionPlan = []
+  } = params;
+
+  const anaphoricMesmos = findAnaphoricMesmoExcerpts(essayText);
+  const missingOperators = checkMissingInterParagraphOperators(essayText);
+
+  const filterItem = (item: string, isProblemList: boolean): boolean => {
+    const s = String(item || "").trim();
+    if (!s || s.length < 8) return false;
+    const low = s.toLowerCase();
+
+    // Regra 1: Só citar 'o mesmo / os mesmos' se aparecer literalmente no texto
+    if (/(?:o\s+mesmo|os\s+mesmos|a\s+mesma|as\s+mesmas|o\s+mesmo\s*\/\s*os\s+mesmos)/i.test(low) && anaphoricMesmos.length === 0) {
+      return false;
+    }
+    // Regra 2: Só sugerir conectivos de abertura se realmente faltar operadores interparágrafos
+    if (/(inicie\s+o\s+d1|conectivo\s+de\s+abertura|inicialmente.*ademais|outrossim.*portanto)/i.test(low) && missingOperators.length === 0) {
+      return false;
+    }
+    // Regra 3: Só mencionar Direitos Humanos nos problemas/dicas se houver violação explícita
+    if (/direitos\s+humanos/i.test(low) && !isHumanRightsViolationC5) {
+      return false;
+    }
+    // Regra 4: Não citar erros de C3 quando C3 = 200 ou de C5 quando C5 = 200
+    if (c3s === 200 && /\b(?:c3|compet[êe]ncia\s*3|repeti[çc][ãa]o\s+de\s+ideias|marcas\s+de\s+autoria|superficialidade\s+argumentativa)\b/i.test(low) && !/excel[êe]ncia|mant|consolid|ajuste\s+fino/i.test(low)) {
+      return false;
+    }
+    if (c5s === 200 && /\b(?:c5|compet[êe]ncia\s*5|detalhamento|proposta\s+de\s+interven[çc][ãa]o|5\s+elementos)\b/i.test(low) && !/excel[êe]ncia|mant|consolid|ajuste\s+fino/i.test(low)) {
+      return false;
+    }
+    if (c1s === 200 && c1Deviations.length === 0 && /\b(?:c1|desvios?\s+ortogr[áa]ficos?|concord[âa]ncia)\b/i.test(low) && !/excel[êe]ncia|mant|ajuste\s+fino/i.test(low)) {
+      return false;
+    }
+    // Remover clichês ou templates estáticos pré-programados
+    if (/(aplique\s+a\s+f[óo]rmula\s+dos\s+5\s+elementos|desenvolva\s+sempre\s+o\s+recorte\s+tem[áa]tico\s+espec[íi]fico\s+da\s+proposta)/i.test(low)) {
+      return false;
+    }
+    if (isProblemList && finalTotal >= 960 && /(faltou|aus[êe]ncia|erro\s+grave|repeti[çc][ãa]o\s+de\s+ideias)/i.test(low) && c3s === 200 && c5s === 200) {
+      return false;
+    }
+    return true;
+  };
+
+  const sanitizedProblems = existingTop3Problems
+    .map(p => stripGenericC3Cliches(String(p || "").trim(), theme))
+    .filter(p => filterItem(p, true));
+
+  const sanitizedActions = existingActionPlan
+    .map(a => stripGenericC3Cliches(String(a || "").trim(), theme))
+    .filter(a => filterItem(a, false));
+
+  // Construir problemas/ajustes reais estritamente a partir das evidências desta redação
+  const dynamicProblems: string[] = [];
+  const dynamicActions: string[] = [];
+
+  if (isWholeEssayZero && zeroReason) {
+    dynamicProblems.push(zeroReason);
+    dynamicActions.push(`Reestruture o texto para atender diretamente ao recorte temático de "${theme}" no formato dissertativo-argumentativo com mínimo de 8 linhas.`);
+  } else {
+    if (isTangenciamento && tangenciamentoJustification) {
+      dynamicProblems.push(tangenciamentoJustification);
+      dynamicActions.push(`Direcione a tese e os argumentos diretamente para o recorte específico de "${theme}", sem permanecer apenas no assunto amplo.`);
+    }
+    if (isHumanRightsViolationC5) {
+      dynamicProblems.push(
+        `Violação aos Direitos Humanos na proposta de intervenção${humanRightsSnippet ? ` no trecho "${humanRightsSnippet}"` : ""}: ${humanRightsReason || "medida incompatível com a dignidade humana (zera exclusivamente a C5)."}`
+      );
+      dynamicActions.push(
+        `Substitua o trecho "${humanRightsSnippet || "da proposta"}" por uma intervenção institucional, educativa ou legal compatível com os Direitos Humanos.`
+      );
+    }
+
+    if (c1s < 200 || c1Deviations.length > 0) {
+      if (c1Deviations.length > 0) {
+        const d0 = c1Deviations[0];
+        const prefix = finalTotal >= 960 ? "Ajuste fino na C1: " : "Desvio gramatical/normativo localizado na C1: ";
+        dynamicProblems.push(`${prefix}${d0.problem || "desvio pontual"}${d0.snippet ? ` ("${d0.snippet}")` : ""}.`);
+        dynamicActions.push(`Revise o trecho "${d0.snippet}" aplicando a forma culta (${d0.bestForm || "concordância/pontuação padrão"}).`);
+      } else if (c1s < 200) {
+        dynamicProblems.push(`C1 em ${c1s}/200 pts por ocorrências pontuais de norma-padrão ou pontuação ao longo dos períodos.`);
+        dynamicActions.push("Revise a pontuação de termos intercalados, regência e concordância verbal nos períodos mais extensos.");
+      }
+    }
+
+    if (!isTangenciamento && c2s < 200) {
+      if (recognizedRepertoires.length > 0) {
+        const rep = recognizedRepertoires[0];
+        const prefix = finalTotal >= 960 ? "Ajuste fino na C2: " : "Integração parcial do repertório na C2: ";
+        dynamicProblems.push(
+          `${prefix}a referência "${rep.matched}" (${rep.locationTag}) pode ser ainda mais explorada em relação direta com a tese.`
+        );
+        dynamicActions.push(
+          `Ao retomar "${rep.matched}" (${rep.locationTag}), explicite em uma frase seguinte como esse conceito comprova a causa discutida no parágrafo.`
+        );
+      } else if (c2Usage === "sem_repertorio_externo" || c2s <= 160) {
+        dynamicProblems.push(`C2 em ${c2s}/200 pts: o texto domina o tema, mas não mobiliza repertório sociocultural externo legitimado no conjunto da redação.`);
+        dynamicActions.push(`Integre ao menos uma referência sociocultural legítima e produtiva (histórica, constitucional, sociológica ou literária) vinculada ao raciocínio sobre "${theme}".`);
+      }
+    }
+
+    if (!isTangenciamento && c3s < 200) {
+      if (c3HasCrossParagraphRepetition) {
+        dynamicProblems.push(
+          `Sobreposição de argumento central entre os parágrafos de desenvolvimento na C3${c3EvidenceQuote ? ` (trecho: "${c3EvidenceQuote}")` : ""}.`
+        );
+        dynamicActions.push("Diferencie os eixos causais entre D1 e D2 para que cada desenvolvimento defenda uma causa distinta da tese.");
+      } else if (!c3HasCausalDepth || c3s <= 180) {
+        const prefix = finalTotal >= 960 ? "Ajuste fino na C3: " : "Aprofundamento de causa e consequência na C3: ";
+        dynamicProblems.push(
+          `${prefix}${c3EvidenceQuote ? `no trecho "${c3EvidenceQuote}", ` : ""}é possível detalhar ainda mais por que a causa ocorre e qual consequência concreta ela produz.`
+        );
+        dynamicActions.push("Mantenha seu repertório e tese, aprofundando o desdobramento entre a causa apontada e sua consequência prática no parágrafo.");
+      }
+    }
+
+    if (c4s < 200) {
+      if (anaphoricMesmos.length > 0) {
+        const ex = anaphoricMesmos[0];
+        dynamicProblems.push(`Uso anafórico inadequado de "${ex.match}" (${ex.locationTag}) no trecho "${ex.sentence}".`);
+        dynamicActions.push(`Substitua "${ex.match}" no trecho "${ex.sentence}" por pronome pessoal ("eles", "deles") ou retomada nominal precisa.`);
+      } else if (missingOperators.length > 0) {
+        const locs = missingOperators.map(m => m.label).join(" e ");
+        dynamicProblems.push(`Ausência de operador argumentativo interparágrafo na abertura de: ${locs}.`);
+        dynamicActions.push(`Insira operador lógico adequado ao sentido do argumento na abertura de ${locs}.`);
+      } else {
+        const prefix = finalTotal >= 960 ? "Ajuste fino na C4: " : "Fluidez e variação de estruturas coesivas na C4: ";
+        dynamicProblems.push(
+          `${prefix}${c4EvidenceQuote ? `no trecho "${c4EvidenceQuote}", ` : ""}algumas transições ou construções explicativas repetem padrão semelhante entre parágrafos.`
+        );
+        dynamicActions.push("Varie o modo como as frases explicativas se encadeiam internamente e reforce retomadas referenciais entre os períodos.");
+      }
+    }
+
+    if (!isTangenciamento && !isHumanRightsViolationC5 && c5s < 200 && c5MissingElements.length > 0) {
+      dynamicProblems.push(`Proposta de intervenção (C5 em ${c5s}/200) sem especificação clara de: ${c5MissingElements.join(", ")}.`);
+      dynamicActions.push(`Complete na conclusão apenas o(s) elemento(s) ausente(s) (${c5MissingElements.join(", ")}), mantendo o agente e a ação já definidos.`);
+    }
+  }
+
+  // Combinar itens filtrados da IA com diagnósticos dinâmicos baseados em evidência real
+  const mergedProblems: string[] = [];
+  for (const cand of [...sanitizedProblems, ...dynamicProblems]) {
+    const clean = cand.trim();
+    if (clean && !mergedProblems.some(m => m.toLowerCase().slice(0, 35) === clean.toLowerCase().slice(0, 35))) {
+      mergedProblems.push(clean);
+    }
+    if (mergedProblems.length >= 3) break;
+  }
+
+  // Modo 960–1000 pontos: "Ajustes Finos de Excelência" baseados apenas em detalhes reais do texto
+  if (finalTotal >= 960 && mergedProblems.length === 0) {
+    if (recognizedRepertoires.length > 0) {
+      mergedProblems.push(`Ajuste fino de excelência (C2): a referência "${recognizedRepertoires[0].matched}" (${recognizedRepertoires[0].locationTag}) sustenta a tese; para manter o padrão máximo, preserve esse vínculo causal direto entre citação e argumento.`);
+    }
+    if (c5s === 200 && c5DetailingText && !/^ausente/i.test(c5DetailingText)) {
+      mergedProblems.push(`Ajuste fino de excelência (C5): o detalhamento "${c5DetailingText}" completa os 5 elementos; mantenha essa precisão sintática na conclusão.`);
+    }
+    if (mergedProblems.length < 2) {
+      mergedProblems.push(`Ajuste fino de precisão (C1/C4): todos os eixos principais alcançaram nível de excelência; na revisão final de prova, priorize apenas releitura atenta de pontuação e paralelismo.`);
+    }
+  } else if (mergedProblems.length === 0 && !isWholeEssayZero) {
+    mergedProblems.push("Nenhum desvio crítico isolado encontrado; mantenha a revisão pontual de norma-padrão e a articulação entre causa e consequência.");
+  }
+
+  const mergedActions: string[] = [];
+  for (const cand of [...sanitizedActions, ...dynamicActions]) {
+    const clean = cand.trim();
+    if (clean && !mergedActions.some(m => m.toLowerCase().slice(0, 35) === clean.toLowerCase().slice(0, 35))) {
+      mergedActions.push(clean);
+    }
+    if (mergedActions.length >= 4) break;
+  }
+
+  if (mergedActions.length === 0) {
+    if (recognizedRepertoires.length > 0) {
+      mergedActions.push(`Mantenha o nível de integração alcançado ao articular "${recognizedRepertoires[0].matched}" ao recorte de "${theme}".`);
+    }
+    mergedActions.push("Preserve a progressão de ideias entre os desenvolvimentos e faça uma revisão final apenas para confirmar pontuação e concordância.");
+  }
+
+  const numberedActions = mergedActions.map((act, idx) => {
+    const stripped = act.replace(/^\d+\.\s*/, "").trim();
+    return `${idx + 1}. ${stripped}`;
+  });
+
+  return {
+    top3Problems: mergedProblems.slice(0, 3),
+    actionPlanToImprove: numberedActions,
+    anaphoricMesmos,
+    missingOperators
+  };
+}
+
+// -------------------------------------------------------------
+// Evidence Localization, C1 Deviation Deduplication & Consistency Validators
+// -------------------------------------------------------------
+function locateSnippetInEssay(rawSnippet: string, essayText: string): {
+  found: boolean;
+  paragraphIndex: number;
+  sentenceIndex: number;
+  paragraphLabel: string;
+  locationTag: string;
+  exactSpan: string;
+  fullSentenceContext: string;
+  wasTruncated: boolean;
+} {
+  const cleanText = (essayText || "").trim();
+  const emptyResult = {
+    found: false,
+    paragraphIndex: 0,
+    sentenceIndex: 0,
+    paragraphLabel: "Texto",
+    locationTag: "Não localizado no texto",
+    exactSpan: "",
+    fullSentenceContext: "",
+    wasTruncated: false
+  };
+  if (!rawSnippet || !cleanText) return emptyResult;
+
+  const trimmed = String(rawSnippet).trim().replace(/^["'«“]+|["'»”]+$/g, "").trim();
+  const wasTruncated = /(\.\.\.|…|\[…\]|\[\.\.\.\])/.test(trimmed);
+  const probe = trimmed.replace(/^(\.\.\.|…)+\s*/, "").replace(/\s*(\.\.\.|…)+$/, "").trim();
+  if (probe.length < 3) return { ...emptyResult, wasTruncated };
+
+  const paragraphs = cleanText.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  const effectiveParagraphs = paragraphs.length > 0 ? paragraphs : [cleanText];
+  const lowerProbe = probe.toLowerCase();
+  const normWhitespaceProbe = lowerProbe.replace(/\s+/g, " ");
+
+  for (let pIdx = 0; pIdx < effectiveParagraphs.length; pIdx++) {
+    const para = effectiveParagraphs[pIdx];
+    const pLabel = pIdx === 0
+      ? `Parágrafo 1 (Introdução)`
+      : (effectiveParagraphs.length >= 3 && pIdx === effectiveParagraphs.length - 1)
+        ? `Parágrafo ${pIdx + 1} (Conclusão)`
+        : `Parágrafo ${pIdx + 1} (Desenvolvimento ${pIdx})`;
+
+    const sentences = para.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+    const effectiveSentences = sentences.length > 0 ? sentences : [para];
+
+    for (let sIdx = 0; sIdx < effectiveSentences.length; sIdx++) {
+      const sent = effectiveSentences[sIdx];
+      const lowerSent = sent.toLowerCase();
+      const idx = lowerSent.indexOf(lowerProbe);
+      if (idx !== -1) {
+        return {
+          found: true,
+          paragraphIndex: pIdx + 1,
+          sentenceIndex: sIdx + 1,
+          paragraphLabel: pLabel,
+          locationTag: `${pLabel}, Frase ${sIdx + 1}`,
+          exactSpan: sent.slice(idx, idx + probe.length),
+          fullSentenceContext: sent,
+          wasTruncated
+        };
+      }
+      if (lowerSent.replace(/\s+/g, " ").includes(normWhitespaceProbe)) {
+        return {
+          found: true,
+          paragraphIndex: pIdx + 1,
+          sentenceIndex: sIdx + 1,
+          paragraphLabel: pLabel,
+          locationTag: `${pLabel}, Frase ${sIdx + 1}`,
+          exactSpan: sent,
+          fullSentenceContext: sent,
+          wasTruncated
+        };
+      }
+    }
+
+    // Fallback check across paragraph boundaries (e.g., if quote spans two adjacent sentences)
+    if (para.toLowerCase().replace(/\s+/g, " ").includes(normWhitespaceProbe)) {
+      return {
+        found: true,
+        paragraphIndex: pIdx + 1,
+        sentenceIndex: 1,
+        paragraphLabel: pLabel,
+        locationTag: `${pLabel}`,
+        exactSpan: probe,
+        fullSentenceContext: effectiveSentences[0] || para,
+        wasTruncated
+      };
+    }
+  }
+
+  return { ...emptyResult, wasTruncated };
+}
+
+function isSyntheticLengthOrStyleOnlyDeviation(dev: any): boolean {
+  const snippet = String(dev?.snippet || "").toLowerCase();
+  const problem = String(dev?.problem || "").toLowerCase();
+  const bestForm = String(dev?.bestForm || "").toLowerCase();
+
+  if (
+    snippet.includes("ocorrência de orações com pontuação e regência sob observação") ||
+    problem.includes("manter precisão nos conectores de transição")
+  ) {
+    return true;
+  }
+
+  const lengthOnlyPattern = /(per[ií]odo\s+(?:excessivamente\s+|muito\s+)?longo|frase\s+(?:muito\s+)?longa|extens[ãa]o\s+(?:do\s+per[ií]odo|da\s+frase)|muitas\s+(?:palavras|linhas))/i;
+  const realGrammaticalFault = /(truncamento|justaposi[çc][ãa]o\s+indevida|aus[êe]ncia\s+de\s+verbo|falta\s+de\s+(?:verbo|pontua[çc][ãa]o)|v[íi]rgula\s+(?:entre\s+sujeito|ausente|indevida)|concord[âa]ncia|reg[êe]ncia|crase|ortograf|acentu)/i;
+  if (lengthOnlyPattern.test(problem) && !realGrammaticalFault.test(problem)) {
+    return true;
+  }
+
+  const styleOnlyPattern = /(vocabul[áa]rio\s+simples|palavras?\s+simples|frases?\s+curtas?|per[ií]odos?\s+diretos?|pouca\s+subordina[çc][ãa]o|falta\s+de\s+(?:ora[çc][õo]es\s+subordinadas|sofistica[çc][ãa]o|complexidade\s+sint[áa]tica)|prefer[êe]ncia\s+estil[íi]stica)/i;
+  if (styleOnlyPattern.test(problem) && !realGrammaticalFault.test(problem)) {
+    return true;
+  }
+
+  if (!snippet.trim() || (!problem.trim() && !bestForm.trim())) {
+    return true;
+  }
+
+  return false;
+}
+
+function validateAndDeduplicateC1Deviations(deviations: any[], essayText: string): Array<{
+  snippet: string;
+  problem: string;
+  bestForm: string;
+  category: string;
+}> {
+  if (!Array.isArray(deviations) || deviations.length === 0) return [];
+  const cleanText = (essayText || "").trim();
+  const seenKeys = new Set<string>();
+  const verified: Array<{ snippet: string; problem: string; bestForm: string; category: string }> = [];
+
+  for (const rawDev of deviations) {
+    if (!rawDev || isSyntheticLengthOrStyleOnlyDeviation(rawDev)) continue;
+
+    const rawSnippet = String(rawDev.snippet || "").trim();
+    const loc = locateSnippetInEssay(rawSnippet, cleanText);
+    if (!loc.found) {
+      // Evidence does not exist verbatim in the essay -> never confirm as an error
+      continue;
+    }
+
+    // Preserve complete non-truncated evidence verbatim from the student's text
+    const completeSnippet = loc.wasTruncated || loc.exactSpan.length < 8
+      ? (loc.fullSentenceContext.length <= 180 ? loc.fullSentenceContext : loc.exactSpan)
+      : loc.exactSpan;
+
+    const rawProblem = String(rawDev.problem || "").trim();
+    const normProbKey = rawProblem
+      .toLowerCase()
+      .replace(/par[áa]grafo\s+\d+[^:]*:/gi, "")
+      .replace(/[^a-zà-ú0-9\s]/gi, "")
+      .split(/\s+/)
+      .slice(0, 4)
+      .join("_");
+    const dedupKey = `${loc.paragraphIndex}:${loc.sentenceIndex}:${loc.exactSpan.toLowerCase().slice(0, 24)}:${normProbKey}`;
+    if (seenKeys.has(dedupKey)) {
+      continue;
+    }
+    // Also prevent duplicate same sentence + same rule error counted twice
+    const sentenceRuleKey = `${loc.paragraphIndex}:${loc.sentenceIndex}:${String(rawDev.category || "gramatical").toLowerCase()}:${loc.exactSpan.toLowerCase().slice(0, 18)}`;
+    if (seenKeys.has(sentenceRuleKey)) {
+      continue;
+    }
+    seenKeys.add(dedupKey);
+    seenKeys.add(sentenceRuleKey);
+
+    const hasLocationAlready = /par[áa]grafo\s+\d+/i.test(rawProblem);
+    const locatedProblem = hasLocationAlready ? rawProblem : `[${loc.locationTag}] ${rawProblem}`;
+
+    verified.push({
+      snippet: completeSnippet,
+      problem: locatedProblem,
+      bestForm: String(rawDev.bestForm || "").trim() || "Revisar conforme a norma-padrão formal preservando o sentido original.",
+      category: String(rawDev.category || "gramatical")
+    });
+  }
+
+  return verified;
+}
+
+function findC1OralityOrVagueVocabulary(essayText: string): Array<{
+  snippet: string;
+  problem: string;
+  bestForm: string;
+  category: 'registro' | 'vocabular';
+  locationTag: string;
+  fullSentence: string;
+}> {
+  const cleanText = (essayText || "").trim();
+  if (!cleanText) return [];
+
+  const vaguePatterns: Array<{ regex: RegExp; problem: string; bestForm: string; category: 'registro' | 'vocabular' }> = [
+    { regex: /\bno\s+dia\s+a\s+dia\b/giu, problem: "Clichê vago / marca de oralidade ('no dia a dia')", bestForm: "no cotidiano / na rotina social / na prática diária", category: "registro" },
+    { regex: /\bpor\s+causa\s+(?:d[eao]s?|disso|daquilo|que)\b/giu, problem: "Expressão coloquial / imprecisão causal ('por causa de')", bestForm: "em virtude de / em decorrência de / devido a", category: "registro" },
+    { regex: /\btomar\s+medidas\b/giu, problem: "Clichê vago / imprecisão vocabular ('tomar medidas')", bestForm: "implementar políticas públicas / adotar ações concretas / instituir mecanismos", category: "vocabular" },
+    { regex: /\bacaba[m]?\s+(?:gerando|causando|trazendo|ficando|sendo|levando|fazendo|prejudicando|afetando|resultando)\b/giu, problem: "Locução coloquial / imprecisão vocabular ('acaba + gerúndio')", bestForm: "culmina em / desencadeia / acarreta / fomenta", category: "vocabular" },
+    { regex: /\bcoisas?\b/giu, problem: "Imprecisão vocabular / termo genérico ('coisa/coisas')", bestForm: "fatores / aspectos / elementos / entraves / direitos", category: "vocabular" },
+    { regex: /\b(hoje\s+em\s+dia|nos\s+dias\s+de\s+hoje)\b/giu, problem: "Clichê vago / marca de oralidade temporal", bestForm: "atualmente / no cenário contemporâneo / hodiernamente", category: "registro" },
+    { regex: /\b(a\s+gente|tipo\s+assim|desse\s+jeito|muita\s+gente|fazer\s+algo|muito\s+ruim|muito\s+bom)\b/giu, problem: "Marca explícita de oralidade incompatível com o registro formal", bestForm: "substituir por vocabulário formal e impessoal preciso", category: "registro" },
+    { regex: /\bpra\s+(?:fazer|garantir|resolver|evitar|isso|que|quem)\b/giu, problem: "Marca de oralidade ('pra')", bestForm: "para ...", category: "registro" }
+  ];
+
+  const found: Array<{ snippet: string; problem: string; bestForm: string; category: 'registro' | 'vocabular'; locationTag: string; fullSentence: string }> = [];
+  const seen = new Set<string>();
+
+  for (const item of vaguePatterns) {
+    const matches = cleanText.matchAll(item.regex);
+    for (const m of matches) {
+      const rawSpan = (m[0] || "").trim();
+      if (!rawSpan) continue;
+      const loc = locateSnippetInEssay(rawSpan, cleanText);
+      if (!loc.found) continue;
+      const key = `${loc.paragraphIndex}:${loc.sentenceIndex}:${rawSpan.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({
+        snippet: loc.fullSentenceContext.length <= 165 ? loc.fullSentenceContext : (loc.exactSpan || rawSpan),
+        problem: `[${loc.locationTag}] ${item.problem}: "${loc.exactSpan || rawSpan}".`,
+        bestForm: item.bestForm,
+        category: item.category,
+        locationTag: loc.locationTag,
+        fullSentence: loc.fullSentenceContext
+      });
+    }
+  }
+
+  return found;
+}
+
+function hasComplexWellArticulatedSyntax(essayText: string, minSubordinateMarkers = 3): boolean {
+  const cleanText = (essayText || "").trim();
+  if (!cleanText) return false;
+  const sentences = cleanText.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+  const words = cleanText.split(/\s+/).filter(Boolean);
+  if (sentences.length === 0 || words.length === 0) return false;
+  const avgWordsPerSentence = words.length / sentences.length;
+  const complexMarkers = cleanText.match(/\b(que|cujo|cuja|cujos|cujas|embora|conquanto|ainda\s+que|mesmo\s+que|apesar\s+de|visto\s+que|haja\s+vista|uma\s+vez\s+que|[àa]\s+medida\s+que|conforme|consoante|para\s+que|a\s+fim\s+de\s+que|no\s+qual|na\s+qual|nos\s+quais|nas\s+quais|pel[oa]s?\s+qual|onde|sob\s+essa|diante\s+disso|por\s+conseguinte|outrossim|ademais)\b/giu) || [];
+  const punctuationArticulation = (cleanText.match(/[,;—]/g) || []).length;
+  return complexMarkers.length >= minSubordinateMarkers && avgWordsPerSentence >= 12 && punctuationArticulation >= Math.max(2, Math.floor(sentences.length * 0.7));
+}
+
+function extractRecognizedRepertoiresInEssay(essayText: string): Array<{
+  name: string;
+  area: string;
+  matched: string;
+  locationTag: string;
+  fullSentence: string;
+  paragraphIndex: number;
+  paragraphRole: 'intro' | 'development' | 'conclusion' | 'single';
+}> {
+  const cleanText = (essayText || "").trim();
+  if (!cleanText) return [];
+  const paragraphs = cleanText.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  const effectiveParas = paragraphs.length > 0 ? paragraphs : [cleanText];
+  const isFullEssay = effectiveParas.length >= 3;
+
+  const repertoireMarkers = [
+    { regex: /\b(constitui[çc][ãa]o(?:\s+federal(?:\s+de\s+1988)?)?|carta\s+magna|artigo\s+5[º°]?|artigo\s+\d+[º°]?|cf\/88|declara[çc][ãa]o\s+universal(?:\s+dos\s+direitos\s+humanos)?|dudh|pcnt|pnpct|pol[íi]tica\s+nacional|eca|estatuto\s+d[oa]\s+[\p{L}\s]{3,35}|lei\s+(?:n[º°]?\s*|federal\s+)?\d[\d.\-\/]*|marco\s+civil|c[óo]digo\s+(?:penal|civil|de\s+defesa\s+do\s+consumidor))\b/giu, name: "Legislação / CF88 / Políticas Públicas", area: "Jurídica", isLawOrAgency: true },
+    { regex: /\b(bauman|zygmunt\s+bauman|habermas|j[üu]rgen\s+habermas|foucault|michel\s+foucault|bourdieu|pierre\s+bourdieu|adorno|horkheimer|max\s+weber|durkheim|[ée]mile\s+durkheim|karl\s+marx|hannah\s+arendt|byung-chul\s+han|milton\s+santos|djamila\s+ribeiro|gilberto\s+freyre|s[ée]rgio\s+buarque|thomas\s+hobbes|john\s+locke|rousseau|sartre|kant|immanuel\s+kant|arist[óo]teles|plat[ãa]o|paulo\s+freire|darcy\s+ribeiro|norberto\s+bobbio|simone\s+de\s+beauvoir|l[ée]lia\s+gonzalez|ailton\s+krenak|boaventura\s+de\s+sousa|amartya\s+sen|josu[ée]\s+de\s+castro|silvio\s+almeida|frantz\s+fanon|florestan\s+fernandes|elijah\s+anderson|heleieth\s+saffioti|silvia\s+federici|joan\s+robinson|david\s+harvey|jean\s+de\s+la\s+bruy[èe]re|shoshana\s+zuboff|erving\s+goffman|nise\s+da\s+silveira|ulrich\s+beck|gayatri\s+spivak|thomas\s+piketty|thomas\s+marshall|claude\s+l[ée]vi-strauss|jos[ée]\s+afonso\s+da\s+silva|stefan\s+zweig|thomas\s+more|fil[óo]sof[oa]|soci[óo]log[oa]|antrop[óo]log[oa]|ge[óo]graf[oa]|economista|educador[a]?|te[óo]ric[oa]|psiquiatra|m[ée]dic[oa]|professor[a]?|historiador[a]?|jurista|escritor[a]?|cientista|pesquisador[a]?|pensador[a]?)\b/giu, name: "Filosofia / Sociologia / Pensadores", area: "Filosofia/Sociologia", isLawOrAgency: false },
+    { regex: /\b(machado\s+de\s+assis|clarice\s+lispector|graciliano\s+ramos|guimar[ãa]es\s+rosa|jorge\s+amado|carolina\s+maria\s+de\s+jesus|concei[çc][ãa]o\s+evaristo|alu[íi]sio\s+azevedo|lima\s+barreto|gilberto\s+dimenstein|george\s+orwell|aldous\s+huxley|vidas\s+secas|quarto\s+de\s+despejo|capit[ãa]es\s+da\s+areia|dom\s+casmurro|cidad[ãa]o\s+de\s+papel|1984|admir[áa]vel\s+mundo\s+novo|utopia|pele\s+negra,\s*m[áa]scaras\s+brancas|a\s+sociedade\s+do\s+cansa[çc]o|o\s+capitalismo\s+de\s+vigil[âa]ncia|ra[íi]zes\s+do\s+brasil|o\s+povo\s+brasileiro|tristes\s+tr[óo]picos)\b/giu, name: "Literatura / Obras Culturais", area: "Literatura/Cultura", isLawOrAgency: false },
+    { regex: /\b(descobrimento\s+do\s+brasil|1500|dom\s+pedro\s+i|pedro\s+[áa]lvares\s+cabral|revolu[çc][ãa]o\s+industrial|ditadura\s+militar|era\s+vargas|iluminismo|gr[ée]cia\s+antiga|idade\s+m[ée]dia|per[íi]odo\s+(?:colonial|escravocrata)|coloniza[çc][ãa]o|segunda\s+guerra\s+mundial|guerra\s+fria|aboli[çc][ãa]o\s+da\s+escravatura|lei\s+[áa]urea|redemocratiza[çc][ãa]o)\b/giu, name: "Alusão Histórica", area: "História", isLawOrAgency: false },
+    { regex: /\b(ibge|ipea|onu|unesco|oms|unicef|fao|datafolha|fiocruz|minist[ée]rio\s+d[aeo]\s+[\p{L}\s]{3,30}|inep|pnad|pisa|atlas\s+da\s+viol[êe]ncia|mapa\s+da\s+fome)\b/giu, name: "Dados e Órgãos Oficiais", area: "Estatística/Ciência", isLawOrAgency: true }
+  ];
+
+  const found: Array<{
+    name: string;
+    area: string;
+    matched: string;
+    locationTag: string;
+    fullSentence: string;
+    paragraphIndex: number;
+    paragraphRole: 'intro' | 'development' | 'conclusion' | 'single';
+  }> = [];
+  const seenParaSpans = new Set<string>();
+
+  for (let pIdx = 0; pIdx < effectiveParas.length; pIdx++) {
+    const para = effectiveParas[pIdx];
+    const pRole: 'intro' | 'development' | 'conclusion' | 'single' = !isFullEssay
+      ? 'single'
+      : pIdx === 0
+        ? 'intro'
+        : pIdx === effectiveParas.length - 1
+          ? 'conclusion'
+          : 'development';
+
+    const sentences = para.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+    const effSentences = sentences.length > 0 ? sentences : [para];
+
+    for (let sIdx = 0; sIdx < effSentences.length; sIdx++) {
+      const sent = effSentences[sIdx];
+      const isInterventionProposalSentence = /\b(portanto|logo|assim|dessa\s+forma|desse\s+modo|em\s+suma|cabe\s+a[oa]?|deve\s+(?:criar|implementar|promover|garantir|fiscalizar|ampliar|realizar|investir|ofertar|instituir)|por\s+meio\s+de|mediante|a\s+fim\s+de|com\s+o\s+intuito\s+de|para\s+que)\b/i.test(sent);
+
+      for (const rep of repertoireMarkers) {
+        const matches = sent.matchAll(rep.regex);
+        for (const match of matches) {
+          const span = (match[0] || "").trim();
+          if (!span) continue;
+          const isMinistryOrOrganName = /\b(minist[ée]rio|secretaria|governo|poder\s+executivo|estado)\b/i.test(span);
+
+          // Regra C2: Nomes de ministérios, leis ou órgãos citados apenas como agentes da Proposta de Intervenção (Conclusão) NÃO contam como repertório sociocultural
+          if ((pRole === 'conclusion' || (pRole === 'single' && isInterventionProposalSentence)) && (rep.isLawOrAgency || isMinistryOrOrganName)) {
+            continue;
+          }
+          // Mesmo fora da conclusão, "Ministério da..." sem dado/pesquisa ou citado apenas como agente estatal não conta como repertório sociocultural
+          if (isMinistryOrOrganName && !/\b(dados|pesquisa|levantamento|relat[óo]rio|estudo|segundo\s+o|conforme\s+o|de\s+acordo\s+com)\b/i.test(sent)) {
+            continue;
+          }
+
+          const dedupKey = `${pIdx + 1}:${span.toLowerCase()}`;
+          if (seenParaSpans.has(dedupKey)) continue;
+          seenParaSpans.add(dedupKey);
+
+          const pLabel = !isFullEssay
+            ? `Parágrafo ${pIdx + 1}`
+            : pRole === 'intro'
+              ? `Parágrafo 1 (Introdução)`
+              : pRole === 'conclusion'
+                ? `Parágrafo ${pIdx + 1} (Conclusão)`
+                : `Parágrafo ${pIdx + 1} (Desenvolvimento ${pIdx})`;
+
+          found.push({
+            name: rep.name,
+            area: rep.area,
+            matched: span,
+            locationTag: `${pLabel}, Frase ${sIdx + 1}`,
+            fullSentence: sent,
+            paragraphIndex: pIdx + 1,
+            paragraphRole: pRole
+          });
+        }
+      }
+    }
+  }
+  return found;
+}
+
+function analyzeRepertoireDistribution(essayText: string) {
+  const all = extractRecognizedRepertoiresInEssay(essayText);
+  const paragraphs = (essayText || "").trim().split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  const introRepertoires = all.filter(r => r.paragraphRole === 'intro');
+  const devRepertoires = all.filter(r => r.paragraphRole === 'development');
+  const isMultiParagraphEssay = paragraphs.length >= 3;
+  const hasRepertoireInDev = isMultiParagraphEssay ? devRepertoires.length > 0 : all.length > 0;
+  const hasRepertoireOnlyInIntro = isMultiParagraphEssay && introRepertoires.length > 0 && devRepertoires.length === 0;
+  return {
+    all,
+    introRepertoires,
+    devRepertoires,
+    isMultiParagraphEssay,
+    hasRepertoireInDev,
+    hasRepertoireOnlyInIntro
+  };
+}
+
+function analyzeC3DevelopmentDepth(essayText: string) {
+  const cleanText = (essayText || "").trim();
+  const paragraphs = cleanText.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  const structuralCauseRegex = /\b(porque|visto que|j[áa] que|uma vez que|haja vista|posto que|na medida em que|em decorr[êe]ncia|em raz[ãa]o d[aeo]|em virtude d[aeo]|por conta d[aeo]|por falta de|motivad[oa]s?\s+por|decorre|origina|adv[ée]m|prov[ée]m|enraizado|estrutural|estruturante|hist[óo]ric[oa](?:mente)?|socioecon[ôo]mic[oa]|mecanismo|l[óo]gica|cultura|sistema|modelo|omiss[ãa]o|neglig[êe]ncia|falha|lacuna|desigualdade|precariza[çc][ãa]o|mercantiliza[çc][ãa]o|monetiza[çc][ãa]o|invisibilidade|heran[çc]a|concentra[çc][ãa]o|segrega[çc][ãa]o|subfinanciamento|escravocrata|patriarca(?:l|do)|etnocentrismo|eurocentrismo|capitalismo|individualismo|estigma(?:tiza[çc][ãa]o)?|burocracia|desarticula[çc][ãa]o|sucateamento|escassez|car[êe]ncia|falta\s+de|aus[êe]ncia\s+de|priva[çc][ãa]o\s+de|desconhecimento|aliena[çc][ãa]o|menoridade|filtragem|rastreamento|direcionamento|desregulada|racismo\s+(?:estrutural|institucional)|divis[ãa]o\s+sexual|domina[çc][ãa]o|simbiose|ao\s+(?:navegar|privar|impedir|reproduzir)|sem\s+(?:mecanismos?|fiscaliza[çc][ãa]o|certid[ãa]o|espa[çc]os?|editais?|representantes?|a\s+certid[ãa]o)|exigindo|quando\s+(?:o\s+estado|as\s+plataformas|sobre\s+ela))\b/giu;
+  const criticalConsequenceRegex = /\b(consequentemente|por conseguinte|desse modo|dessa forma|sob essa [óo]tica|sob esse prisma|nesse vi[ée]s|nessa l[óo]gica|prova disso|resultando|resulta|acarreta|desencadeia|perpetua|agrava|compromete|inviabiliza|aprofunda|intensifica|fomenta|marginaliza|exclui|exclu[íi]d[oa]|viola|violando|impede|impedid[oa]|impedindo|gera|gerando|culmina|naturaliza|fragiliza|prejudica|dificulta|acentua|refor[çc]a|corrobora|cerceando|cerceia|priva|privando|relega|relegando|condena|limitando|limita|restringe|reduz|reduzindo|impulsiona|corrói|alimenta|estimula|subordina|desampara|contraria|atenta\s+contra|reverbera|produz\s+perigos|erguendo\s+barreiras|atua\s+como\s+(?:uma\s+)?barreira|condiciona|submetid[oa]s|opera\s+como|deixa\s+[\p{L}\s]{1,25}\s+sem|faz\s+com\s+que|de\s+modo\s+que|tornando|torna-se\s+ref[ée]m|tornam-se|mantendo|silencia|oprime|aprisiona|confina|confinando|exp[õo]e|desonera|em\s+desacordo\s+com|para\s+que\s+o\s+cidad[ãa]o)\b/giu;
+
+  const inspectDevPara = (para: string) => {
+    if (!para) return { hasDeepCause: false, hasCriticalConsequence: false, hasDeepAnalysis: false, wordCount: 0, sentenceCount: 0 };
+    const wordsCount = para.split(/\s+/).filter(Boolean).length;
+    const sentsCount = para.split(/(?<=[.!?])\s+/).filter(Boolean).length;
+    const causeHits = (para.match(structuralCauseRegex) || []).length;
+    const consHits = (para.match(criticalConsequenceRegex) || []).length;
+    const hasDeepCause = causeHits >= 1;
+    const hasCriticalConsequence = consHits >= 1;
+    const hasDeepAnalysis = hasDeepCause && hasCriticalConsequence && wordsCount >= 42 && sentsCount >= 2;
+    return { hasDeepCause, hasCriticalConsequence, hasDeepAnalysis, wordCount: wordsCount, sentenceCount: sentsCount };
+  };
+
+  if (paragraphs.length < 4) {
+    return {
+      d1HasDeepAnalysis: false,
+      d2HasDeepAnalysis: false,
+      d1WordCount: 0,
+      d2WordCount: 0,
+      bothDevsDeepAndArticulated: false
+    };
+  }
+
+  const d1 = inspectDevPara(paragraphs[1]);
+  const d2 = inspectDevPara(paragraphs[2]);
+  return {
+    d1HasDeepAnalysis: d1.hasDeepAnalysis,
+    d2HasDeepAnalysis: d2.hasDeepAnalysis,
+    d1WordCount: d1.wordCount,
+    d2WordCount: d2.wordCount,
+    bothDevsDeepAndArticulated: d1.hasDeepAnalysis && d2.hasDeepAnalysis
+  };
+}
+
+// -------------------------------------------------------------
 // Advanced Evidence-Based Essay Evaluator for ENEM Matrix
 // (Calculates scores strictly via weighted sum of collected positive/negative evidence,
 // integrates Dual-Evaluator Simulation and Cartilha 800+ Benchmarking)
@@ -320,6 +1761,9 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
   const words = cleanText.split(/\s+/).filter(w => w.length > 0);
   const wordCount = words.length;
 
+  // Run Official ENEM Calibration Audit (Theme Decomposition, Tangency, Zero Score Situations & Human Rights)
+  const calibrationAudit = auditEnemThematicZeroAndHumanRights(cleanText, theme, { isSnippet: false });
+
   // Split into sentences per paragraph
   const paragraphSentences = paragraphs.map(p => 
     p.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 0)
@@ -327,23 +1771,11 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
   const allSentences = paragraphSentences.flat();
   const totalSentences = allSentences.length;
 
-  // 1. COMPETENCY 1 EVIDENCE AUDIT (Norma Padrão & Sintaxe)
-  // Positive markers: complex subordinate connectors, erudite vocabulary, well-punctuated compound sentences
-  const complexSyntaxMarkers = [
-    /\b(conquanto|porquanto|haja vista|à medida que|na medida em que|posto que|não obstante|ao passo que|haja vista que)\b/gi,
-    /\b(embora|ainda que|mesmo que|a fim de que|de modo que|visto que|já que)\b/gi,
-    /,\s*qual\b/gi,
-    /,\s*cujo\b/gi,
-    /,\s*segundo\b/gi,
-    /,\s*conforme\b/gi,
-  ];
-
-  const eruditeVocabMarkers = [
-    /\b(imprescindível|precípuo|primordial|fulcral|deletério|pernicioso|deplorável|fomentar|viabilizar|efetivar|engendrar|mitigar|propiciar|subsidiar|substancialmente|paulatinamente|sobejamente|consectário|prerrogativa|inoperância|estorvo|descompasso|invisibilidade|negligência|estigmatização)\b/gi
-  ];
+  // 1. COMPETENCY 1 EVIDENCE AUDIT (Norma Padrão & Estrutura Sintática Efetiva)
+  // C1 avalia presença/frequência de desvios e sintaxe efetivamente empregada, sem exigir orações subordinadas ou vocabulário erudito.
 
   // Specific negative markers & deviations based on Cartilha 800+ patterns
-  const c1DeviationsFound: Array<{ snippet: string; problem: string; bestForm: string; category: 'convenções_escrita' | 'gramatical' | 'registro' | 'vocabular' | 'estrutura_sintatica' }> = [];
+  const rawC1DeviationsFound: Array<{ snippet: string; problem: string; bestForm: string; category: 'convenções_escrita' | 'gramatical' | 'registro' | 'vocabular' | 'estrutura_sintatica' }> = [];
 
   // Spelling & accentuation patterns
   const spellingChecks = [
@@ -362,9 +1794,10 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
   spellingChecks.forEach(sc => {
     const match = cleanText.match(sc.regex);
     if (match) {
-      c1DeviationsFound.push({
-        snippet: match[0],
-        problem: sc.problem,
+      const loc = locateSnippetInEssay(match[0], cleanText);
+      rawC1DeviationsFound.push({
+        snippet: loc.found && loc.fullSentenceContext.length <= 160 ? loc.fullSentenceContext : match[0],
+        problem: loc.found ? `[${loc.locationTag}] ${sc.problem}` : sc.problem,
         bestForm: sc.bestForm,
         category: sc.category
       });
@@ -373,175 +1806,165 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
 
   // Concordance errors
   if (/\bserá assegurado a constituição\b/i.test(cleanText)) {
-    c1DeviationsFound.push({
-      snippet: "será assegurado a constituição",
-      problem: "Desvio de concordância nominal: particípio deve concordar em gênero com o sujeito feminino.",
+    const loc = locateSnippetInEssay("será assegurado a constituição", cleanText);
+    rawC1DeviationsFound.push({
+      snippet: loc.found ? loc.exactSpan : "será assegurado a constituição",
+      problem: `${loc.found ? `[${loc.locationTag}] ` : ""}Desvio de concordância nominal: particípio deve concordar em gênero com o sujeito feminino.`,
       bestForm: "será assegurada a Constituição",
       category: "gramatical"
     });
   }
 
   if (/\bdessas pessoa\b/i.test(cleanText)) {
-    c1DeviationsFound.push({
-      snippet: "dessas pessoa",
-      problem: "Desvio de concordância de número (falta da marcação de plural).",
+    const loc = locateSnippetInEssay("dessas pessoa", cleanText);
+    rawC1DeviationsFound.push({
+      snippet: loc.found ? loc.exactSpan : "dessas pessoa",
+      problem: `${loc.found ? `[${loc.locationTag}] ` : ""}Desvio de concordância de número (falta da marcação de plural).`,
       bestForm: "dessas pessoas",
       category: "gramatical"
     });
   }
 
-  // Check for comma between subject and verb or before 'e' with same subject
-  const sentencesWithLongRunOn = allSentences.filter(s => s.split(/\s+/).length > 45);
-  if (sentencesWithLongRunOn.length > 0 && c1DeviationsFound.length < 5) {
-    c1DeviationsFound.push({
-      snippet: sentencesWithLongRunOn[0].slice(0, 80) + "...",
-      problem: "Período excessivamente longo e truncado sem pausas sintáticas adequadas.",
-      bestForm: "Dividir o período longo em duas orações coordenadas ou subordinadas articuladas por conectivo.",
-      category: "estrutura_sintatica"
-    });
-  }
-
-  // Check for colloquial expressions & anaphoric "o mesmo"
+  // Marcas de oralidade, clichês vagos, imprecisão vocabular e regência inadequada (C1)
   const colloquialisms = [
-    { regex: /\b(para os mesmos|dos mesmos|ao mesmo|pelo mesmo|pelos mesmos|com os mesmos|nos mesmos|o mesmo|os mesmos)\b/gi, fix: "para eles / para esses povos / desses indivíduos / aos cidadãos", name: "Uso anafórico de 'o mesmo'", cat: "registro" as const },
-    { regex: /\b(fazer com que)\b/gi, fix: "propiciar que / ensejar que", name: "Locução coloquial 'fazer com que'", cat: "registro" as const },
-    { regex: /\b(ter como)\b/gi, fix: "possuir como / dispor de", name: "Uso informal do verbo ter", cat: "registro" as const },
-    { regex: /\b(a nível de)\b/gi, fix: "em nível de / no âmbito", name: "Inadequação gramatical 'a nível de'", cat: "registro" as const },
-    { regex: /\b(através de)\b/gi, fix: "por meio de / mediante", name: "Uso inadequado de 'através de' para instrumento", cat: "registro" as const },
-    { regex: /\b(onde)\b/gi, fix: "no qual / em que / no cenário em que", name: "Uso do pronome 'onde' sem referência a espaço físico", cat: "registro" as const },
+    { regex: /\b(para\s+os\s+mesmos|dos\s+mesmos|pelo\s+mesmo|pelos\s+mesmos|com\s+os\s+mesmos|nos\s+mesmos|(?:o|os)\s+mesm(?:o|os)(?!\s+(?:tempo|sentido|modo|jeito|n[íi]vel|patamar|grau|caso|problema|fen[ôo]meno|tema|assunto|local|espa[çc]o|contexto|passo)\b))\b/giu, fix: "eles / esses indivíduos / aos cidadãos", name: "Uso anafórico de 'o mesmo' como pronome pessoal", cat: "registro" as const },
+    { regex: /\b(a\s+n[íi]vel\s+de)\b/gi, fix: "em nível de / no âmbito de", name: "Inadequação de regência/locução ('a nível de')", cat: "gramatical" as const }
   ];
 
   colloquialisms.forEach(c => {
     const match = cleanText.match(c.regex);
-    if (match && c1DeviationsFound.length < 7) {
-      c1DeviationsFound.push({
-        snippet: `...${match[0]}...`,
-        problem: `${c.name}: enfraquece o registro formal dissertativo perante a banca do ENEM.`,
-        bestForm: `Substituir por "${c.fix}".`,
-        category: c.cat
+    if (match && rawC1DeviationsFound.length < 7) {
+      const loc = locateSnippetInEssay(match[0], cleanText);
+      if (loc.found) {
+        rawC1DeviationsFound.push({
+          snippet: loc.fullSentenceContext.length <= 165 ? loc.fullSentenceContext : loc.exactSpan,
+          problem: `[${loc.locationTag}] ${c.name} ("${loc.exactSpan}").`,
+          bestForm: `Substituir "${loc.exactSpan}" por "${c.fix}" preservando o sentido original.`,
+          category: c.cat
+        });
+      }
+    }
+  });
+
+  const vagueOralityMatches = findC1OralityOrVagueVocabulary(cleanText);
+  vagueOralityMatches.forEach(vm => {
+    if (rawC1DeviationsFound.length < 9) {
+      rawC1DeviationsFound.push({
+        snippet: vm.snippet,
+        problem: vm.problem,
+        bestForm: vm.bestForm,
+        category: vm.category
       });
     }
   });
 
-  const complexSyntaxCount = complexSyntaxMarkers.reduce((acc, regex) => acc + (cleanText.match(regex) || []).length, 0);
-  const eruditeVocabCount = eruditeVocabMarkers.reduce((acc, regex) => acc + (cleanText.match(regex) || []).length, 0);
+  const c1DeviationsFound = validateAndDeduplicateC1Deviations(rawC1DeviationsFound, cleanText) as Array<{
+    snippet: string;
+    problem: string;
+    bestForm: string;
+    category: 'convenções_escrita' | 'gramatical' | 'registro' | 'vocabular' | 'estrutura_sintatica';
+  }>;
 
-  // C1 Evidence Evaluation - Calibração de Domínio da Norma Culta e Desvios Identificáveis
-  // DIRETRIZ OFICIAL: Não use "complexidade sintática", "sofisticação vocabular" ou "períodos longos" como critérios independentes para reduzir a C1.
-  // Avalia principalmente o domínio efetivo da modalidade escrita formal e os desvios realmente identificáveis no texto.
-  // Uma redação com períodos simples pode apresentar excelente desempenho em C1.
-  // Não penaliza simplicidade de estilo como se fosse erro gramatical.
+  // C1 Evidence Evaluation - Régua oficial INEP: 200 pts exige períodos complexos bem articulados e vocabulário formal preciso (marcas de oralidade/clichês vagos/imprecisão limitam a 160 pts)
   const severeDeviations = c1DeviationsFound.filter(d => d.category === 'estrutura_sintatica' || d.category === 'gramatical');
-  const c1HasFewDeviations = c1DeviationsFound.length <= 2;
-  const c1HasExceptionalSyntax = severeDeviations.length === 0;
-  const c1HasExceptionalVocab = !c1DeviationsFound.some(d => d.category === 'registro');
-  
+  const hasLexicalImprecisionOrOrality = vagueOralityMatches.length > 0 || c1DeviationsFound.some(d => d.category === 'registro' || d.category === 'vocabular');
+  const hasComplexSyntaxC1 = hasComplexWellArticulatedSyntax(cleanText, 3);
+  const c1HasFewDeviations = c1DeviationsFound.length <= 1 && !hasLexicalImprecisionOrOrality;
+  const c1HasExceptionalSyntax = severeDeviations.length === 0 && hasComplexSyntaxC1;
+  const c1HasExceptionalVocab = !hasLexicalImprecisionOrOrality;
+
   let c1Score = 120;
-  // Nível 5 (200 pts): Excelente domínio da modalidade escrita formal e no máximo 1-2 desvios leves/ocasionais sem reincidência, mesmo com períodos simples.
-  if (c1DeviationsFound.length <= 2 && severeDeviations.length === 0 && wordCount >= 180) {
+  if (c1DeviationsFound.length <= 1 && severeDeviations.length === 0 && !hasLexicalImprecisionOrOrality && hasComplexSyntaxC1 && wordCount >= 140) {
     c1Score = 200;
-  }
-  // Nível 4 (160 pts): Bom domínio da modalidade escrita formal com poucos desvios gramaticais/convencionais (até 3-4 desvios leves) e boa adequação.
-  else if (c1DeviationsFound.length <= 4 && severeDeviations.length <= 1 && wordCount >= 160) {
+  } else if (c1DeviationsFound.length <= 4 && severeDeviations.length <= 1 && wordCount >= 120) {
     c1Score = 160;
-  }
-  // Nível 3 (120 pts): Domínio regular com desvios frequentes (5-7 desvios) ou estrutura sintática com problemas pontuais.
-  else if (c1DeviationsFound.length <= 7 && severeDeviations.length <= 3) {
+  } else if (c1DeviationsFound.length <= 6 && severeDeviations.length <= 3) {
     c1Score = 120;
-  }
-  // Nível 2 (80 pts): Domínio insuficiente apenas com desvios muito frequentes e graves ao longo do texto.
-  else if (c1DeviationsFound.length <= 11 && severeDeviations.length <= 6) {
+  } else if (c1DeviationsFound.length <= 10 && severeDeviations.length <= 6) {
     c1Score = 80;
-  }
-  // Nível 1 (40 pts): Domínio precário
-  else {
+  } else {
     c1Score = 40;
   }
 
-  // 2. COMPETENCY 2 EVIDENCE AUDIT (Tema, Desenvolvimento Temático, Tipologia e Repertório)
-  // DIRETRIZ OFICIAL: A ausência de repertório sociocultural externo pode limitar o desempenho, mas não determina a nota apenas com base nisso.
-  // Avalia conjuntamente: compreensão do tema, desenvolvimento temático, tipo textual e repertório.
-  // Não transforma "tem repertório" e "não tem repertório" em categorias automáticas de pontuação.
-  const themeKeywords = (theme || "").toLowerCase().split(/\s+/).filter(w => w.length > 3);
-  const matchedThemeWords = themeKeywords.filter(k => cleanText.toLowerCase().includes(k));
-  const fullThemeCoverage = matchedThemeWords.length >= Math.min(2, themeKeywords.length) || /\b(povos tradicionais|comunidades tradicionais|indígenas|ribeirinhos|quilombolas)\b/i.test(cleanText);
+  // 2. COMPETENCY 2 EVIDENCE AUDIT (Tema, Desenvolvimento Temático, Tipologia e Repertório Produtivo nos Desenvolvimentos)
+  const matchedThemeWords = calibrationAudit.themeDecomposition.matchedSpecificCutWords;
+  const fullThemeCoverage = calibrationAudit.thematicClassification === 'abordagem_completa';
+  const isTangenciamento = calibrationAudit.thematicClassification === 'tangenciamento';
+  const isAbordagemParcial = calibrationAudit.thematicClassification === 'abordagem_parcial';
 
-  const repertoireMarkers = [
-    { regex: /\b(constituição|carta magna|artigo 5|artigo \d+|cf\/88|declaração universal|dudh|pcnt|pnpct|política nacional)\b/gi, name: "Legislação / CF88 / Políticas Públicas", area: "Jurídica" },
-    { regex: /\b(bauman|habermas|foucault|bourdieu|adorno|horkheimer|weber|durkheim|marx|arendt|byung-chul han|milton santos|djamila ribeiro|gilberto freyre|sergio buarque|thomas hobbes|locke|rousseau|sartre)\b/gi, name: "Filósofo / Sociólogo", area: "Filosofia/Sociologia" },
-    { regex: /\b(machado de assis|clarice lispector|graciliano ramos|guimarães rosa|jorge amado|carolina maria de jesus|aluísio azevedo|lima barreto|vidas secas|quarto de despejo|capitães da areia|dom casmurro)\b/gi, name: "Literatura Brasileira", area: "Literatura" },
-    { regex: /\b(descobrimento do brasil|1500|dom pedro i|pedro álvares cabral|revolução industrial|ditadura militar|era vargas|iluminismo|grécia antiga|idade média|colonização)\b/gi, name: "Alusão Histórica", area: "História" },
-    { regex: /\b(ibge|ipea|onu|unesco|oms|datafolha|fiocruz|ministério da saúde|ministério da educação)\b/gi, name: "Dados e Órgãos Oficiais", area: "Estatística/Ciência" }
-  ];
+  const repertoireDist = analyzeRepertoireDistribution(cleanText);
+  const foundRepertoires = repertoireDist.all;
 
-  const foundRepertoires: Array<{ name: string; area: string; matched: string }> = [];
-  repertoireMarkers.forEach(rep => {
-    const m = cleanText.match(rep.regex);
-    if (m) {
-      foundRepertoires.push({ name: rep.name, area: rep.area, matched: m[0] });
-    }
-  });
-
-  // Check for historical anachronisms (e.g. Dom Pedro I em 1500)
   const hasHistoricalAnachronism = /\b(1500.*Dom pedro|Dom pedro.*1500|Dom Pedro I.*descobriu)\b/i.test(cleanText);
 
-  // Check productivity: is the repertoire followed by analytical commentary linking to the problem?
   const productiveLinkPhrases = [
     /\b(sob esse viés|sob essa ótica|nesse sentido|nesse prisma|consoante esse raciocínio|ao transpor essa reflexão|tal perspectiva elucida|analogamente|de maneira análoga|à luz dessa premissa|infere-se que|de acordo com|visto que)\b/gi
   ];
-  const productiveLinksCount = productiveLinkPhrases.reduce((acc, regex) => acc + (cleanText.match(regex) || []).length, 0);
-  const hasProductiveRepertoire = foundRepertoires.length >= 1 && productiveLinksCount >= 1;
+  const devTextJoined = paragraphs.length >= 3 ? paragraphs.slice(1, -1).join("\n\n") : cleanText;
+  const productiveLinksInDevCount = productiveLinkPhrases.reduce((acc, regex) => acc + (devTextJoined.match(regex) || []).length, 0);
+  const hasProductiveRepertoire = repertoireDist.hasRepertoireInDev && (productiveLinksInDevCount >= 1 || devTextJoined.length >= 260);
   const isDissertativeStructure = paragraphs.length >= 3;
 
   let c2Score = 120;
-  // Nível 5 (200): Abordagem completa do tema, excelente desenvolvimento temático, tipologia dissertativa sustentada e repertório legítimo e produtivo.
-  if (fullThemeCoverage && hasProductiveRepertoire && !hasHistoricalAnachronism && paragraphs.length >= 4 && wordCount >= 240) {
+  if (calibrationAudit.thematicClassification === 'fuga_total') {
+    c2Score = 0;
+  } else if (isTangenciamento) {
+    // Regra Oficial INEP: Tangenciamento ao tema fixa a Competência II em Nível 1 (40 pontos), independentemente de repertório
+    c2Score = 40;
+  } else if (isAbordagemParcial) {
+    c2Score = 80;
+  } else if (fullThemeCoverage && hasProductiveRepertoire && !hasHistoricalAnachronism && paragraphs.length >= 4 && wordCount >= 240) {
     c2Score = 200;
-  }
-  // Nível 4 (160): Abordagem completa do tema com desenvolvimento consistente e repertório legítimo ou argumentação consistente com base nos textos motivadores bem desenvolvidos.
-  else if (fullThemeCoverage && (foundRepertoires.length >= 1 || wordCount >= 220) && isDissertativeStructure) {
+  } else if (fullThemeCoverage && foundRepertoires.length >= 1 && !hasHistoricalAnachronism && isDissertativeStructure) {
+    // Repertório apenas na introdução (sem D1/D2) ou pouco explorado limita C2 a no máximo 160 pontos
     c2Score = 160;
-  }
-  // Nível 3 (120): Abordagem do tema sem tangenciamento, desenvolvimento temático mediano/previsível e respeito à tipologia dissertativa.
-  else if (fullThemeCoverage && wordCount >= 140) {
+  } else if (fullThemeCoverage && wordCount >= 200 && isDissertativeStructure) {
+    // Domínio consistente do tema sem repertório externo (ou citações restritas a agentes da conclusão): máx. 160 pts
+    c2Score = 160;
+  } else {
     c2Score = 120;
   }
-  // Nível 2 (80): Tangenciamento parcial do tema ou desenvolvimento incipiente.
-  else if (matchedThemeWords.length > 0) {
-    c2Score = 80;
-  }
-  // Nível 1 (40): Tangenciamento severo / Nível 0 (0): Fuga total
-  else {
-    c2Score = 40;
-  }
 
-  // 3. COMPETENCY 3 EVIDENCE AUDIT (Projeto de Texto & Autoria)
+  // 3. COMPETENCY 3 EVIDENCE AUDIT (Diferença entre Exposição e Argumentação Aprofundada em D1 e D2)
   const has4CanonicalParagraphs = paragraphs.length === 4;
-  const introHasThesisSignals = paragraphs.length > 0 && /\b(urgente|necessário|imprescindível|desafio|problema|torna-se evidente|cabe pontuar|seja pela|seja pelo|tanto pela|quanto pela|não apenas|mas também|devido aos|no entanto)\b/i.test(paragraphs[0]);
-  const d1HasArgumentation = paragraphs.length > 1 && /\b(em primeiro lugar|primeiramente|a princípio|sob esse prisma|em primeira análise|de início|nesse contexto|inicialmente|sob esse viés)\b/i.test(paragraphs[1]);
-  const d2HasArgumentation = paragraphs.length > 2 && /\b(ademais|outrossim|além disso|em segundo lugar|por outro lado|paralelamente|soma-se a isso|outrosssim)\b/i.test(paragraphs[2]);
+  const introHasThesisSignals = paragraphs.length > 0 && (
+    /\b(urgente|necess[áa]rio|imprescind[íi]vel|desafio|problema|torna-se|cabe|seja\s+pel[oa]|tanto\s+pel[oa]|quanto\s+pel[oa]|n[ãa]o\s+apenas|mas\s+tamb[ée]m|devido|no\s+entanto|contudo|entretanto|todavia|diante\s+disso|nesse\s+sentido)\b/i.test(paragraphs[0]) ||
+    paragraphs[0].split(/(?<=[.!?])\s+/).filter(Boolean).length >= 2
+  );
+  const d1HasArgumentation = paragraphs.length > 1 && paragraphs[1].split(/\s+/).filter(Boolean).length >= 35;
+  const d2HasArgumentation = paragraphs.length > 2 && paragraphs[2].split(/\s+/).filter(Boolean).length >= 35;
 
-  // Contradictions or ungrounded claims check
-  const hasContradiction = /\bmotivo dessa valorização\b/i.test(cleanText);
+  const hasContradiction = /\bmotivo dessa valoriza[çc][ãa]o\b/i.test(cleanText);
   const hasUngroundedClaim = /\broubariam os bens pessoais\b/i.test(cleanText);
 
-  const authorialJudgments = (cleanText.match(/\b(inaceitável|alarmante|deplorável|grave|danoso|inoperância|omissão|urgência|imperioso|negligência|paradoxo|abismo|falácia|desrespeito|violência|desmerecimento)\b/gi) || []).length;
-  const hasClearAuthorialVoice = authorialJudgments >= 3 && introHasThesisSignals && d1HasArgumentation && d2HasArgumentation && !hasContradiction;
+  // Só penaliza por "Repetição de Ideias Entre Parágrafos" se D1 e D2 defenderem literalmente o mesmo argumento central
+  const hasCrossParagraphRepetition = paragraphs.length >= 3 && paragraphs[1] && paragraphs[2]
+    ? detectLiteralD1D2CentralRepetition(paragraphs[1], paragraphs[2], calibrationAudit.themeDecomposition.specificCutWords)
+    : false;
+
+  const c3DepthAudit = analyzeC3DevelopmentDepth(cleanText);
+  const causalExplanationMatches = (cleanText.match(/\b(porque|visto que|j[áa] que|uma vez que|haja vista|por conseguinte|consequentemente|resultando em|gerando|acarreta|desencadeia|perpetua|implica|compromete|agrava|em decorr[êe]ncia de|o que evidencia|o que gera|de modo que|fazendo com que|a fim de|portanto)\b/gi) || []).length;
+  const hasCausalDepth = c3DepthAudit.bothDevsDeepAndArticulated && repertoireDist.hasRepertoireInDev;
+  const hasStrategicProject = introHasThesisSignals && d1HasArgumentation && d2HasArgumentation && !hasCrossParagraphRepetition && !hasContradiction;
 
   let c3Score = 120;
-  if (has4CanonicalParagraphs && hasClearAuthorialVoice && !hasContradiction && !hasUngroundedClaim && wordCount >= 280) {
+  if (isTangenciamento) {
+    // Repercussão Oficial INEP: Tangenciamento limita a Competência III ao Nível 1 (40 pontos)
+    c3Score = 40;
+  } else if (has4CanonicalParagraphs && hasStrategicProject && hasCausalDepth && !hasUngroundedClaim && wordCount >= 240) {
     c3Score = 200;
-  } else if (paragraphs.length >= 3 && introHasThesisSignals && (d1HasArgumentation || d2HasArgumentation) && !hasContradiction && wordCount >= 230) {
+  } else if (paragraphs.length >= 3 && hasStrategicProject && !hasUngroundedClaim && wordCount >= 200) {
+    // 4 parágrafos com dois argumentos distintos porém expositivos/superficiais garantem no máximo 160 pontos
     c3Score = 160;
-  } else if (paragraphs.length >= 3 && wordCount >= 160) {
-    c3Score = 120; // When there is a contradiction like "motivo dessa valorização" or ungrounded claims, INEP drops to 120 or 140 average
+  } else if (paragraphs.length >= 3 && !hasCrossParagraphRepetition && wordCount >= 160) {
+    c3Score = causalExplanationMatches >= 2 ? 160 : 120;
   } else if (paragraphs.length >= 2) {
     c3Score = 80;
   } else {
     c3Score = 40;
   }
 
-  // 4. COMPETENCY 4 EVIDENCE AUDIT (Coesão Inter e Intraparágrafos)
+  // 4. COMPETENCY 4 EVIDENCE AUDIT (Coesão Funcional, Adequação, Progressão & Retomada de Referentes)
   const interParagraphConnectives = [
     { pIdx: 1, regex: /^(Em primeira análise|Primeiramente|A princípio|Em primeiro plano|Sob esse prisma|Nesse contexto|Nesse cenário|Inicialmente)/i },
     { pIdx: 2, regex: /^(Ademais|Outrossim|Além disso|Paralelamente|Em segunda análise|Por outro lado|Soma-se a isso|Nesse sentido|Outrosssim)/i },
@@ -555,26 +1978,58 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
     }
   });
 
-  const intraConnectives = [
-    /\b(portanto|logo|por conseguinte|dessarte|desse modo|somente assim)\b/gi,
-    /\b(ademais|outrossim|além disso|inclusive|bem como|juntamente com)\b/gi,
-    /\b(contudo|todavia|entretanto|no entanto|não obstante)\b/gi,
-    /\b(já que|visto que|haja vista|posto que|uma vez que)\b/gi,
-    /\b(conforme|segundo|consoante|de acordo com|sob esse viés)\b/gi,
-    /\b(a fim de|com o fito de|com o intuito de|para que)\b/gi,
+  const functionalCohesionDimensions = [
+    /\b(portanto|logo|por conseguinte|dessarte|desse modo|dessa forma|assim sendo)\b/gi, // conclusivo
+    /\b(ademais|outrossim|além disso|inclusive|bem como|também)\b/gi, // aditivo (inclui conectivos comuns corretos)
+    /\b(contudo|todavia|entretanto|no entanto|não obstante|mas|porém)\b/gi, // adversativo (inclui conectivos comuns corretos)
+    /\b(já que|visto que|haja vista|posto que|uma vez que|porque)\b/gi, // causal/explicativo
+    /\b(esse|essa|isso|este|esta|isto|tal|tais|cujo|cuja|o qual|a qual|os quais|no qual|na qual|onde)\b/gi // retomada referencial
   ];
 
-  const uniqueIntraCategories = intraConnectives.filter(regex => regex.test(cleanText)).length;
-  const hasAnaphoricMesmo = /\b(para os mesmos|dos mesmos|ao mesmo|pelo mesmo|pelos mesmos|com os mesmos|o mesmo|os mesmos)\b/i.test(cleanText);
-  const hasInterParagraphExcellence = interParagraphMatches >= 2;
-  const hasIntraParagraphExcellence = uniqueIntraCategories >= 4;
+  const functionalDimensionsCount = functionalCohesionDimensions.filter(regex => regex.test(cleanText)).length;
+  const referentResumptionMatches = (cleanText.match(/\b(esse\s+\w+|essa\s+\w+|tal\s+\w+|essa\s+realidade|esse\s+cenário|tal\s+impasse|isso|cujo|cuja|o qual|a qual)\b/gi) || []).length;
+  const anaphoricMesmoList = findAnaphoricMesmoExcerpts(cleanText);
+  const hasAnaphoricMesmo = anaphoricMesmoList.length > 0;
+  // Verifica progressão interna entre períodos (não basta colocar conectivo apenas na abertura de cada parágrafo)
+  const articulatedParagraphsCount = paragraphs.filter(p => {
+    const pSentences = p.split(/(?<=[.!?])\s+/).filter(Boolean);
+    if (pSentences.length < 2) return false;
+    const internalArticulated = pSentences.slice(1).filter(s =>
+      /^(contudo|todavia|entretanto|no entanto|porém|nesse|nessa|dessa|desse|assim|portanto|logo|além|ademais|outrossim|sob|conforme|segundo|diante|com efeito|tal|isso)/i.test(s.trim()) ||
+      /\b(que|cujo|onde|visto que|já que|a fim de|para que|por meio)\b/i.test(s)
+    ).length;
+    return internalArticulated >= 1;
+  }).length;
+
+  const hasAuthenticProgression = articulatedParagraphsCount >= Math.min(3, paragraphs.length) && referentResumptionMatches >= 2;
+  const hasFunctionalVariety = functionalDimensionsCount >= 4;
+
+  // Detect repetition of syntactic/explanatory structures across consecutive paragraphs
+  const getExplanatoryFrameSignature = (p: string) => {
+    const firstSent = (p.split(/(?<=[.!?])\s+/)[0] || "").trim().toLowerCase();
+    const openingPattern = firstSent.replace(/[^\p{L}\s]/gu, "").split(/\s+/).slice(0, 3).join(" ");
+    const explanatoryFrames: string[] = p.toLowerCase().match(/\b(?:isso\s+(?:ocorre|acontece|se\s+deve)|tal\s+(?:cen[áa]rio|realidade|problema|situa[çc][ãa]o)\s+(?:ocorre|decorre|gera|faz)|nota-se\s+que|percebe-se\s+que|[ée]\s+(?:importante|necess[áa]rio|evidente)\s+(?:destacar|ressaltar|observar)\s+que|nesse\s+sentido,\s+(?:observa-se|nota-se|verifica-se))\b/gu) || [];
+    return { openingPattern, explanatoryFrames };
+  };
+  let hasSyntacticStructureRepetition = false;
+  for (let i = 1; i < paragraphs.length; i++) {
+    const prev = getExplanatoryFrameSignature(paragraphs[i - 1]);
+    const curr = getExplanatoryFrameSignature(paragraphs[i]);
+    if (prev.openingPattern.length >= 8 && prev.openingPattern === curr.openingPattern) {
+      hasSyntacticStructureRepetition = true;
+    }
+    const repeatedFrame = curr.explanatoryFrames.find(f => prev.explanatoryFrames.includes(f));
+    if (repeatedFrame) {
+      hasSyntacticStructureRepetition = true;
+    }
+  }
 
   let c4Score = 120;
-  if (hasInterParagraphExcellence && hasIntraParagraphExcellence && !hasAnaphoricMesmo && paragraphs.length >= 4 && wordCount >= 260) {
+  if (hasAuthenticProgression && hasFunctionalVariety && !hasAnaphoricMesmo && !hasSyntacticStructureRepetition && paragraphs.length >= 4 && wordCount >= 240) {
     c4Score = 200;
-  } else if ((hasInterParagraphExcellence || hasIntraParagraphExcellence) && paragraphs.length >= 3 && wordCount >= 200) {
-    c4Score = 160; // Anaphoric "o mesmo" prevents 200 in C4 per INEP guidelines
-  } else if (paragraphs.length >= 3 && wordCount >= 160) {
+  } else if ((hasAuthenticProgression || functionalDimensionsCount >= 3) && !hasAnaphoricMesmo && paragraphs.length >= 3 && wordCount >= 180) {
+    c4Score = 160;
+  } else if (paragraphs.length >= 3 && wordCount >= 140) {
     c4Score = 120;
   } else if (paragraphs.length >= 2) {
     c4Score = 80;
@@ -582,66 +2037,37 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
     c4Score = 40;
   }
 
-  // 5. COMPETENCY 5 EVIDENCE AUDIT (Proposta de Intervenção: Elementos Oficiais & Direitos Humanos)
-  // DIRETRIZ OFICIAL: Não conte o mesmo trecho duas vezes.
-  // Se uma expressão explica "como" a ação será executada, ela deve ser considerada principalmente como meio/modo.
-  // Considere como detalhamento apenas uma informação adicional que realmente aprofunde ou especifique a intervenção.
-  // Nunca preencha "Detalhamento: ✅" apenas para completar o checklist.
-  // Avalia os elementos da matriz: Agente, Ação, Meio/Modo, Finalidade e Detalhamento substantivo.
-  const lastParagraph = paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : "";
+  // 5. COMPETENCY 5 EVIDENCE AUDIT (Identificação Completa de Todas as Propostas na Conclusão)
+  const rawLastParagraph = paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : "";
+  const prevParagraph = paragraphs.length >= 2 ? paragraphs[paragraphs.length - 2] : "";
+  const prevIsPartOfConclusion = paragraphs.length >= 4 && /^(portanto|logo|assim|dessa\s+forma|desse\s+modo|em\s+suma|infere-se|conclui-se)/i.test(prevParagraph);
+  const lastParagraph = prevIsPartOfConclusion ? `${prevParagraph}\n\n${rawLastParagraph}` : rawLastParagraph;
 
-  // 1. Agent ("Quem executa")
-  const agentMatch = lastParagraph.match(/\b(governo federal juntamente com a mídia|governo federal|ministério[\w\s]+|poder público|escolas|mídia|família|sociedade civil|secretarias de educação|ong|ongs|poder legislativo|congresso nacional|ministério público|conselhos tutelares|instituições de ensino)\b/i);
-  const hasAgent = !!agentMatch || /\b(governo|estado|mídia|escolas|sociedade|poder executivo)\b/i.test(lastParagraph);
-  const agentText = agentMatch ? agentMatch[0] : (lastParagraph.includes("Estado") ? "O Estado brasileiro" : "Ausente ou genérico");
+  const conclusionAudit = auditConclusionInterventions(lastParagraph);
+  const hasAgent = conclusionAudit.hasAgent;
+  const agentText = conclusionAudit.agentText;
+  const hasAction = conclusionAudit.hasAction;
+  const actionText = conclusionAudit.actionText;
+  const hasMode = conclusionAudit.hasMode;
+  const modeText = conclusionAudit.modeText;
+  const hasEffect = conclusionAudit.hasEffect;
+  const effectText = conclusionAudit.effectText;
+  const hasDetailing = conclusionAudit.hasDetailing;
+  const detailingText = conclusionAudit.detailingText;
 
-  // 2. Action ("O que fazer / Ação propositiva")
-  const actionMatch = lastParagraph.match(/\b(criem projetos de lei|deve (criar|implementar|promover|elaborar|desenvolver|articular|garantir|viabilizar|fomentar|instituir|reforçar|intensificar)|cabe (criar|implementar|desenvolver|estruturar|fomentar)|precisa (assegurar|promover|viabilizar))\b[\w\s]{8,90}/i);
-  const hasAction = !!actionMatch || /\b(criar projetos|promover|implementar|fomentar|garantir|instituir|viabilizar|estruturar)\b/i.test(lastParagraph);
-  const actionText = actionMatch ? actionMatch[0] : (hasAction ? "Implementar políticas públicas e ações articuladas" : "Ausente ou não propositiva");
+  // Human rights check from calibrated engine (respects lawful administrative measures, zeroes C5 on true violations)
+  const humanRightsViolation = !calibrationAudit.humanRightsAudit.respectsHumanRights;
 
-  // 3. Mode/Means ("Como / Por meio de que instrumentos / Meio de execução")
-  // Expressões que explicam "como" a ação será executada devem ser consideradas estritamente como meio/modo.
-  const modeMatch = lastParagraph.match(/\b(por meio de (cartazes, outdoors|[\w\s]+)|mediante|por intermédio de|através de|com o auxílio de|a partir de|por via de)\b[\w\s]{8,90}/i);
-  const hasMode = !!modeMatch;
-  const modeText = modeMatch ? modeMatch[0] : "Ausente (falta marcador como 'por meio de' ou 'mediante')";
-
-  // 4. Finality / Objetivo ("Para que / Finalidade pretendida")
-  // Expressa por: "com o objetivo de", "a fim de", "para que", "para", "visando", "com o intuito de", "de modo a", "com o fito de", "com vistas a"
-  const finalityMatch = lastParagraph.match(/\b(a fim de|com o objetivo de|com o fito de|com o intuito de|para que|visando a|visando|de modo a|com vistas a|para mitigar|para combater|para erradicar|para garantir|com o propósito de)\b[\w\s]{8,90}/i);
-  const hasEffect = !!finalityMatch;
-  const effectText = finalityMatch ? finalityMatch[0] : "Ausente (falta 'a fim de', 'com o objetivo de', 'para' ou 'visando')";
-
-  // 5. Detailing (Informação adicional que aprofunde ou especifique um elemento)
-  // Regra estrita: NÃO contar o mesmo trecho duas vezes. Se explica "como", pertence ao meio/modo.
-  // Detalhamento é uma especificação autônoma (ex: apostos explicativos, desdobramentos adicionais, exemplificações).
-  let detailingText = "Ausente (falta informação adicional que realmente aprofunde ou especifique a intervenção)";
-  let hasDetailing = false;
-
-  const candidateDetailingMatch = lastParagraph.match(/,\s*(a exemplo de|por exemplo|haja vista que|especificamente|sobretudo|o qual tem como função|órgão responsável por|instituição encarregada de|cuja atribuição primordial é|com foco prioritário em)\b[\w\s]{8,80}/i);
-  if (candidateDetailingMatch) {
-    const candidateStr = candidateDetailingMatch[0];
-    // Garante que não é o mesmo trecho do meio/modo
-    if (!modeMatch || !candidateStr.toLowerCase().includes(modeMatch[0].slice(0, 15).toLowerCase())) {
-      hasDetailing = true;
-      detailingText = candidateStr.replace(/^,\s*/, "");
-    }
-  }
-
-  // Human rights check
-  const humanRightsViolation = /\b(pena de morte|tortura|justiçamento|matar|linchar|eliminar os|olho por olho|castigo físico|expulsar do país)\b/i.test(cleanText);
-
-  let validElementsCount = 0;
-  if (hasAgent) validElementsCount++;
-  if (hasAction) validElementsCount++;
-  if (hasMode) validElementsCount++;
-  if (hasEffect) validElementsCount++;
-  if (hasDetailing) validElementsCount++;
+  const validElementsCount = conclusionAudit.validElementsCount;
 
   let c5Score = 0;
   if (humanRightsViolation) {
+    // Regra Fundamental: Desrespeito aos Direitos Humanos zera EXCLUSIVAMENTE a Competência V (0 pts), sem zerar C1-C4
     c5Score = 0;
-  } else if (validElementsCount === 5 && lastParagraph.length >= 100) {
+  } else if (isTangenciamento) {
+    // Repercussão Oficial INEP: Em caso de tangenciamento temático, a proposta não resolve o recorte específico, limitando C5 a no máximo 40 pontos
+    c5Score = validElementsCount >= 1 ? 40 : 0;
+  } else if (validElementsCount === 5) {
     c5Score = 200;
   } else if (validElementsCount === 4) {
     c5Score = 160;
@@ -655,8 +2081,17 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
     c5Score = 0;
   }
 
+  // Situações Oficiais de Nota Zero Integral (fuga total ao tema, até 7 linhas manuscritas, em branco, tipo não dissertativo, identificação indevida)
+  if (calibrationAudit.zeroScoreCondition.isZeroScore) {
+    c1Score = 0;
+    c2Score = 0;
+    c3Score = 0;
+    c4Score = 0;
+    c5Score = 0;
+  }
+
   const isOfficialBenchmark = isOfficialNota1000Benchmark(essayText);
-  if (isOfficialBenchmark) {
+  if (isOfficialBenchmark && !calibrationAudit.zeroScoreCondition.isZeroScore && !isTangenciamento && !humanRightsViolation) {
     c1Score = 200;
     c2Score = 200;
     c3Score = 200;
@@ -664,368 +2099,457 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
     c5Score = 200;
   }
 
-  const totalScore = c1Score + c2Score + c3Score + c4Score + c5Score;
-
-  // DUAL-EVALUATOR SIMULATION ENGINE (Corretor 1 vs Corretor 2 - Matriz Oficial INEP)
-  // Simulates realistic double-blind grading with authentic pedagogical profiles and controlled divergence (tolerância do INEP)
-  
-  // Avaliador 1: Perfil Normativo/Linguístico (Foco estrito em desvios, pontuação, anáforas e precisão formal)
-  // Avaliador 2: Perfil Hermenêutico/Estrutural (Foco em macroestrutura, produtividade do repertório, causalidade e detalhamento)
-  let simEvalA_c1 = c1Score;
-  let simEvalB_c1 = c1Score;
-  if (c1DeviationsFound.length === 0 && complexSyntaxCount >= 3) {
-    simEvalA_c1 = 200;
-    simEvalB_c1 = 200;
-  } else if (c1DeviationsFound.length >= 1 && c1DeviationsFound.length <= 2) {
-    // Avaliador 1 penaliza o desvio formal leve (160); Avaliador 2 valoriza a fluidez global e estrutura (200) -> Média 180
-    simEvalA_c1 = 160;
-    simEvalB_c1 = complexSyntaxCount >= 2 ? 200 : 160;
-  } else if (c1DeviationsFound.length >= 3 && c1DeviationsFound.length <= 4) {
-    simEvalA_c1 = 120;
-    simEvalB_c1 = 160;
-  } else if (c1DeviationsFound.length >= 5) {
-    simEvalA_c1 = 120;
-    simEvalB_c1 = 120;
-  }
-
-  let simEvalA_c2 = c2Score;
-  let simEvalB_c2 = c2Score;
-  if (foundRepertoires.length >= 2 && !hasHistoricalAnachronism) {
-    simEvalA_c2 = 200;
-    simEvalB_c2 = 200;
-  } else if (foundRepertoires.length === 1 && !hasHistoricalAnachronism) {
-    // Avaliador 1 aceita o repertório como suficiente para nota máxima (200); Avaliador 2 exige maior desdobramento produtivo (160) -> Média 180
-    simEvalA_c2 = 200;
-    simEvalB_c2 = 160;
-  } else if (hasHistoricalAnachronism) {
-    simEvalA_c2 = 160;
-    simEvalB_c2 = 120;
-  }
-
-  let simEvalA_c3 = c3Score;
-  let simEvalB_c3 = c3Score;
-  if (introHasThesisSignals && d1HasArgumentation && d2HasArgumentation && !hasContradiction && !hasUngroundedClaim) {
-    // Em projetos de texto consistentes, um avaliador pode ver 200 e outro 160 caso haja pequeno salto analítico
-    if (c3Score === 200) {
-      simEvalA_c3 = 200;
-      simEvalB_c3 = 200;
-    } else {
-      simEvalA_c3 = 200;
-      simEvalB_c3 = 160;
+  // DUAL-EVALUATOR SIMULATION ENGINE (Corretor 1 Normativo/Coesivo vs Corretor 2 Estrutural/Temático)
+  const evidenceCalibratedDual = calibrateDualEvaluatorProfiles({
+    rawA: { c1: c1Score, c2: c2Score, c3: c3Score, c4: c4Score, c5: c5Score },
+    rawB: { c1: c1Score, c2: c2Score, c3: c3Score, c4: c4Score, c5: c5Score },
+    isOfficialBenchmark,
+    isWholeEssayZero: calibrationAudit.zeroScoreCondition.isZeroScore,
+    isTangenciamento,
+    isHumanRightsViolationC5: humanRightsViolation,
+    caps: {
+      c1Max: calibrationAudit.zeroScoreCondition.isZeroScore ? 0 : (isOfficialBenchmark ? 200 : (hasLexicalImprecisionOrOrality || !hasComplexSyntaxC1 || severeDeviations.length > 0 || c1DeviationsFound.length > 1 ? 160 : 200)),
+      c2Max: calibrationAudit.zeroScoreCondition.isZeroScore ? 0 : (isTangenciamento ? 40 : (isOfficialBenchmark ? 200 : (repertoireDist.hasRepertoireInDev && hasProductiveRepertoire && !hasHistoricalAnachronism && fullThemeCoverage ? 200 : 160))),
+      c3Max: calibrationAudit.zeroScoreCondition.isZeroScore ? 0 : (isTangenciamento ? 40 : (isOfficialBenchmark ? 200 : (has4CanonicalParagraphs && hasStrategicProject && hasCausalDepth && !hasUngroundedClaim && wordCount >= 240 ? 200 : 160))),
+      c4Max: calibrationAudit.zeroScoreCondition.isZeroScore ? 0 : (isOfficialBenchmark ? 200 : (!hasAnaphoricMesmo && !hasSyntacticStructureRepetition && hasAuthenticProgression && hasFunctionalVariety ? 200 : 160)),
+      c5Max: calibrationAudit.zeroScoreCondition.isZeroScore || humanRightsViolation ? 0 : (isTangenciamento ? 40 : (isOfficialBenchmark ? 200 : Math.min(200, validElementsCount * 40)))
+    },
+    tensions: {
+      c1HasDeviationsOrOral: hasLexicalImprecisionOrOrality || !hasComplexSyntaxC1 || c1DeviationsFound.length > 0,
+      c1DeviationsCount: c1DeviationsFound.length,
+      c2Tension: repertoireDist.hasRepertoireOnlyInIntro || !repertoireDist.hasRepertoireInDev || !hasProductiveRepertoire || hasHistoricalAnachronism,
+      c3Tension: !hasCausalDepth || hasCrossParagraphRepetition || hasContradiction || hasUngroundedClaim,
+      c4Tension: hasAnaphoricMesmo || hasSyntacticStructureRepetition || !hasAuthenticProgression,
+      c5ElementsCount: validElementsCount,
+      c5DetailingAuthentic: hasDetailing
     }
-  } else if (hasUngroundedClaim || hasContradiction) {
-    simEvalA_c3 = 120;
-    simEvalB_c3 = 160;
-  }
+  });
 
-  let simEvalA_c4 = c4Score;
-  let simEvalB_c4 = c4Score;
-  if (interParagraphMatches >= 2 && !hasAnaphoricMesmo) {
-    simEvalA_c4 = 200;
-    simEvalB_c4 = 200;
-  } else if (hasAnaphoricMesmo) {
-    // Avaliador 1 penaliza o anafórico 'o mesmo' estritamente (160); Avaliador 2 foca nos operadores interparágrafos (200)
-    simEvalA_c4 = 160;
-    simEvalB_c4 = interParagraphMatches >= 2 ? 200 : 160;
-  }
+  const simEvalA_c1 = evidenceCalibratedDual.evalA.c1;
+  const simEvalA_c2 = evidenceCalibratedDual.evalA.c2;
+  const simEvalA_c3 = evidenceCalibratedDual.evalA.c3;
+  const simEvalA_c4 = evidenceCalibratedDual.evalA.c4;
+  const simEvalA_c5 = evidenceCalibratedDual.evalA.c5;
+  const totalA = evidenceCalibratedDual.evalA.total;
 
-  let simEvalA_c5 = c5Score;
-  let simEvalB_c5 = c5Score;
-  if (validElementsCount === 5) {
-    simEvalA_c5 = 200;
-    simEvalB_c5 = 200;
-  } else if (validElementsCount === 4 && hasDetailing) {
-    simEvalA_c5 = 200;
-    simEvalB_c5 = 160;
-  } else if (validElementsCount === 4) {
-    simEvalA_c5 = 160;
-    simEvalB_c5 = 160;
-  }
+  const simEvalB_c1 = evidenceCalibratedDual.evalB.c1;
+  const simEvalB_c2 = evidenceCalibratedDual.evalB.c2;
+  const simEvalB_c3 = evidenceCalibratedDual.evalB.c3;
+  const simEvalB_c4 = evidenceCalibratedDual.evalB.c4;
+  const simEvalB_c5 = evidenceCalibratedDual.evalB.c5;
+  const totalB = evidenceCalibratedDual.evalB.total;
 
-  if (isOfficialBenchmark || (c1Score === 200 && c2Score === 200 && c3Score === 200 && c4Score === 200 && c5Score === 200)) {
-    simEvalA_c1 = 200; simEvalA_c2 = 200; simEvalA_c3 = 200; simEvalA_c4 = 200; simEvalA_c5 = 200;
-    simEvalB_c1 = 200; simEvalB_c2 = 200; simEvalB_c3 = 200; simEvalB_c4 = 200; simEvalB_c5 = 200;
-  }
+  const discC1 = evidenceCalibratedDual.discrepancies.c1;
+  const discC2 = evidenceCalibratedDual.discrepancies.c2;
+  const discC3 = evidenceCalibratedDual.discrepancies.c3;
+  const discC4 = evidenceCalibratedDual.discrepancies.c4;
+  const discC5 = evidenceCalibratedDual.discrepancies.c5;
+  const totalDisc = evidenceCalibratedDual.discrepancies.total;
 
-  const totalA = simEvalA_c1 + simEvalA_c2 + simEvalA_c3 + simEvalA_c4 + simEvalA_c5;
-  const totalB = simEvalB_c1 + simEvalB_c2 + simEvalB_c3 + simEvalB_c4 + simEvalB_c5;
+  const official_c1 = evidenceCalibratedDual.means.c1;
+  const official_c2 = evidenceCalibratedDual.means.c2;
+  const official_c3 = evidenceCalibratedDual.means.c3;
+  const official_c4 = evidenceCalibratedDual.means.c4;
+  const official_c5 = evidenceCalibratedDual.means.c5;
+  const officialTotal = evidenceCalibratedDual.means.total;
 
-  const discC1 = Math.abs(simEvalA_c1 - simEvalB_c1);
-  const discC2 = Math.abs(simEvalA_c2 - simEvalB_c2);
-  const discC3 = Math.abs(simEvalA_c3 - simEvalB_c3);
-  const discC4 = Math.abs(simEvalA_c4 - simEvalB_c4);
-  const discC5 = Math.abs(simEvalA_c5 - simEvalB_c5);
-  const totalDisc = Math.abs(totalA - totalB);
+  c1Score = official_c1;
+  c2Score = official_c2;
+  c3Score = official_c3;
+  c4Score = official_c4;
+  c5Score = official_c5;
+  const totalScore = officialTotal;
 
-  // Official arithmetic mean scores calculated per INEP guidelines
-  const official_c1 = (simEvalA_c1 + simEvalB_c1) / 2;
-  const official_c2 = (simEvalA_c2 + simEvalB_c2) / 2;
-  const official_c3 = (simEvalA_c3 + simEvalB_c3) / 2;
-  const official_c4 = (simEvalA_c4 + simEvalB_c4) / 2;
-  const official_c5 = (simEvalA_c5 + simEvalB_c5) / 2;
-  const officialTotal = official_c1 + official_c2 + official_c3 + official_c4 + official_c5;
-
-  // CARTILHA 800+ BENCHMARK PROFILE
+  // CARTILHA 800+ BENCHMARK PROFILE (100% dinâmico com base nas evidências reais)
   let tier: 'Abaixo de 700' | 'Faixa 800 (Regular)' | 'Faixa 880-920 (Bom)' | 'Faixa 940-960 (Excelente)' | 'Faixa 1000 (Perfeição)' = 'Faixa 800 (Regular)';
-  let closestProfileTitle = "Padrão Intermediário da Cartilha 800+ (Similar à Redação #3 Adryana Kaylane - ENEM 2022)";
-  let commonPatternIdentified = "Macroestrutura em 4 parágrafos e repertório institucional legítimo (CF/88 Art. 5º e PNPCT), porém com desvios ortográficos (C1), anacronismo histórico pontual (C2), uso anafórico de 'o mesmo' (C4) e ausência de detalhamento na C5.";
-  let keyDifferenceTo900Plus = "1. Corrigir desvios ortográficos/concordância; 2. Evitar o uso de 'o mesmo' para retomar pessoas; 3. Inserir detalhamento com aposto ou exemplo na C5.";
+  let closestProfileTitle = "Padrão Intermediário da Cartilha INEP";
+  const dynamicGapTags: string[] = [];
+  if (c1Score < 200 && c1DeviationsFound.length > 0) dynamicGapTags.push("desvios pontuais de norma-padrão (C1)");
+  if (c2Score < 200) dynamicGapTags.push(foundRepertoires.length > 0 ? "maior integração do repertório (C2)" : "repertório sociocultural produtivo (C2)");
+  if (c3Score < 200) dynamicGapTags.push(hasCrossParagraphRepetition ? "diferenciação entre argumentos de D1 e D2 (C3)" : "aprofundamento causal (C3)");
+  if (c4Score < 200) dynamicGapTags.push(hasAnaphoricMesmo ? `substituição de "${anaphoricMesmoList[0].match}" (C4)` : "fluidez e variação estrutural (C4)");
+  if (c5Score < 200 && !humanRightsViolation) dynamicGapTags.push(!hasDetailing ? "detalhamento na proposta (C5)" : "complementação de elemento na C5");
+
+  let commonPatternIdentified = paragraphs.length >= 4
+    ? `Macroestrutura em ${paragraphs.length} parágrafos${foundRepertoires.length > 0 ? ` com repertório legítimo (${foundRepertoires.map(r => r.name).slice(0, 2).join(', ')})` : ''}${dynamicGapTags.length > 0 ? `, com oportunidades de ajuste em: ${dynamicGapTags.join(', ')}.` : '.'}`
+    : "Estrutura dissertativa em consolidação.";
+  let keyDifferenceTo900Plus = dynamicGapTags.length > 0
+    ? `Prioridades diretas do texto: ${dynamicGapTags.join('; ')}.`
+    : "Consistência global consolidada nas cinco competências.";
 
   if (officialTotal >= 980) {
     tier = 'Faixa 1000 (Perfeição)';
     closestProfileTitle = "Redação Nota 1000 Oficial (Padrão Lucas Moraes / Ana Clara)";
-    commonPatternIdentified = "Perfeição sintática, autoria marcante com projeto de texto impecável e intervenção detalhada em todos os 5 elementos.";
-    keyDifferenceTo900Plus = "Manter a consistência em diferentes eixos temáticos.";
-  } else if (officialTotal >= 920) {
+    commonPatternIdentified = "Excelência sintática, projeto de texto estratégico com causalidade consolidada e intervenção completa em todos os 5 elementos.";
+    keyDifferenceTo900Plus = dynamicGapTags.length > 0
+      ? `Ajuste fino pontual: ${dynamicGapTags.join('; ')}.`
+      : "Manter a consistência em diferentes eixos temáticos.";
+  } else if (officialTotal >= 940) {
     tier = 'Faixa 940-960 (Excelente)';
     closestProfileTitle = "Padrão 960 da Cartilha (Similar às Redações #11 Julie Anne e #14 Beatriz Santana)";
-    commonPatternIdentified = "Vocabulário culto, operadores argumentativos diversificados e 5 elementos completos na C5.";
-    keyDifferenceTo900Plus = "Ajustar pontuações milimétricas na C1 ou aprofundar ainda mais o repertório na C2 para o 1000.";
+    commonPatternIdentified = `Domínio formal elevado, projeto estratégico coerente${c5Score === 200 ? ' e 5 elementos completos na C5' : ''}.`;
+    keyDifferenceTo900Plus = dynamicGapTags.length > 0
+      ? `Ajustes finos identificados no texto: ${dynamicGapTags.join('; ')}.`
+      : "Manter a precisão na revisão final de pontuação.";
   } else if (officialTotal >= 840) {
     tier = 'Faixa 880-920 (Bom)';
-    closestProfileTitle = "Padrão 880 da Cartilha (Similar à Redação #6 Wallison)";
-    commonPatternIdentified = "Boa fluidez e poucos desvios, com perdas leves em C3 (argumentação pouco aprofundada) ou C5 (falta de detalhamento).";
-    keyDifferenceTo900Plus = "Adicionar o elemento de detalhamento na C5 e refinar a causalidade na C3.";
-  } else if (officialTotal < 760) {
+    closestProfileTitle = "Padrão 880-920 da Cartilha 800+ (Similar à Redação #6 Wallison)";
+    commonPatternIdentified = `Boa fluidez e estrutura dissertativa consistente${dynamicGapTags.length > 0 ? `, com foco de evolução em ${dynamicGapTags.join(' e ')}` : ''}.`;
+    keyDifferenceTo900Plus = dynamicGapTags.length > 0
+      ? `Para alcançar 940+: atuar em ${dynamicGapTags.join('; ')}.`
+      : "Aprofundar relações causais e especificidade na conclusão.";
+  } else if (officialTotal < 740) {
     tier = 'Abaixo de 700';
-    closestProfileTitle = "Estrutura Básica em Desenvolvimento";
-    commonPatternIdentified = "Dificuldade na articulação de repertórios e estruturação dos períodos.";
-    keyDifferenceTo900Plus = "Praticar a macroestrutura em 4 parágrafos canônicos e o esqueleto da C5.";
+    closestProfileTitle = calibrationAudit.zeroScoreCondition.isZeroScore
+      ? `Situação Oficial de Nota Zero (${calibrationAudit.zeroScoreCondition.officialReasonTitle})`
+      : isTangenciamento
+        ? "Redação com Tangenciamento Temático (Trava Oficial INEP em C2, C3 e C5)"
+        : "Estrutura Básica em Desenvolvimento";
+    commonPatternIdentified = calibrationAudit.zeroScoreCondition.isZeroScore
+      ? calibrationAudit.zeroScoreCondition.analyticalJustification
+      : isTangenciamento
+        ? calibrationAudit.thematicJustification
+        : "Dificuldade na articulação de repertórios, causalidade argumentativa ou estruturação dos períodos.";
+    keyDifferenceTo900Plus = isTangenciamento
+      ? `Abordar diretamente o recorte específico de "${theme}" e alinhar os argumentos e a conclusão a esse foco.`
+      : dynamicGapTags.length > 0
+        ? `Prioridades do seu texto: ${dynamicGapTags.join('; ')}.`
+        : "Desenvolver tese clara em 4 parágrafos com causa e consequência e completar os 5 elementos da C5.";
   }
 
-  return {
+  const evidencePayload: any = {
     totalScore: officialTotal,
     competencies: {
       c1: {
         score: c1Score,
-        level: c1Score / 40,
-        levelTitle: c1Score === 200 ? "Excelência sintática com domínio formal comprovado" : c1Score === 160 ? "Boa estrutura sintática com poucos desvios" : "Estrutura sintática regular com desvios",
-        evaluation: `Avaliamos a C1 com base na soma ponderada de sofisticação sintática (${complexSyntaxCount} estruturas complexas), precisão lexical (${eruditeVocabCount} vocábulos formais) e rigor gramatical (${c1DeviationsFound.length} desvios identificados). ${c1Score === 200 ? "Demonstrou evidência positiva incontestável de excelência com períodos sofisticados." : "Para alcançar 200 pontos, é obrigatório demonstrar períodos compostos por subordinação rica com intercalações e vocabulário formal irretocável."}`,
+        level: Math.round(c1Score / 40),
+        levelTitle: c1Score === 200 ? "Excelente domínio da modalidade escrita formal" : c1Score >= 160 ? "Bom domínio formal com desvios pontuais" : c1Score === 0 ? "Competência zerada por anulação integral da redação" : "Domínio formal mediano com desvios recorrentes",
+        evaluation: calibrationAudit.zeroScoreCondition.isZeroScore
+          ? `${calibrationAudit.zeroScoreCondition.analyticalJustification}`
+          : `Avaliamos a C1 pela precisão vocabular, registro formal culto, articulação de períodos complexos e frequência de desvios (${c1DeviationsFound.length} ocorrência(s) localizada(s)).`,
         evidenceSnippets: allSentences.slice(0, 2),
         positiveEvidence: [
-          `Estrutura sintática regular e funcional.`,
-          `Adequação ao registro formal da língua culta.`
+          c1HasExceptionalSyntax ? `Períodos complexos bem articulados e claros.` : `Estruturação sintática compreensível.`,
+          c1HasExceptionalVocab ? `Vocabulário formal preciso e adequado ao registro culto.` : `Registro compreensível com pontos de imprecisão vocabular/oralidade.`
         ],
         penaltiesOrGaps: c1DeviationsFound.map(d => `${d.problem} (Trecho: "${d.snippet}")`),
         exceptionalPerformanceDemonstrated: c1Score === 200,
         evidenceWeightPillars: [
           {
-            pillarName: "Domínio Efetivo da Estrutura Sintática",
+            pillarName: "Períodos Complexos Bem Articulados",
             weightPercentage: 40,
-            scoreContribution: c1Score === 200 ? 80 : c1Score >= 160 ? 60 : 40,
-            positiveEvidenceFound: severeDeviations.length === 0 ? "Estrutura sintática fluida e sem truncamentos graves." : "Estrutura sintática com períodos compreensíveis.",
+            scoreContribution: c1Score === 200 ? 80 : c1Score >= 160 ? 60 : c1Score === 0 ? 0 : 40,
+            positiveEvidenceFound: c1HasExceptionalSyntax ? "Períodos complexos bem articulados com subordinação clara e pontuação precisa." : "Predomínio de períodos simples/diretos sem articulação sintática complexa suficiente para 200 pts.",
             isExceptionalLevel: c1HasExceptionalSyntax
           },
           {
-            pillarName: "Adequação ao Registro Formal Escrito",
+            pillarName: "Precisão Vocabular & Registro Formal",
             weightPercentage: 30,
-            scoreContribution: c1Score === 200 ? 60 : c1Score >= 160 ? 50 : 35,
-            positiveEvidenceFound: c1HasExceptionalVocab ? "Adequação ao registro formal padrão sem oralidade." : "Registro compreensível com termos cotidianos.",
+            scoreContribution: c1Score === 200 ? 60 : c1Score >= 160 ? 50 : c1Score === 0 ? 0 : 35,
+            positiveEvidenceFound: c1HasExceptionalVocab ? "Vocabulário formal preciso, sem marcas de oralidade ou clichês vagos." : "Presença de marcas de oralidade, clichês vagos ou imprecisão vocabular (limite de 160 pts).",
             isExceptionalLevel: c1HasExceptionalVocab
           },
           {
             pillarName: "Controle de Desvios Gramaticais e Convenções",
             weightPercentage: 30,
-            scoreContribution: c1Score === 200 ? 60 : c1Score >= 160 ? 50 : 35,
-            positiveEvidenceFound: `${c1DeviationsFound.length} desvio(s) identificado(s) no texto.`,
-            gapOrPenaltyFound: c1DeviationsFound.length > 0 ? `${c1DeviationsFound.length} desvios gramaticais/convencionais observados.` : undefined,
+            scoreContribution: c1Score === 200 ? 60 : c1Score >= 160 ? 50 : c1Score === 0 ? 0 : 35,
+            positiveEvidenceFound: `${c1DeviationsFound.length} ocorrência(s) normativa(s)/vocabular(es) identificada(s) no texto.`,
+            gapOrPenaltyFound: c1DeviationsFound.length > 0 ? `${c1DeviationsFound.length} desvio(s)/imprecisão(ões) observado(s).` : undefined,
             isExceptionalLevel: c1HasFewDeviations
           }
         ],
         problemsIdentified: c1DeviationsFound.map(d => `${d.problem}: "${d.snippet}"`),
-        howToImprove: "A nota 200 na C1 exige excelente domínio da modalidade escrita formal e no máximo 1 a 2 desvios leves e não reincidentes, com períodos sintáticos bem estruturados.",
-        diagnostic: c1Score === 200 ? "Excelente domínio da modalidade escrita formal com estrutura sintática sem falhas graves." : "Sua pontuação reflete desvios gramaticais ou sintáticos pontuais identificados no texto."
+        howToImprove: "A nota 200 na C1 exige períodos complexos bem articulados, vocabulário formal preciso (sem marcas de oralidade ou clichês vagos como 'no dia a dia', 'por causa de', 'tomar medidas', 'acaba gerando', 'coisas') e ausência de desvios relevantes.",
+        diagnostic: calibrationAudit.zeroScoreCondition.isZeroScore
+          ? calibrationAudit.zeroScoreCondition.analyticalJustification
+          : c1Score === 200
+            ? "Excelente domínio da modalidade escrita formal com períodos complexos bem articulados e vocabulário formal preciso."
+            : "Ausência de erros ortográficos isoladamente não garante 200 pts: é necessário elevar a precisão vocabular e a articulação sintática complexa."
       },
       c2: {
         score: c2Score,
-        level: c2Score / 40,
-        levelTitle: c2Score === 200 ? "Repertório sociocultural legitimado e comprovadamente produtivo" : c2Score === 160 ? "Tema desenvolvido com repertório legitimado pertinente" : "Abordagem previsível do tema",
-        evaluation: `A avaliação da C2 auditou a cobertura integral do tema e a legitimação e produtividade dos repertórios. Foram localizadas ${foundRepertoires.length} referências socioculturais (${foundRepertoires.map(r => r.name).join(', ') || 'Nenhuma área formal identificada'}). ${hasProductiveRepertoire ? 'Há evidência positiva de vínculo produtivo com a argumentação.' : 'Falta evidência de produtividade: o repertório não pode ficar solto ou meramente decorativo.'}`,
-        evidenceSnippets: foundRepertoires.length > 0 ? foundRepertoires.map(r => `Referência: ${r.name} (${r.area}) -> "${r.matched}"`) : paragraphs.slice(0, 1),
+        level: Math.round(c2Score / 40),
+        levelTitle: c2Score === 200
+          ? "Abordagem completa e repertório sociocultural produtivo no desenvolvimento"
+          : c2Score >= 160
+            ? (repertoireDist.hasRepertoireOnlyInIntro ? "Repertório limitado à introdução (ausente em D1 e D2)" : foundRepertoires.length > 0 ? "Abordagem completa com repertório pouco integrado aos desenvolvimentos" : "Domínio do tema sem repertório sociocultural nos desenvolvimentos")
+            : c2Score === 120
+              ? "Abordagem completa do tema em desenvolvimento sem repertório externo"
+              : c2Score === 80
+                ? "Abordagem parcial do tema com desenvolvimento limitado"
+                : c2Score === 40
+                  ? "Tangenciamento ao tema proposto (Nível 1 INEP)"
+                  : "Fuga total ao tema / Anulação oficial (Nível 0 INEP)",
+        evaluation: `${calibrationAudit.thematicJustification} Foram localizadas ${foundRepertoires.length} referência(s) sociocultural(is) válida(s) (${foundRepertoires.map(r => `${r.matched} [${r.locationTag}]`).join(', ') || 'Nenhuma referência externa formal em D1/D2'}). ${repertoireDist.hasRepertoireInDev && hasProductiveRepertoire ? 'Há repertório pertinente e produtivo mobilizado na argumentação (D1 e/ou D2).' : repertoireDist.hasRepertoireOnlyInIntro ? 'Repertório sociocultural legitimado apenas na introdução, sem presença de repertório produtivo em D1 nem em D2 (limite de 160 pts).' : 'Ausência de repertório sociocultural produtivo nos parágrafos de desenvolvimento D1/D2 (ministérios, leis ou órgãos citados apenas como agentes na conclusão não contam como repertório).'}`,
+        evidenceSnippets: [calibrationAudit.thematicEvidenceSnippet, ...(foundRepertoires.length > 0 ? foundRepertoires.map(r => `Referência (${r.locationTag}): ${r.name} -> "${r.matched}"`) : [])],
         positiveEvidence: [
-          fullThemeCoverage ? "Abordagem completa de todos os núcleos conceituais da proposta temática." : "Abordagem parcial do tema.",
-          `${foundRepertoires.length} repertórios socioculturais formais identificados.`,
-          hasProductiveRepertoire ? "Evidência comprovada de produtividade com articulação tese-repertório." : "Repertório com produtividade limitada/decorativo."
+          fullThemeCoverage ? "Abordagem completa do tema e de seu recorte específico." : isTangenciamento ? "Presença apenas do assunto geral, sem desenvolvimento do recorte específico (tangenciamento)." : "Abordagem parcial do tema.",
+          repertoireDist.hasRepertoireInDev ? `${repertoireDist.devRepertoires.length} referência(s) sociocultural(is) identificada(s) nos desenvolvimentos (D1/D2).` : (repertoireDist.hasRepertoireOnlyInIntro ? "Referência sociocultural identificada na introdução." : "Foco temático preservado sem tangenciamento.")
         ],
         penaltiesOrGaps: [
+          ...(calibrationAudit.zeroScoreCondition.isZeroScore ? [calibrationAudit.zeroScoreCondition.analyticalJustification] : []),
+          ...(isTangenciamento ? [calibrationAudit.thematicJustification] : []),
           ...(hasHistoricalAnachronism ? ["Anacronismo histórico ou erro factual detectado na menção histórica."] : []),
-          ...(!hasProductiveRepertoire ? ["Repertório sem vínculo explícito de causa e efeito com o problema central."] : [])
+          ...(!isTangenciamento && !calibrationAudit.zeroScoreCondition.isZeroScore && repertoireDist.hasRepertoireOnlyInIntro ? ["Repertório sociocultural mobilizado apenas na introdução, sem uso de repertório externo produtivo em D1 nem em D2 (teto de 160 pts na C2)."] : []),
+          ...(!isTangenciamento && !calibrationAudit.zeroScoreCondition.isZeroScore && !repertoireDist.hasRepertoireInDev && !repertoireDist.hasRepertoireOnlyInIntro ? ["Ausência de repertório sociocultural externo em D1 e/ou D2 (agentes institucionais e leis na conclusão não contam como repertório)."] : [])
         ],
         exceptionalPerformanceDemonstrated: c2Score === 200,
         evidenceWeightPillars: [
           {
-            pillarName: "Cobertura Integral do Tema",
-            weightPercentage: 30,
-            scoreContribution: fullThemeCoverage ? 60 : 30,
-            positiveEvidenceFound: `Contemplou as palavras-chave do eixo temático proposto.`,
+            pillarName: "Domínio Efetivo do Tema e Recorte Específico",
+            weightPercentage: 40,
+            scoreContribution: fullThemeCoverage ? 80 : isTangenciamento ? 15 : c2Score === 0 ? 0 : 40,
+            positiveEvidenceFound: fullThemeCoverage ? `Abordagem completa do tema e do recorte específico.` : calibrationAudit.thematicJustification,
+            gapOrPenaltyFound: !fullThemeCoverage ? calibrationAudit.thematicJustification : undefined,
             isExceptionalLevel: fullThemeCoverage
           },
           {
-            pillarName: "Legitimação de Áreas do Saber",
-            weightPercentage: 35,
-            scoreContribution: foundRepertoires.length >= 2 ? 70 : foundRepertoires.length === 1 ? 50 : 20,
-            positiveEvidenceFound: `${foundRepertoires.length} referências formais (Filosofia, Sociologia, Leis ou História).`,
-            isExceptionalLevel: foundRepertoires.length >= 2 && !hasHistoricalAnachronism
+            pillarName: "Repertório Sociocultural nos Desenvolvimentos (D1/D2)",
+            weightPercentage: 30,
+            scoreContribution: c2Score === 0 ? 0 : isTangenciamento ? 15 : (repertoireDist.hasRepertoireInDev && !hasHistoricalAnachronism ? 60 : 40),
+            positiveEvidenceFound: repertoireDist.hasRepertoireInDev ? `Referência legítima identificada na argumentação (D1/D2).` : (repertoireDist.hasRepertoireOnlyInIntro ? `Repertório restrito à introdução (ausente em D1 e D2).` : `Sem repertório sociocultural em D1/D2 (teto 160 pts).`),
+            isExceptionalLevel: repertoireDist.hasRepertoireInDev && !hasHistoricalAnachronism && fullThemeCoverage
           },
           {
-            pillarName: "Produtividade Positiva Comprovada",
-            weightPercentage: 35,
-            scoreContribution: c2Score === 200 ? 70 : hasProductiveRepertoire ? 50 : 30,
-            positiveEvidenceFound: hasProductiveRepertoire ? "Repertório desdobrado criticamente na sustentação da tese." : "Repertório citado sem conexão direta de causa e efeito.",
-            isExceptionalLevel: hasProductiveRepertoire && !hasHistoricalAnachronism
+            pillarName: "Integração, Contextualização e Produtividade",
+            weightPercentage: 30,
+            scoreContribution: c2Score === 200 ? 60 : isTangenciamento ? 10 : c2Score === 0 ? 0 : (hasProductiveRepertoire ? 50 : 35),
+            positiveEvidenceFound: hasProductiveRepertoire && fullThemeCoverage ? "Repertório contextualizado, explicado e integrado diretamente à argumentação." : "Necessário articular repertório produtivo também dentro de D1 e/ou D2 para alcançar 200 pts.",
+            isExceptionalLevel: hasProductiveRepertoire && !hasHistoricalAnachronism && fullThemeCoverage
           }
         ],
         problemsIdentified: [
+          ...(calibrationAudit.zeroScoreCondition.isZeroScore ? [calibrationAudit.zeroScoreCondition.analyticalJustification] : []),
+          ...(isTangenciamento ? [calibrationAudit.thematicJustification] : []),
           ...(hasHistoricalAnachronism ? ["Atenção à precisão histórica ao citar datas e personagens (ex: 1500 é Pedro Álvares Cabral; Dom Pedro I é de 1822)."] : []),
-          ...(!hasProductiveRepertoire ? ["O repertório precisa atuar como engrenagem do argumento, explicitando 'Repertório -> Argumento -> Tese'."] : [])
+          ...(!isTangenciamento && !calibrationAudit.zeroScoreCondition.isZeroScore && repertoireDist.hasRepertoireOnlyInIntro ? ["Repertório utilizado apenas na introdução: integre repertório pertinente e produtivo também em D1 e/ou D2 para ultrapassar 160 pontos."] : []),
+          ...(!isTangenciamento && !calibrationAudit.zeroScoreCondition.isZeroScore && !repertoireDist.hasRepertoireInDev && !repertoireDist.hasRepertoireOnlyInIntro ? ["Mobilize repertório sociocultural legítimo e produtivo nos parágrafos de desenvolvimento D1/D2 (órgãos e leis na conclusão não contam como repertório)."] : [])
         ],
-        howToImprove: "Para cravar 200 pontos na C2, não basta citar autores; use a fórmula: citação + explicação do conceito + vínculo explícito com o problema no Brasil contemporâneo.",
-        diagnostic: c2Score === 200 ? "Tema desenvolvido plenamente com repertórios legítimos e produtivos." : "Para atingir 200, comprove a produtividade do repertório conectando o conceito diretamente à causa da tese sem inconsistências factuais."
+        howToImprove: "Para atingir 200 pontos na C2, é obrigatório haver repertório sociocultural pertinente e produtivo também na argumentação (D1 e/ou D2) — não apenas na introdução nem como agente da conclusão.",
+        diagnostic: calibrationAudit.zeroScoreCondition.isZeroScore
+          ? calibrationAudit.zeroScoreCondition.analyticalJustification
+          : isTangenciamento
+            ? calibrationAudit.thematicJustification
+            : c2Score === 200
+              ? "Domínio completo do tema com repertório legítimo, contextualizado e produtivo nos desenvolvimentos (D1/D2)."
+              : repertoireDist.hasRepertoireOnlyInIntro
+                ? "Repertório legitimado apenas na introdução sem repertório produtivo em D1/D2 (limitado a 160 pts)."
+                : "Ausência de repertório produtivo em D1/D2 (limitado a 160 pts)."
       },
       c3: {
         score: c3Score,
-        level: c3Score / 40,
-        levelTitle: c3Score === 200 ? "Projeto de texto estratégico com forte marca de autoria" : c3Score === 160 ? "Projeto de texto com poucas falhas e ideias desenvolvidas" : "Projeto de texto com lacunas ou desenvolvimento mediano",
-        evaluation: `A avaliação da C3 analisou a solidez do projeto de texto, a consistência dos argumentos e as marcas de autoria. O texto apresenta ${paragraphs.length} parágrafos com ${authorialJudgments} marcas avaliativas de autoria. ${hasContradiction ? "Há contradição de termos (ex: emprego de 'valorização' ao referir-se à causa da desvalorização)." : ""} ${hasUngroundedClaim ? "Há alegações sem fundamentação na introdução." : ""}`,
-        evidenceSnippets: paragraphs.slice(1, 3),
+        level: Math.round(c3Score / 40),
+        levelTitle: c3Score === 200
+          ? "Projeto de texto estratégico com tese e argumentos desenvolvidos"
+          : c3Score >= 160
+            ? "Projeto de texto com boa coerência e leve lacuna de aprofundamento"
+            : isTangenciamento
+              ? "Projeto de texto limitado por tangenciamento temático (Nível 1 INEP)"
+              : c3Score === 0
+                ? "Competência zerada por anulação integral da redação"
+                : "Projeto de texto com lacunas ou desenvolvimento mediano",
+        evaluation: isTangenciamento
+          ? `REPERCUSSÃO OFICIAL DE TANGENCIAMENTO NA COMPETÊNCIA III: Como o texto tangenciou o recorte específico da proposta ("${theme}") no trecho "${calibrationAudit.thematicEvidenceSnippet}", os argumentos selecionados defendem um ponto de vista tangente ao tema solicitado, o que trava a Competência III no Nível 1 (40 pontos) conforme a Matriz do INEP.`
+          : c3Score === 200
+            ? `Avaliação pela Matriz do INEP: projeto de texto estratégico consolidado em ${paragraphs.length} parágrafos (tese na introdução com encaminhamento de argumentos distintos desenvolvidos em D1 e D2) e articulação clara de causa e consequência.`
+            : `Avaliação pela Matriz do INEP: análise da coerência do projeto de texto (tese + argumentos em D1 e D2) e da articulação entre causas e consequências em ${paragraphs.length} parágrafos.`,
+        evidenceSnippets: isTangenciamento ? [calibrationAudit.thematicEvidenceSnippet] : paragraphs.slice(1, 3),
         positiveEvidence: [
-          has4CanonicalParagraphs ? "Divisão equilibrada em Introdução, D1, D2 e Proposta de Intervenção." : "Estruturação em blocos dissertativos.",
-          `${authorialJudgments} marcadores de juízo de valor e criticidade identificados.`
+          has4CanonicalParagraphs ? "Projeto estruturado com tese na introdução, D1, D2 e conclusão." : "Estruturação em blocos dissertativos.",
+          !hasCrossParagraphRepetition ? "Desenvolvimento de dimensões distintas entre D1 e D2." : "Intenção argumentativa vinculada ao tema.",
+          hasCausalDepth ? "Articulação consistente de causas e consequências na argumentação." : "Organização lógica básica dos períodos."
         ],
-        penaltiesOrGaps: [
+        penaltiesOrGaps: c3Score === 200 ? [] : [
+          ...(isTangenciamento ? [`Trava oficial de tangenciamento na C3 (40 pts): os argumentos concentram-se apenas no assunto geral sem enfrentar o recorte específico da proposta.`] : []),
+          ...(hasCrossParagraphRepetition ? ["Repetição de ideia central entre D1 e D2 sem diferenciar causas ou dimensões."] : []),
+          ...(!hasCausalDepth ? ["Lacuna de aprofundamento nas relações de causa e consequência dos argumentos."] : []),
           ...(hasContradiction ? ["Contradição semântica ao usar termo oposto ao sentido defendido."] : []),
           ...(hasUngroundedClaim ? ["Premissa genérica sem comprovação fática na tese."] : [])
         ],
         exceptionalPerformanceDemonstrated: c3Score === 200,
         evidenceWeightPillars: [
           {
-            pillarName: "Projeto de Texto Estratégico",
-            weightPercentage: 35,
-            scoreContribution: has4CanonicalParagraphs && introHasThesisSignals ? 70 : 45,
-            positiveEvidenceFound: "Estrutura canônica de tese e desdobramentos em D1 e D2.",
-            isExceptionalLevel: has4CanonicalParagraphs && introHasThesisSignals
+            pillarName: "Projeto de Texto (Tese + Argumentos Distintos D1/D2)",
+            weightPercentage: 40,
+            scoreContribution: isTangenciamento ? 15 : c3Score === 0 ? 0 : (!hasCrossParagraphRepetition && introHasThesisSignals && d1HasArgumentation && d2HasArgumentation ? 80 : 55),
+            positiveEvidenceFound: !hasCrossParagraphRepetition ? "D1 e D2 desenvolvem causas ou dimensões distintas vinculadas à tese." : "D1 e D2 defendem literalmente a mesma ideia central.",
+            gapOrPenaltyFound: c3Score < 200 && hasCrossParagraphRepetition ? "Repetição do argumento central entre D1 e D2." : undefined,
+            isExceptionalLevel: !hasCrossParagraphRepetition && introHasThesisSignals && d1HasArgumentation && d2HasArgumentation && !isTangenciamento
           },
           {
-            pillarName: "Causalidade e Encadeamento Lógico",
+            pillarName: "Articulação Clara de Causa e Consequência",
             weightPercentage: 35,
-            scoreContribution: c3Score === 200 ? 70 : !hasContradiction ? 50 : 35,
-            positiveEvidenceFound: "Argumentos articulados em torno de causas sociais e institucionais.",
-            isExceptionalLevel: !hasContradiction && !hasUngroundedClaim
+            scoreContribution: isTangenciamento ? 15 : c3Score === 0 ? 0 : (hasCausalDepth ? 70 : 45),
+            positiveEvidenceFound: hasCausalDepth ? "Explicação consistente de causas, consequências e implicações." : "Pertinência temática mantida, porém com desdobramento causal parcial.",
+            gapOrPenaltyFound: c3Score < 200 && !hasCausalDepth ? "Necessário aprofundar a relação de causa e consequência do argumento." : undefined,
+            isExceptionalLevel: hasCausalDepth && !hasContradiction && !hasUngroundedClaim && !isTangenciamento
           },
           {
-            pillarName: "Autoria e Juízo Crítico",
-            weightPercentage: 30,
-            scoreContribution: hasClearAuthorialVoice ? 60 : 40,
-            positiveEvidenceFound: `${authorialJudgments} operadores de juízo de valor inseridos no raciocínio.`,
-            isExceptionalLevel: hasClearAuthorialVoice
+            pillarName: "Seleção, Organização e Coerência do Projeto",
+            weightPercentage: 25,
+            scoreContribution: isTangenciamento ? 10 : c3Score === 0 ? 0 : (hasStrategicProject && hasCausalDepth ? 50 : 35),
+            positiveEvidenceFound: hasStrategicProject ? "Seleção, organização e encadeamento lógico coerentes com a tese." : "Organização argumentativa em consolidação.",
+            isExceptionalLevel: hasStrategicProject && hasCausalDepth && !isTangenciamento
           }
         ],
-        problemsIdentified: [
-          ...(hasContradiction ? ["Evitar contradição de vocábulos na argumentação (ex: 'motivo dessa valorização')."] : []),
-          ...(hasUngroundedClaim ? ["Evitar premissas sem respaldo na introdução (ex: generalizações de senso comum)."] : [])
+        problemsIdentified: c3Score === 200 ? [] : [
+          ...(isTangenciamento ? [`Repercussão do tangenciamento temático na C3 (teto de 40 pts): vincule os argumentos diretamente ao recorte "${theme}".`] : []),
+          ...(hasCrossParagraphRepetition ? ["Repetição do mesmo argumento central entre os parágrafos de desenvolvimento D1 e D2."] : []),
+          ...(!hasCausalDepth ? ["Desenvolvimento argumentativo com lacuna de aprofundamento: explicite melhor a causa e a consequência prática do argumento."] : []),
+          ...(hasContradiction ? ["Evitar contradição de vocábulos na argumentação."] : []),
+          ...(hasUngroundedClaim ? ["Evitar premissas sem respaldo na introdução."] : [])
         ],
-        howToImprove: "Para a nota 200 na C3: planeje o texto antes de redigir. Cada parágrafo de desenvolvimento deve conter: Tópico Frasal + Repertório + Justificativa de Causa + Consequência Social.",
-        diagnostic: c3Score === 200 ? "Projeto de texto excelente com autoria evidente e sem lacunas." : "Perdeu pontos em razão de lacunas argumentativas, generalizações ou termos contraditórios no desenvolvimento."
+        howToImprove: c3Score === 200
+          ? "Nota máxima 200 atingida na Competência 3 pelo projeto de texto estratégico (tese + argumentos distintos em D1 e D2) e articulação clara de causa e consequência."
+          : "Mantenha a tese com dois argumentos distintos anunciados na introdução e aprofunde a relação de causa e consequência em D1 e D2 preservando seu repertório e tema.",
+        diagnostic: isTangenciamento
+          ? `Pontuação limitada a 40 pontos em decorrência da trava oficial de tangenciamento temático na Matriz do INEP.`
+          : c3Score === 200
+            ? "Projeto de texto estratégico completo articulando repertório, causa estrutural profunda e consequência crítica nos dois parágrafos de desenvolvimento (D1 e D2)."
+            : "Estrutura em 4 parágrafos com argumentos expositivos ou superficiais limita a C3 a no máximo 160 pontos; é necessário articular repertório, causa estrutural e consequência crítica em D1 e D2."
       },
       c4: {
         score: c4Score,
-        level: c4Score / 40,
-        levelTitle: c4Score === 200 ? "Diversidade coesiva inter e intraparágrafos sem inadequações" : c4Score === 160 ? "Presença constante de recursos coesivos com poucas repetições" : "Coesão regular com repetições ou inadequações",
-        evaluation: `A avaliação da C4 auditou os operadores argumentativos. Foram identificados ${interParagraphMatches}/3 conectores interparágrafos expressivos e ${uniqueIntraCategories} categorias de conectores intraparágrafos. ${hasAnaphoricMesmo ? "Identificado uso anafórico inadequado de 'o mesmo / os mesmos', penalizado pela banca do ENEM." : ""}`,
+        level: Math.round(c4Score / 40),
+        levelTitle: c4Score === 200 ? "Coesão excelente, fluida e funcionalmente precisa" : c4Score >= 160 ? "Coesão adequada com repetição estrutural ou limitações pontuais de progressão" : c4Score === 0 ? "Competência zerada por anulação integral da redação" : "Articulação mecânica, repetitiva ou com falhas de retomada",
+        evaluation: `A avaliação da C4 auditou a adequação funcional, a fluidez da progressão entre frases e parágrafos (${articulatedParagraphsCount}/${paragraphs.length} parágrafos com articulação interna contínua), eventual repetição de estruturas sintáticas/explicativas em parágrafos consecutivos e a retomada de referentes (${referentResumptionMatches} marcadores anafóricos/demonstrativos), sem penalizar conectivos comuns corretos nem exigir variedade vocabular obrigatória. ${hasSyntacticStructureRepetition ? "Identificada repetição de estruturas explicativas ou aberturas semelhantes em parágrafos consecutivos." : ""} ${hasAnaphoricMesmo ? "Identificado uso anafórico inadequado de 'o mesmo / os mesmos'." : ""}`.trim(),
         evidenceSnippets: paragraphs.map(p => p.split(/[\.\!\?]/)[0]).filter(Boolean).slice(0, 3),
         positiveEvidence: [
-          `${interParagraphMatches} operadores argumentativos interparágrafos identificados.`,
-          `${uniqueIntraCategories} categorias de conectivos intraparágrafos diversificados.`
+          `${functionalDimensionsCount} funções lógico-coesivas identificadas na articulação dos enunciados.`,
+          `${referentResumptionMatches} retomadas referenciais entre períodos e parágrafos.`
         ],
         penaltiesOrGaps: [
+          ...(!hasAuthenticProgression ? ["Limitação na progressão coesiva interna entre períodos ou retomada referencial insuficiente."] : []),
+          ...(hasSyntacticStructureRepetition ? ["Repetição de estruturas sintáticas ou explicativas semelhantes em parágrafos consecutivos, tornando a construção previsível."] : []),
           ...(hasAnaphoricMesmo ? ["Uso do pronome 'o mesmo / os mesmos' com valor de pronome pessoal (inadequação coesiva no ENEM)."] : [])
         ],
         exceptionalPerformanceDemonstrated: c4Score === 200,
         evidenceWeightPillars: [
           {
-            pillarName: "Operadores Interparágrafos",
+            pillarName: "Fluidez da Progressão & Não Repetição Estrutural",
             weightPercentage: 40,
-            scoreContribution: interParagraphMatches >= 2 ? 80 : 50,
-            positiveEvidenceFound: `${interParagraphMatches} conectores conectando a transição entre parágrafos.`,
-            isExceptionalLevel: interParagraphMatches >= 2
+            scoreContribution: c4Score === 0 ? 0 : (hasAuthenticProgression && !hasSyntacticStructureRepetition ? 80 : 50),
+            positiveEvidenceFound: hasAuthenticProgression && !hasSyntacticStructureRepetition ? "Progressão fluida entre frases e parágrafos, sem repetição de estruturas explicativas semelhantes." : "Conectivos corretos e relações compreensíveis, porém com previsibilidade ou repetição de estruturas sintáticas.",
+            gapOrPenaltyFound: hasSyntacticStructureRepetition ? "Repetição de estruturas sintáticas/explicativas semelhantes em parágrafos consecutivos." : undefined,
+            isExceptionalLevel: hasAuthenticProgression && !hasSyntacticStructureRepetition
           },
           {
-            pillarName: "Diversidade Intraparágrafos",
+            pillarName: "Adequação & Funcionalidade da Articulação",
             weightPercentage: 35,
-            scoreContribution: uniqueIntraCategories >= 4 ? 70 : 45,
-            positiveEvidenceFound: `${uniqueIntraCategories} tipos de conectores (aditivos, adversativos, conclusivos, causais).`,
-            isExceptionalLevel: uniqueIntraCategories >= 4
+            scoreContribution: c4Score === 0 ? 0 : (hasFunctionalVariety ? 70 : 45),
+            positiveEvidenceFound: `${functionalDimensionsCount} funções coesivas empregadas com pertinência lógica (conectivos comuns corretos não são penalizados nem se exige variedade vocabular artificial).`,
+            isExceptionalLevel: hasFunctionalVariety
           },
           {
-            pillarName: "Ausência de Repetições e Inadequações",
+            pillarName: "Retomada de Referentes & Ausência de Artificialidade",
             weightPercentage: 25,
-            scoreContribution: !hasAnaphoricMesmo ? 50 : 30,
-            positiveEvidenceFound: "Boa fluidez na transição oracional.",
+            scoreContribution: c4Score === 0 ? 0 : (!hasAnaphoricMesmo && referentResumptionMatches >= 2 ? 50 : 30),
+            positiveEvidenceFound: referentResumptionMatches >= 2 ? "Boa retomada de referentes nominais e pronominais." : "Retomada referencial básica.",
             gapOrPenaltyFound: hasAnaphoricMesmo ? "Presença de 'o mesmo' anafórico." : undefined,
-            isExceptionalLevel: !hasAnaphoricMesmo
+            isExceptionalLevel: !hasAnaphoricMesmo && referentResumptionMatches >= 2
           }
         ],
         problemsIdentified: [
+          ...(hasSyntacticStructureRepetition ? ["Variar a construção sintática e explicativa entre parágrafos consecutivos para superar a previsibilidade sem perder naturalidade."] : []),
+          ...(!hasAuthenticProgression ? ["Garantir progressão coesiva efetiva entre as frases internas dos parágrafos, evitando o uso apenas mecânico de conectivos no início dos blocos."] : []),
           ...(hasAnaphoricMesmo ? ["O termo 'o mesmo' não pode ser usado para retomar pessoas ou termos anteriores. Substitua por pronomes pessoais ('eles', 'deles') ou sinônimos."] : [])
         ],
-        howToImprove: "Para 200 na C4: garanta conectivo interparágrafo no início do D1, D2 e Conclusão, e pelo menos 2 conectivos internos em CADA parágrafo. Nunca use 'o mesmo' como pronome anafórico.",
-        diagnostic: c4Score === 200 ? "Excelente diversidade e precisão dos recursos coesivos inter e intraparágrafos." : "A nota 200 foi impedida pela presença de inadequações como 'o mesmo' anafórico ou conectivos repetitivos."
+        howToImprove: "Para 200 na C4: demonstre excelência efetiva na articulação textual com progressão fluida e sem repetir estruturas sintáticas/explicativas semelhantes em parágrafos consecutivos (sem precisar de conectivos raros).",
+        diagnostic: c4Score === 200 ? "Coesão excelente, fluida e funcionalmente precisa." : "Limitações concretas na fluidez da progressão, previsibilidade/repetição de estruturas sintáticas ou retomada de referentes impediram a nota máxima em C4."
       },
       c5: {
         score: c5Score,
-        level: c5Score / 40,
-        levelTitle: c5Score === 200 ? "Proposta de intervenção completa com os 5 elementos oficiais" : c5Score === 160 ? "Proposta de intervenção com 4 elementos válidos" : "Proposta incompleta ou condicional",
-        evaluation: `A avaliação da C5 auditou a proposta segundo a Matriz Oficial do INEP: Agente (${hasAgent ? '✓' : '✗'}), Ação (${hasAction ? '✓' : '✗'}), Modo/Meio (${hasMode ? '✓' : '✗'}), Finalidade (${hasEffect ? '✓' : '✗'}) e Detalhamento (${hasDetailing ? '✓' : '✗'}). Total de elementos válidos: ${validElementsCount}/5. Respeito aos Direitos Humanos: ${!humanRightsViolation ? 'Integralmente Respeitado' : 'Violação Detectada'}.`,
-        evidenceSnippets: lastParagraph ? [lastParagraph] : [],
-        positiveEvidence: [
-          hasAgent ? `Agente válido identificado: "${agentText}".` : "Agente ausente.",
-          hasAction ? `Ação propositiva válida identificada: "${actionText}".` : "Ação ausente.",
-          hasMode ? `Modo/Meio válido identificado: "${modeText}".` : "Modo/Meio ausente.",
-          hasEffect ? `Finalidade válida identificada: "${effectText}".` : "Finalidade ausente.",
-          hasDetailing ? `Detalhamento substantivo comprovado: "${detailingText}".` : "Detalhamento não evidenciado."
-        ],
-        penaltiesOrGaps: !hasDetailing ? ["Ausência de detalhamento explícito de um dos elementos (ex: especificação adicional do agente, ação, meio ou finalidade)."] : [],
+        level: Math.round(c5Score / 40),
+        levelTitle: humanRightsViolation
+          ? "Nota Zero na Competência V por Desrespeito aos Direitos Humanos (Demais Competências Preservadas)"
+          : isTangenciamento
+            ? "Proposta de intervenção limitada por tangenciamento temático (Nível 1 INEP)"
+            : c5Score === 200
+              ? "Proposta de intervenção completa com os 5 elementos oficiais"
+              : c5Score >= 160
+                ? "Proposta de intervenção com 4 elementos válidos"
+                : "Proposta incompleta ou condicional",
+        evaluation: humanRightsViolation
+          ? `${calibrationAudit.humanRightsAudit.violationReason}`
+          : isTangenciamento
+            ? `REPERCUSSÃO OFICIAL DE TANGENCIAMENTO NA COMPETÊNCIA V: Como a discussão tangenciou o recorte específico do tema ("${theme}"), a proposta de intervenção não enfrenta o problema central solicitado na proposta, ficando limitada ao teto de 40 pontos na Matriz Oficial do INEP.`
+            : `A avaliação da C5 auditou a proposta segundo a Matriz Oficial do INEP: Agente (${hasAgent ? '✓' : '✗'}), Ação (${hasAction ? '✓' : '✗'}), Modo/Meio (${hasMode ? '✓' : '✗'}), Finalidade (${hasEffect ? '✓' : '✗'}) e Detalhamento (${hasDetailing ? '✓' : '✗'}). Total de elementos válidos: ${validElementsCount}/5. Respeito aos Direitos Humanos: Integralmente Respeitado${calibrationAudit.humanRightsAudit.isLawfulAdministrativeMeasureOnly ? ' (medidas legais/administrativas previstas em lei avaliadas como proporcionais e compatíveis com os Direitos Humanos)' : ''}.`,
+        evidenceSnippets: humanRightsViolation
+          ? [calibrationAudit.humanRightsAudit.violationSnippet]
+          : lastParagraph ? [lastParagraph] : [],
+        positiveEvidence: humanRightsViolation
+          ? ["Importante (Regra Oficial INEP): A anulação por Direitos Humanos restringe-se à Competência V (0 pts), mantendo intactas as notas das Competências I, II, III e IV."]
+          : [
+              hasAgent ? `Agente válido identificado: "${agentText}".` : "Agente ausente.",
+              hasAction ? `Ação propositiva válida identificada: "${actionText}".` : "Ação ausente.",
+              hasMode ? `Modo/Meio válido identificado: "${modeText}".` : "Modo/Meio ausente.",
+              hasEffect ? `Finalidade válida identificada: "${effectText}".` : "Finalidade ausente.",
+              hasDetailing ? `Detalhamento substantivo comprovado: "${detailingText}".` : "Detalhamento não evidenciado."
+            ],
+        penaltiesOrGaps: humanRightsViolation
+          ? [calibrationAudit.humanRightsAudit.violationReason]
+          : isTangenciamento
+            ? ["Proposta de intervenção voltada apenas ao assunto geral, sem solucionar o recorte específico do tema (teto oficial de 40 pts na C5)."]
+            : !hasDetailing
+              ? ["Ausência de detalhamento explícito de um dos elementos (ex: especificação adicional do agente, ação, meio ou finalidade)."]
+              : [],
         exceptionalPerformanceDemonstrated: c5Score === 200,
         evidenceWeightPillars: [
           {
             pillarName: "Presença dos 4 Elementos Principais (40pts cada)",
             weightPercentage: 50,
-            scoreContribution: (hasAgent ? 40 : 0) + (hasAction ? 40 : 0) + (hasMode ? 40 : 0) + (hasEffect ? 40 : 0) > 160 ? 160 : (hasAgent ? 40 : 0) + (hasAction ? 40 : 0) + (hasMode ? 40 : 0) + (hasEffect ? 40 : 0),
+            scoreContribution: humanRightsViolation || c5Score === 0 ? 0 : isTangenciamento ? 20 : Math.min(160, (hasAgent ? 40 : 0) + (hasAction ? 40 : 0) + (hasMode ? 40 : 0) + (hasEffect ? 40 : 0)),
             positiveEvidenceFound: `${[hasAgent, hasAction, hasMode, hasEffect].filter(Boolean).length}/4 elementos principais identificados (Agente, Ação, Meio/Modo, Finalidade).`,
-            isExceptionalLevel: hasAgent && hasAction && hasMode && hasEffect
+            isExceptionalLevel: hasAgent && hasAction && hasMode && hasEffect && !humanRightsViolation && !isTangenciamento
           },
           {
             pillarName: "Detalhamento Substantivo (5º Elemento - 40pts)",
             weightPercentage: 30,
-            scoreContribution: hasDetailing ? 40 : 0,
+            scoreContribution: humanRightsViolation || c5Score === 0 || isTangenciamento ? 0 : (hasDetailing ? 40 : 0),
             positiveEvidenceFound: hasDetailing ? "Detalhamento explícito com desdobramento prático." : "Detalhamento ausente (proposta pontua no máximo 160).",
-            isExceptionalLevel: hasDetailing
+            isExceptionalLevel: hasDetailing && !humanRightsViolation && !isTangenciamento
           },
           {
             pillarName: "Respeito Irrestrito aos Direitos Humanos",
             weightPercentage: 20,
-            scoreContribution: !humanRightsViolation ? 40 : 0,
-            positiveEvidenceFound: "Nenhuma violação aos Direitos Humanos identificada.",
+            scoreContribution: !humanRightsViolation && c5Score > 0 ? 40 : 0,
+            positiveEvidenceFound: !humanRightsViolation ? "Nenhuma violação aos Direitos Humanos identificada." : calibrationAudit.humanRightsAudit.violationReason,
+            gapOrPenaltyFound: humanRightsViolation ? calibrationAudit.humanRightsAudit.violationReason : undefined,
             isExceptionalLevel: !humanRightsViolation
           }
         ],
-        problemsIdentified: [
-          !hasAgent ? "Falta identificar claramente QUEM executará a intervenção." : "",
-          !hasAction ? "Falta especificar O QUE será feito na prática." : "",
-          !hasMode ? "Falta apontar COMO/POR MEIO DE QUÊ a ação ocorrerá." : "",
-          !hasEffect ? "Falta explicitar PARA QUÊ/QUAL O EFEITO pretendido." : "",
-          !hasDetailing ? "Falta detalhar um dos elementos com exemplos ou especificações práticas (ex: 'órgão responsável por...', 'a exemplo de...')." : ""
-        ].filter(p => p.length > 0),
-        howToImprove: "A fórmula infalível para 200 na C5: [AGENTE: Ministério da Educação], [DETALHE AGENTE: órgão responsável pelas diretrizes pedagógicas nacionais], deve [AÇÃO: implementar oficinas formativas], por meio de [MEIO: investimentos orçamentários], a fim de [EFEITO: mitigar as desigualdades apontadas].",
-        diagnostic: c5Score === 200 ? "Proposta de intervenção completa com os 5 elementos canônicos e respeito aos Direitos Humanos." : `Sua proposta obteve ${validElementsCount * 40}/200 pontos com base nos ${validElementsCount} elementos identificados. Para 200, acrescente o detalhamento explícito.`
+        problemsIdentified: humanRightsViolation
+          ? [calibrationAudit.humanRightsAudit.violationReason]
+          : [
+              ...(isTangenciamento ? [`Repercussão de tangenciamento na C5 (máx. 40 pts): direcione a proposta de intervenção especificamente ao recorte "${theme}".`] : []),
+              !hasAgent ? "Falta identificar claramente QUEM executará a intervenção." : "",
+              !hasAction ? "Falta especificar O QUE será feito na prática." : "",
+              !hasMode ? "Falta apontar COMO/POR MEIO DE QUÊ a ação ocorrerá." : "",
+              !hasEffect ? "Falta explicitar PARA QUÊ/QUAL O EFEITO pretendido." : "",
+              !hasDetailing ? "Falta detalhar um dos elementos com exemplos ou especificações práticas (ex: 'órgão responsável por...', 'a exemplo de...')." : ""
+            ].filter(p => p.length > 0),
+        howToImprove: "Garanta propostas compatíveis com a dignidade humana e os Direitos Humanos, articulando os 5 elementos canônicos: [AGENTE] + [DETALHAMENTO] + [AÇÃO] + [MEIO/MODO: por meio de...] + [EFEITO: a fim de...].",
+        diagnostic: humanRightsViolation
+          ? calibrationAudit.humanRightsAudit.violationReason
+          : isTangenciamento
+            ? "Proposta penalizada pela repercussão oficial de tangenciamento temático (40 pts)."
+            : c5Score === 200
+              ? "Proposta de intervenção completa com os 5 elementos canônicos e respeito aos Direitos Humanos."
+              : `Sua proposta obteve ${c5Score}/200 pontos com base nos ${validElementsCount} elementos identificados. Para 200, acrescente o detalhamento explícito.`
       }
     },
     auditLog: {
       auditTimestamp: new Date().toISOString(),
-      modelEngine: "Motor Heurístico de Auditoria de Evidências INEP v3",
+      modelEngine: "Motor Heurístico de Auditoria de Evidências INEP v4 (Calibração Oficial de Tangenciamento, Nota Zero e Direitos Humanos)",
       roundingBiasRemoved: true,
       auditorProtocol: "Matriz Oficial de Correção do INEP - Auditoria Estrita de Evidências Textuais",
-      generalObservations: `Auditoria algorítmica realizada sem viés de arredondamento. Cada competência foi avaliada por métricas textuais estritas. Nota total: ${totalScore}/1000.`,
+      generalObservations: calibrationAudit.zeroScoreCondition.isZeroScore
+        ? `${calibrationAudit.zeroScoreCondition.analyticalJustification} Nota total: 0/1000.`
+        : humanRightsViolation
+          ? `${calibrationAudit.humanRightsAudit.violationReason} Nota final calculada pela soma das cinco competências: ${totalScore}/1000.`
+          : isTangenciamento
+            ? `${calibrationAudit.thematicJustification} Nota final calculada: ${totalScore}/1000.`
+            : `Auditoria algorítmica realizada sem viés de arredondamento. Cada competência foi avaliada por métricas textuais estritas. Nota total: ${totalScore}/1000.`,
       competencyLogs: [
         {
           competencyNum: 1,
@@ -1049,50 +2573,54 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
           competencyName: "C2 - Tema & Repertório Sociocultural Produtivo",
           assignedScore: c2Score,
           isMaxScore200: c2Score === 200,
-          scoreJustification: c2Score === 200
-            ? "Nota 200 comprovada por repertório legitimado com vínculo produtivo explícito e cobertura integral do tema."
-            : `Nota ${c2Score} atribuída. Ausência de repertório 100% produtivo ou cobertura temática incompleta. Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "Repertório legitimado pelas áreas do saber e com produtividade argumentativa comprovada.",
-          evidenceQuoteFromStudent: foundRepertoires[0]?.name || "Repertório identificado no texto",
-          reasonNotRoundedTo200: c2Score < 200 ? "O repertório citado não possui legitimidade irrefutável ou não estabeleceu articulação produtiva direta com a tese." : undefined,
+          scoreJustification: isTangenciamento
+            ? calibrationAudit.thematicJustification
+            : c2Score === 200
+              ? "Nota 200 comprovada por repertório legitimado com vínculo produtivo explícito e cobertura integral do tema."
+              : `Nota ${c2Score} atribuída (${calibrationAudit.thematicClassification}).`,
+          requiredTextualEvidence: "Abordagem completa do recorte temático específico e repertório legitimado com produtividade argumentativa comprovada.",
+          evidenceQuoteFromStudent: calibrationAudit.thematicEvidenceSnippet || foundRepertoires[0]?.name || "Repertório identificado no texto",
+          reasonNotRoundedTo200: c2Score < 200 ? (isTangenciamento ? calibrationAudit.thematicJustification : "O repertório citado não possui legitimidade irrefutável ou não estabeleceu articulação produtiva direta com a tese.") : undefined,
           qualityPillarsChecked: [
-            { pillar: "Compreensão Integral do Tema", status: fullThemeCoverage ? "atendido" : "parcial", detail: `Palavras-chave abordadas: ${matchedThemeWords.length}` },
-            { pillar: "Repertório Sociocultural Legitimado", status: foundRepertoires.length > 0 ? "atendido" : "ausente", detail: foundRepertoires.map(r => r.name).join(", ") || "Nenhum repertório de peso" },
-            { pillar: "Uso 100% Produtivo Articulado à Tese", status: hasProductiveRepertoire ? "atendido" : "ausente", detail: hasProductiveRepertoire ? "Produtividade comprovada" : "Uso não produtivo" }
+            { pillar: "Compreensão Integral do Tema e Recorte", status: fullThemeCoverage ? "atendido" : isTangenciamento ? "ausente" : "parcial", detail: `Classificação: ${calibrationAudit.thematicClassification}` },
+            { pillar: "Repertório Sociocultural Legitimado", status: foundRepertoires.length > 0 ? "atendido" : "ausente", detail: foundRepertoires.map(r => r.name).join(", ") || "Nenhum repertório externo" },
+            { pillar: "Uso 100% Produtivo Articulado à Tese", status: hasProductiveRepertoire && fullThemeCoverage ? "atendido" : "ausente", detail: hasProductiveRepertoire && fullThemeCoverage ? "Produtividade comprovada" : "Uso não produtivo ou tangente" }
           ]
         },
         {
           competencyNum: 3,
-          competencyName: "C3 - Projeto de Texto, Causalidade & Autoria",
+          competencyName: "C3 - Projeto de Texto Estratégico & Causalidade",
           assignedScore: c3Score,
           isMaxScore200: c3Score === 200,
-          scoreJustification: c3Score === 200
-            ? "Nota 200 comprovada por projeto de texto bipartido na introdução e desenvolvimento aprofundado com autoria crítica."
-            : `Nota ${c3Score} atribuída. Argumentação expositiva ou lacunas no desdobramento de causas e consequências. Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "Tese bipartida explícita, encadeamento lógico de causa/efeito e marcas de autoria crítica.",
-          evidenceQuoteFromStudent: paragraphs[1]?.slice(0, 100) + "..." || "Desenvolvimento argumentativo",
-          reasonNotRoundedTo200: c3Score < 200 ? "Faltou aprofundamento das consequências concretas das causas apontadas ou houve lacuna no encadeamento de ideias." : undefined,
+          scoreJustification: isTangenciamento
+            ? "Nota limitada a 40 pontos devido à repercussão oficial do tangenciamento temático na defesa do ponto de vista."
+            : c3Score === 200
+              ? "Nota 200 comprovada por projeto de texto estratégico (tese + dois argumentos distintos desenvolvidos em D1 e D2) e articulação clara de causa e consequência."
+              : `Nota ${c3Score} atribuída por lacuna pontual no aprofundamento causal ou sobreposição do argumento central entre D1 e D2.`,
+          requiredTextualEvidence: "Tese com dois argumentos distintos anunciados na introdução e desenvolvidos em D1 e D2, com articulação clara de causa e consequência.",
+          evidenceQuoteFromStudent: isTangenciamento ? calibrationAudit.thematicEvidenceSnippet : (paragraphs[1]?.split(/(?<=[.!?])\s+/)[0] || paragraphs[1] || "Desenvolvimento argumentativo"),
+          reasonNotRoundedTo200: c3Score < 200 ? (isTangenciamento ? "Defesa de ponto de vista tangente ao recorte temático específico." : (hasCrossParagraphRepetition ? "D1 e D2 defendem literalmente o mesmo argumento central." : "Lacuna leve no aprofundamento da relação de causa e consequência.")) : undefined,
           qualityPillarsChecked: [
-            { pillar: "Projeto de Texto Estratégico Bipartido", status: has4CanonicalParagraphs && introHasThesisSignals ? "atendido" : "parcial", detail: has4CanonicalParagraphs ? "Divisão canônica em 4 parágrafos" : "Estrutura parcial" },
-            { pillar: "Causalidade Completa (Causa -> Efeito)", status: !hasContradiction && !hasUngroundedClaim ? "atendido" : "parcial", detail: hasContradiction ? "Contradição detectada" : "Encadeamento lógico mantido" },
-            { pillar: "Autoria Crítica & Não-Exposição", status: hasClearAuthorialVoice ? "atendido" : "ausente", detail: `Marcas de autoria: ${authorialJudgments}` }
+            { pillar: "Projeto de Texto (Tese + D1 e D2 Distintos)", status: !hasCrossParagraphRepetition && !isTangenciamento ? "atendido" : "ausente", detail: hasCrossParagraphRepetition ? "Sobreposição central entre D1 e D2" : "Causas/dimensões distintas entre D1 e D2" },
+            { pillar: "Articulação de Causa & Consequência", status: hasCausalDepth && !hasContradiction && !isTangenciamento ? "atendido" : "parcial", detail: isTangenciamento ? "Argumentação tangente ao recorte" : `${causalExplanationMatches} nexos de causa e consequência` },
+            { pillar: "Coerência Global do Projeto", status: hasStrategicProject && !isTangenciamento ? "atendido" : "parcial", detail: hasStrategicProject ? "Tese e desenvolvimentos articulados" : "Projeto em desenvolvimento" }
           ]
         },
         {
           competencyNum: 4,
-          competencyName: "C4 - Coesão Inter e Intraparágrafo",
+          competencyName: "C4 - Coesão Funcional, Progressão & Retomada Referencial",
           assignedScore: c4Score,
           isMaxScore200: c4Score === 200,
           scoreJustification: c4Score === 200
-            ? "Nota 200 comprovada: 2 ou mais operadores interparágrafos autênticos e repertório coesivo diversificado sem repetições."
-            : `Nota ${c4Score} atribuída. Ocorrência de repetições de conectivos ou ausência de operador interparágrafo autêntico. Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "Mínimo 2 operadores interparágrafos expressivos e ampla coesão intraparágrafo sem repetições.",
-          evidenceQuoteFromStudent: paragraphs.map(p => p.split(/[\.\!\?]/)[0]).filter(Boolean).slice(0, 2).join(" | ") || "Operadores interparágrafos",
-          reasonNotRoundedTo200: c4Score < 200 ? `Identificados ${interParagraphMatches} operadores interparágrafos ou uso de expressões coesivas inadequadas como 'o mesmo'.` : undefined,
+            ? "Nota 200 comprovada: adequação e variedade funcional na articulação, progressão contínua entre frases e parágrafos e retomada precisa de referentes."
+            : `Nota ${c4Score} atribuída por limitações na progressão interna entre frases/parágrafos, retomada de referentes ou articulação mecânica.`,
+          requiredTextualEvidence: "Adequação funcional, progressão entre frases/parágrafos e retomada de referentes sem relações artificiais.",
+          evidenceQuoteFromStudent: paragraphs.map(p => p.split(/[\.\!\?]/)[0]).filter(Boolean).slice(0, 2).join(" | ") || "Articulação textual",
+          reasonNotRoundedTo200: c4Score < 200 ? `Progressão interna em ${articulatedParagraphsCount}/${paragraphs.length} parágrafos, ${functionalDimensionsCount} funções lógico-coesivas e ${referentResumptionMatches} retomadas referenciais.` : undefined,
           qualityPillarsChecked: [
-            { pillar: "Operadores Interparágrafos (mín. 2)", status: interParagraphMatches >= 2 ? "atendido" : "ausente", detail: `Conectores interparágrafos encontrados: ${interParagraphMatches}` },
-            { pillar: "Coesão Intraparágrafo Diversificada", status: uniqueIntraCategories >= 3 ? "atendido" : "parcial", detail: `Categorias coesivas: ${uniqueIntraCategories}` },
-            { pillar: "Ausência de Repetições Coesivas Viciosas", status: !hasAnaphoricMesmo ? "atendido" : "ausente", detail: hasAnaphoricMesmo ? "Identificado 'o mesmo' anafórico" : "Livre de anáforas viciosas" }
+            { pillar: "Progressão Entre Frases e Parágrafos", status: hasAuthenticProgression ? "atendido" : "parcial", detail: `${articulatedParagraphsCount}/${paragraphs.length} parágrafos com articulação contínua` },
+            { pillar: "Adequação & Variedade Funcional", status: hasFunctionalVariety ? "atendido" : "parcial", detail: `Funções lógico-coesivas identificadas: ${functionalDimensionsCount}/5` },
+            { pillar: "Retomada de Referentes & Precisão", status: !hasAnaphoricMesmo && referentResumptionMatches >= 2 ? "atendido" : "parcial", detail: hasAnaphoricMesmo ? "Uso anafórico inadequado de 'o mesmo'" : `${referentResumptionMatches} marcadores referenciais` }
           ]
         },
         {
@@ -1100,16 +2628,20 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
           competencyName: "C5 - Proposta de Intervenção & 5 Elementos",
           assignedScore: c5Score,
           isMaxScore200: c5Score === 200,
-          scoreJustification: c5Score === 200
-            ? "Nota 200 comprovada: 5 elementos completos (Agente, Ação, Meio, Efeito e Detalhamento substantivo) e conformidade aos Direitos Humanos."
-            : `Nota ${c5Score} atribuída com base nos ${validElementsCount} elementos válidos (40 pontos cada). Arredondamento para 200 bloqueado.`,
+          scoreJustification: humanRightsViolation
+            ? calibrationAudit.humanRightsAudit.violationReason
+            : isTangenciamento
+              ? "Nota limitada a 40 pontos por repercussão oficial de tangenciamento temático (a proposta não soluciona o recorte específico do tema)."
+              : c5Score === 200
+                ? "Nota 200 comprovada: 5 elementos completos (Agente, Ação, Meio, Efeito e Detalhamento substantivo) e conformidade aos Direitos Humanos."
+                : `Nota ${c5Score} atribuída com base nos ${validElementsCount} elementos válidos (40 pontos cada).`,
           requiredTextualEvidence: "5 elementos completos e detalhados com respeito inegociável aos Direitos Humanos.",
-          evidenceQuoteFromStudent: detailingText || actionText || "Proposta de intervenção",
-          reasonNotRoundedTo200: c5Score < 200 ? `Ausência ou incompletude de ${5 - validElementsCount} elemento(s) obrigatório(s), como o detalhamento substantivo.` : undefined,
+          evidenceQuoteFromStudent: humanRightsViolation ? calibrationAudit.humanRightsAudit.violationSnippet : (detailingText || actionText || "Proposta de intervenção"),
+          reasonNotRoundedTo200: c5Score < 200 ? (humanRightsViolation ? calibrationAudit.humanRightsAudit.violationReason : `Ausência ou incompletude de ${5 - validElementsCount} elemento(s) obrigatório(s), ou limitação temática.`) : undefined,
           qualityPillarsChecked: [
-            { pillar: "Agente, Ação, Meio e Efeito Válidos", status: validElementsCount >= 4 ? "atendido" : "parcial", detail: `Elementos básicos presentes: ${validElementsCount}` },
-            { pillar: "Detalhamento Substantivo Explícito", status: hasDetailing ? "atendido" : "ausente", detail: hasDetailing ? detailingText : "Detalhamento não identificado" },
-            { pillar: "Respeito aos Direitos Humanos", status: !humanRightsViolation ? "atendido" : "ausente", detail: humanRightsViolation ? "Violação identificada" : "Respeito confirmado" }
+            { pillar: "Agente, Ação, Meio e Efeito Válidos", status: validElementsCount >= 4 && !humanRightsViolation ? "atendido" : "parcial", detail: `Elementos básicos presentes: ${validElementsCount}` },
+            { pillar: "Detalhamento Substantivo Explícito", status: hasDetailing && !humanRightsViolation ? "atendido" : "ausente", detail: hasDetailing ? detailingText : "Detalhamento não identificado" },
+            { pillar: "Respeito aos Direitos Humanos", status: !humanRightsViolation ? "atendido" : "ausente", detail: humanRightsViolation ? calibrationAudit.humanRightsAudit.violationReason : "Respeito confirmado" }
           ]
         }
       ]
@@ -1122,8 +2654,8 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
         c4: simEvalA_c4,
         c5: simEvalA_c5,
         total: totalA,
-        evaluatorProfile: "Avaliador 1 (Perfil Normativo e Sintático)",
-        notes: "Foco rigoroso em precisão ortográfica, anacronismos históricos e desvios de 'o mesmo'."
+        evaluatorProfile: "Avaliador 1 (Perfil Normativo, Sintático e Coesivo)",
+        notes: evidenceCalibratedDual.notesA
       },
       evaluatorB: {
         c1: simEvalB_c1,
@@ -1132,8 +2664,8 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
         c4: simEvalB_c4,
         c5: simEvalB_c5,
         total: totalB,
-        evaluatorProfile: "Avaliador 2 (Perfil Estrutural e Temático)",
-        notes: "Foco na aderência ao tema, macroestrutura em 4 parágrafos e operadores interparágrafos."
+        evaluatorProfile: "Avaliador 2 (Perfil Estrutural, Temático e Interventivo)",
+        notes: evidenceCalibratedDual.notesB
       },
       discrepancyC1: discC1,
       discrepancyC2: discC2,
@@ -1141,10 +2673,8 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
       discrepancyC4: discC4,
       discrepancyC5: discC5,
       totalDiscrepancy: totalDisc,
-      status: totalDisc === 0 ? "consenso_direto" : totalDisc <= 80 && Math.max(discC1, discC2, discC3, discC4, discC5) <= 40 ? "divergencia_tolerada" : "terceiro_corretor_desnecessario",
-      explanation: totalDisc === 0
-        ? "Consenso unânime entre os dois corretores oficiais do INEP."
-        : `Divergência tolerada pela Matriz Oficial do ENEM (diferença de ${totalDisc} pontos no total e máxima de ${Math.max(discC1, discC2, discC3, discC4, discC5)} pontos em uma competência). A nota final é a média aritmética calculada.`
+      status: evidenceCalibratedDual.isUnanimousConsensus ? "consenso_direto" : "divergencia_tolerada",
+      explanation: evidenceCalibratedDual.explanation
     },
     cartilhaBenchmark: {
       ...getCartilhaBenchmarkForScore(totalScore, {
@@ -1158,16 +2688,9 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
       closestProfileTitle,
       commonPatternIdentified,
       keyDifferenceTo900Plus,
-      cartilhaReferenceQuote: `Enquadramento homologado com base na ${CARTILHA_METADATA.edition} e no corpus de redações nota 1000 analisadas pelo INEP.`
+      cartilhaReferenceQuote: `Enquadramento homologado com base na ${CARTILHA_METADATA.edition} e nos critérios oficiais de tangenciamento, situações de nota zero e Direitos Humanos do INEP.`
     },
-    c1Deviations: c1DeviationsFound.length > 0 ? c1DeviationsFound : [
-      {
-        snippet: "Ocorrência de orações com pontuação e regência sob observação",
-        problem: "Manter precisão nos conectores de transição",
-        bestForm: "Empregar conectivos formais e pontuação padronizada.",
-        category: "estrutura_sintatica"
-      }
-    ],
+    c1Deviations: c1DeviationsFound,
     c5Structure: {
       agent: { present: hasAgent, text: agentText },
       action: { present: hasAction, text: actionText },
@@ -1175,35 +2698,138 @@ function evaluateEssayByEvidence(essayText: string, theme: string) {
       effect: { present: hasEffect, text: effectText },
       detailing: { present: hasDetailing, text: detailingText, targetElement: "Ação / Meio" },
       respectsHumanRights: !humanRightsViolation,
+      humanRightsObservations: humanRightsViolation
+        ? calibrationAudit.humanRightsAudit.violationReason
+        : "Proposta integralmente compatível com os Direitos Humanos (anulação restrita apenas a violações reais na C5, sem prejudicar as demais competências).",
       validElementsCount
     },
-    generalDiagnostic: `Redação avaliada por auditoria ponderada de evidências e comparativo da Cartilha ENEM. Nota Total: ${totalScore}/1000. O texto apresenta ${paragraphs.length} parágrafos e ${wordCount} palavras. A simulação de dupla correção do INEP confirma a calibração da nota.`,
-    top3Problems: [
-      c1Score < 200 ? "Eliminar desvios ortográficos/concordância e o uso anafórico de 'o mesmo' (C1/C4)." : "Aprimorar o detalhamento da proposta de intervenção (C5).",
-      c2Score < 200 ? "Assegurar que todo repertório sociocultural tenha precisão histórica e vínculo produtivo (C2)." : "Fortalecer a autoria crítica nos desenvolvimentos (C3).",
-      c5Score < 200 ? "Inserir detalhamento explícito (ex: aposto explicativo do órgão ou exemplificação do meio) na C5." : "Reforçar a simetria entre as causas propostas na tese (C3)."
-    ],
+    generalDiagnostic: calibrationAudit.zeroScoreCondition.isZeroScore
+      ? `${calibrationAudit.zeroScoreCondition.analyticalJustification}`
+      : humanRightsViolation
+        ? `${calibrationAudit.humanRightsAudit.violationReason} Nota Final (soma de C1 a C5): ${totalScore}/1000.`
+        : isTangenciamento
+          ? `${calibrationAudit.thematicJustification} Nota Final (soma de C1 a C5): ${totalScore}/1000.`
+          : `Redação avaliada por auditoria ponderada de evidências e comparativo da Cartilha ENEM. Classificação Temática: ${calibrationAudit.thematicClassification.replace('_', ' ').toUpperCase()}. Nota Total: ${totalScore}/1000.`,
+    top3Problems: buildDynamicFeedbackLists({
+      essayText: cleanText,
+      theme,
+      finalTotal: officialTotal,
+      c1s: c1Score,
+      c2s: c2Score,
+      c3s: c3Score,
+      c4s: c4Score,
+      c5s: c5Score,
+      isWholeEssayZero: calibrationAudit.zeroScoreCondition.isZeroScore,
+      zeroReason: calibrationAudit.zeroScoreCondition.analyticalJustification,
+      isTangenciamento,
+      tangenciamentoJustification: calibrationAudit.thematicJustification,
+      isHumanRightsViolationC5: humanRightsViolation,
+      humanRightsSnippet: calibrationAudit.humanRightsAudit.violationSnippet,
+      humanRightsReason: calibrationAudit.humanRightsAudit.violationReason,
+      c1Deviations: c1DeviationsFound,
+      recognizedRepertoires: foundRepertoires,
+      c2Usage: foundRepertoires.length === 0 ? "sem_repertorio_externo" : (hasProductiveRepertoire ? "produtivo_integrado" : "pertinente_pouco_explorado"),
+      c3HasCrossParagraphRepetition: hasCrossParagraphRepetition,
+      c3HasCausalDepth: hasCausalDepth,
+      c3EvidenceQuote: paragraphs[1]?.split(/(?<=[.!?])\s+/)[0] || undefined,
+      c4EvidenceQuote: hasAnaphoricMesmo ? anaphoricMesmoList[0]?.sentence : (paragraphs[1]?.split(/(?<=[.!?])\s+/)[0] || undefined),
+      c5MissingElements: [
+        !hasAgent ? "Agente" : "",
+        !hasAction ? "Ação" : "",
+        !hasMode ? "Meio/Modo" : "",
+        !hasEffect ? "Efeito/Finalidade" : "",
+        !hasDetailing ? "Detalhamento" : ""
+      ].filter(Boolean),
+      c5DetailingText: detailingText
+    }).top3Problems,
     top3Strengths: [
       paragraphs.length >= 4 ? "Organização estrutural em 4 parágrafos canônicos." : "Articulação inicial de ideias dissertativas.",
-      !humanRightsViolation ? "Respeito irrestrito aos Direitos Humanos na intervenção." : "Postura propositiva.",
-      foundRepertoires.length > 0 ? `Uso de referências socioculturais legítimas (${foundRepertoires.map(r => r.name).join(', ')}).` : "Clareza na exposição temática."
+      !humanRightsViolation ? "Projeto conclusivo alinhado à proposta temática." : "Avaliação preservada nas Competências I a IV conforme regra oficial do INEP.",
+      foundRepertoires.length > 0 ? `Uso de referências socioculturais legítimas (${foundRepertoires.map(r => r.name).join(', ')}).` : "Clareza na exposição textual."
     ],
-    actionPlanToImprove: [
-      "1. Substitua todas as ocorrências de 'o mesmo / os mesmos' por pronomes pessoais ('eles', 'desses indivíduos') ou sinônimos.",
-      "2. Verifique datas e personagens históricos (ex: Pedro Álvares Cabral em 1500; Dom Pedro I em 1822).",
-      "3. Inicie o D1 com 'Inicialmente', o D2 com 'Outrossim' ou 'Ademais', e a Conclusão com 'Portanto' ou 'Depreende-se, portanto'.",
-      "4. Aplique a fórmula dos 5 elementos na C5 com detalhamento explícito: [AGENTE] + [DETALHE AGENTE: órgão responsável por...] + [AÇÃO] + [MEIO: por meio de...] + [EFEITO: a fim de...]."
-    ],
-    highPerformanceComparison: totalScore >= 900 ? "Seu texto demonstra alto domínio da matriz oficial do ENEM, apresentando evidências positivas de maturidade sintática e produtividade de repertório." : "Redações nota 900+ da Cartilha destacam-se por não utilizarem 'o mesmo' como pronome, evitarem anacronismos históricos, apresentarem autoria contundente na C3 e proposta de intervenção com detalhamento substantivo na C5.",
-    pedagogicalRewrites: [
-      {
-        original: allSentences.find(s => /os mesmos|o mesmo/i.test(s)) || (allSentences.length > 1 ? allSentences[1] : "O problema acontece porque muitas pessoas não têm acesso à informação."),
-        problem: "Uso do pronome 'o mesmo' com função anafórica e vocabulário com oportunidade de refinamento.",
-        improvedVersion: "Sob esse prisma, constata-se que a inoperância estatal e o preconceito arraigado perpetuam a vulnerabilidade dessas populações, urgindo medidas assertivas em defesa de sua dignidade.",
-        explanation: "Substituição do termo 'os mesmos' por referência nominal adequada e elevação do registro formal dissertativo."
-      }
-    ]
+    actionPlanToImprove: buildDynamicFeedbackLists({
+      essayText: cleanText,
+      theme,
+      finalTotal: officialTotal,
+      c1s: c1Score,
+      c2s: c2Score,
+      c3s: c3Score,
+      c4s: c4Score,
+      c5s: c5Score,
+      isWholeEssayZero: calibrationAudit.zeroScoreCondition.isZeroScore,
+      zeroReason: calibrationAudit.zeroScoreCondition.analyticalJustification,
+      isTangenciamento,
+      tangenciamentoJustification: calibrationAudit.thematicJustification,
+      isHumanRightsViolationC5: humanRightsViolation,
+      humanRightsSnippet: calibrationAudit.humanRightsAudit.violationSnippet,
+      humanRightsReason: calibrationAudit.humanRightsAudit.violationReason,
+      c1Deviations: c1DeviationsFound,
+      recognizedRepertoires: foundRepertoires,
+      c2Usage: foundRepertoires.length === 0 ? "sem_repertorio_externo" : (hasProductiveRepertoire ? "produtivo_integrado" : "pertinente_pouco_explorado"),
+      c3HasCrossParagraphRepetition: hasCrossParagraphRepetition,
+      c3HasCausalDepth: hasCausalDepth,
+      c3EvidenceQuote: paragraphs[1]?.split(/(?<=[.!?])\s+/)[0] || undefined,
+      c4EvidenceQuote: hasAnaphoricMesmo ? anaphoricMesmoList[0]?.sentence : (paragraphs[1]?.split(/(?<=[.!?])\s+/)[0] || undefined),
+      c5MissingElements: [
+        !hasAgent ? "Agente" : "",
+        !hasAction ? "Ação" : "",
+        !hasMode ? "Meio/Modo" : "",
+        !hasEffect ? "Efeito/Finalidade" : "",
+        !hasDetailing ? "Detalhamento" : ""
+      ].filter(Boolean),
+      c5DetailingText: detailingText
+    }).actionPlanToImprove,
+    highPerformanceComparison: totalScore >= 960
+      ? "Seu texto atinge a faixa de excelência do ENEM; mantenha a precisão sintática, a integração do repertório e a articulação clara de causa e consequência."
+      : dynamicGapTags.length > 0
+        ? `Para avançar para a faixa de 960–1000 pontos com base no seu texto atual, priorize: ${dynamicGapTags.join('; ')}.`
+        : "Redações nota 900+ destacam-se pela abordagem direta ao recorte temático, repertório integrado, projeto de texto com causas distintas e proposta completa com os 5 elementos.",
+    pedagogicalRewrites: (() => {
+      const targetDev = c1DeviationsFound[0];
+      const realSent = targetDev?.snippet || (anaphoricMesmoList[0]?.sentence);
+      if (!realSent) return [];
+      const loc = locateSnippetInEssay(realSent, cleanText);
+      const originalVerbatim = loc.found && loc.fullSentenceContext ? loc.fullSentenceContext : realSent;
+      return [
+        {
+          original: originalVerbatim,
+          problem: targetDev?.problem || `[${loc.locationTag || "Texto"}] Oportunidade de ajuste pontual preservando o sentido original.`,
+          improvedVersion: targetDev?.bestForm
+            ? `${originalVerbatim} (Sugestão pontual mantendo o sentido original: ${targetDev.bestForm})`
+            : originalVerbatim,
+          explanation: "Correção pontual fundamentada diretamente no trecho extraído do texto, sem alterar o sentido original nem introduzir construções artificiais."
+        }
+      ];
+    })()
   };
+
+  if (!calibrationAudit.zeroScoreCondition.isZeroScore && !isTangenciamento) {
+    const evGrounding = groundC3AndC5FeedbackInEssayFacts(evidencePayload, cleanText, theme || "");
+    if (evGrounding.c3ReanchoredQuote && evidencePayload.competencies?.c3) {
+      evidencePayload.competencies.c3.primaryEvidenceQuote = evGrounding.c3ReanchoredQuote;
+      evidencePayload.competencies.c3.trecho_evidencia = evGrounding.c3ReanchoredQuote;
+      const prevSnips = Array.isArray(evidencePayload.competencies.c3.evidenceSnippets)
+        ? evidencePayload.competencies.c3.evidenceSnippets.filter((s: string) => s && s !== evGrounding.c3ReanchoredQuote)
+        : [];
+      evidencePayload.competencies.c3.evidenceSnippets = [evGrounding.c3ReanchoredQuote, ...prevSnips].slice(0, 3);
+    }
+    if (c3Score < 200 && evidencePayload.competencies?.c3 && evGrounding.c3GroundedSummary) {
+      evidencePayload.competencies.c3.diagnostic = `${evidencePayload.competencies.c3.diagnostic} (${evGrounding.c3GroundedSummary})`;
+    }
+    if (evGrounding.c5ReanchoredQuote && !humanRightsViolation && evidencePayload.competencies?.c5) {
+      evidencePayload.competencies.c5.primaryEvidenceQuote = evGrounding.c5ReanchoredQuote;
+      evidencePayload.competencies.c5.trecho_evidencia = evGrounding.c5ReanchoredQuote;
+      const prevC5Snips = Array.isArray(evidencePayload.competencies.c5.evidenceSnippets)
+        ? evidencePayload.competencies.c5.evidenceSnippets.filter((s: string) => s && s !== evGrounding.c5ReanchoredQuote)
+        : [];
+      evidencePayload.competencies.c5.evidenceSnippets = [evGrounding.c5ReanchoredQuote, ...prevC5Snips].slice(0, 3);
+    }
+    if (c5Score < 200 && !humanRightsViolation && evidencePayload.competencies?.c5 && evGrounding.c5GroundedSummary) {
+      evidencePayload.competencies.c5.diagnostic = `${evidencePayload.competencies.c5.diagnostic} (${evGrounding.c5GroundedSummary})`;
+    }
+  }
+
+  return evidencePayload;
 }
 
 // -------------------------------------------------------------
@@ -1217,6 +2843,7 @@ app.post("/api/grade-essay", async (req, res) => {
     }
 
     const isOfficialBenchmark = isOfficialNota1000Benchmark(essayText);
+    const calibrationAudit = auditEnemThematicZeroAndHumanRights(essayText, theme, { isSnippet: false });
     const ai = getGeminiClient();
 
     const benchmarkGuidance = isOfficialBenchmark
@@ -1227,40 +2854,161 @@ Reconheça o cumprimento integral dos 5 critérios de Nível 5 (200 pontos em C1
 Esta é uma redação inédita enviada para avaliação. AVALIE COM MÁXIMO RIGOR TÉCNICO E CONSERVADORISMO DA BANCA EXAMINADORA DO ENEM.
 - NÃO dê nota 1000 com facilidade. A nota 1000 é uma excepcionalidade estatística (menos de 0,001% dos candidatos).
 - Para redações muito boas e excelentes de estudantes, a nota deve se situar de forma realista e criteriosa nas faixas de 920, 940, 960 ou 980 pontos.
-- Simule a divergência natural entre os dois avaliadores independentes do INEP: na maioria dos textos de alto nível, um avaliador mais rígido atribui 160 em C1 (devido a escolhas sintáticas ou vocabulário) ou em C3/C4/C5, enquanto o outro atribui 200, gerando as médias oficiais de 180 pontos por competência (ex: 940 = 180 + 200 + 200 + 160 + 200, 960 = 180 + 200 + 200 + 180 + 200, 980 = 180 + 200 + 200 + 200 + 200).
+- PERFIS OBRIGATÓRIOS E DISTINTOS DOS DOIS AVALIADORES (NUNCA DÊ NOTAS IDÊNTICAS NOS DOIS AVALIADORES QUANDO A NOTA FINAL ESTIVER ENTRE 40 E 980):
+  * AVALIADOR 1 ('evaluatorA' — Perfil Normativo, Sintático e Coesivo): é altamente exigente com C1 (precisão vocabular, ausência de oralidade/clichês vagos, pontuação e sintaxe complexa) e C4 (fluidez da progressão, repetição de estruturas sintáticas e retomada de referentes). Em contrapartida, faz uma leitura funcional/mais favorável nos eixos macroestruturais (C2, C3 e C5), respeitando os tetos oficiais do INEP.
+  * AVALIADOR 2 ('evaluatorB' — Perfil Estrutural, Temático e Interventivo): é altamente exigente com C2 (produtividade real do repertório em D1/D2), C3 (profundidade de causa estrutural + consequência crítica em D1 e D2, além de mera exposição) e C5 (autenticidade do detalhamento não repetitivo). Em contrapartida, faz uma leitura funcional/mais tolerante na forma linguística (C1 e C4) quando não há erros graves.
+  * REGRA DE DIVERGÊNCIA NATURAL: Em qualquer redação que não seja Nota Zero global nem Benchmark Oficial Nota 1000, 'evaluatorA' e 'evaluatorB' DEVEM refletir seus perfis distintos (ex.: A < B em C1/C4; B < A em C2/C3/C5), gerando diferença natural de 40 pts nas competências limítrofes (médias 140 ou 180) e totais finais diferentes (discrepância por competência <= 80 e total <= 100), com 'totalScore' e 'competencies.*.score' iguais à média aritmética exata entre A e B.
 - Exija evidência irrefutável para cada 200 pts. Se houver qualquer detalhe passível de aperfeiçoamento, calibre para 160 ou 180.`;
 
     const systemInstruction = `Você é um avaliador e professor oficial sênior da Redação do ENEM (INEP/MEC), extremamente criterioso, técnico e justo.
-Sua correção baseia-se RIGOROSAMENTE na Matriz de Referência Oficial e nas Cartilhas de Avaliadores do INEP (desde 2018 até 2025).
+Sua correção baseia-se RIGOROSAMENTE na Matriz de Referência Oficial e na Cartilha do Participante do ENEM/INEP.
 
 ${benchmarkGuidance}
 
-DIRETRIZES DE AVALIAÇÃO DA MATRIZ DO INEP:
-1. RECONHECIMENTO PRECISO DE NOTA 1000 E NÍVEL 5 (200 PONTOS):
-   Se a redação cumprir plenamente os critérios de Nível 5 estabelecidos pelo INEP, você DEVE atribuir 200 pontos em cada competência aplicável.
-   - C1 (200 pts): Excelente domínio da modalidade escrita formal e da estrutura sintática. Admite-se, excepcionalmente, até 1 ou 2 desvios pontuais leves de convenção da escrita ou gramática, sem reincidência e sem falhas sintáticas recorrentes (regra canônica do INEP). Não penalize simplicidade de estilo.
-   - C2 (200 pts): Abordagem integral do tema, domínio consistente da estrutura dissertativo-argumentativa e repertório sociocultural LEGITIMADO (filosofia, sociologia, literatura, história, leis, estatísticas, artes) com uso PERTINENTE e PRODUTIVO articulado à tese.
-   - C3 (200 pts): Projeto de texto estratégico evidente (introdução, desenvolvimentos e conclusão planejados e articulados), com cadeia causal bem desdobrada e autoria crítica patente (posicionamento claro e consistente).
-   - C4 (200 pts): Presença diversificada e adequada de mecanismos coesivos interparágrafos (em pelo menos 2 transições de parágrafos) e intraparágrafos, com encadeamento lógico e sem repetições viciosas.
-   - C5 (200 pts): Proposta de intervenção completa com os 5 ELEMENTOS canônicos (Agente institucional/social, Ação interventiva, Meio/Modo de execução, Efeito/Finalidade e Detalhamento de um dos elementos), respeitando os Direitos Humanos e articulada à discussão do texto.
+DIRETRIZES DE CALIBRAÇÃO — REGRA PRIORITÁRIA (FUGA TOTAL VS. TANGENCIAMENTO), NOTA ZERO E DIREITOS HUMANOS (INEP):
 
-2. AVALIAÇÃO TÉCNICA E INDEPENDENTE POR COMPETÊNCIA:
-   - Cada competência deve ser julgada separadamente com base estrita em suas próprias evidências textuais.
-   - Não infle notas de redações com falhas nem crie falhas artificiais para rebaixar redações excelentes.
-   - Diferencie com precisão técnica as faixas de desempenho: 720 → 800 → 840 → 880 → 920 → 960 → 980 → 1000.
+0. REGRA PRIORITÁRIA — DIFERENÇA ENTRE TANGENCIAMENTO E FUGA TOTAL (VERIFICAR ANTES DE TUDO):
+   - ANTES de aplicar qualquer penalização por tangenciamento, verifique se o texto apresenta alguma relação temática efetiva com a proposta.
+   - NUNCA classifique como tangenciamento um texto que aborda exclusivamente outro assunto, sem relação temática suficiente com o tema solicitado (mesmo que cite de passagem uma palavra genérica).
+   - Exemplo obrigatório de Fuga Total: Tema "Os desafios para combater a evasão escolar no Brasil" + Texto integralmente dedicado à preservação dos oceanos, poluição marinha e pesca predatória => Classificação obrigatória: FUGA TOTAL AO TEMA => Resultado: NOTA ZERO NA REDAÇÃO INTEIRA (C1=0, C2=0, C3=0, C4=0, C5=0, Total=0).
+   - EXEMPLO OBRIGATÓRIO DE DISTINÇÃO — TANGENCIAMENTO NÃO É FUGA TOTAL:
+     * Tema: "Os desafios para combater a insegurança alimentar no Brasil".
+     * Texto desenvolvido: redação que aborda exclusivamente hábitos alimentares inadequados, consumo de produtos industrializados, obesidade, educação nutricional e alimentação equilibrada, sem discutir fome, pobreza, vulnerabilidade socioeconômica ou dificuldade de acesso aos alimentos.
+     * Classificação correta: TANGENCIAMENTO TEMÁTICO (NÃO FUGA TOTAL).
+     * Justificativa: o texto pertence ao campo semântico e temático da alimentação, mas desloca a discussão para a saúde nutricional, sem desenvolver o problema específico da insegurança alimentar.
+     * NÃO considere que a ausência de discussão sobre um aspecto específico (como a fome) seja suficiente, isoladamente, para caracterizar fuga total. Examine a relação temática global e o campo semântico entre o texto e a proposta.
+     * A fuga total exige que o texto desenvolva assunto efetivamente alheio à proposta, sem relação temática suficiente, direta ou contextual.
+     * Atenção: palavras isoladas em comum não estabelecem relação temática; a classificação deve considerar o sentido global da redação.
+   - A existência de estrutura dissertativo-argumentativa, boa gramática, coesão, repertório ou proposta de intervenção NÃO anula a condição de fuga total.
+   - NÃO atribua pontuações individuais às competências para produzir uma nota final diferente de zero quando estiver configurada uma hipótese oficial de anulação integral.
+   - ANTES DE FINALIZAR A CORREÇÃO, EXECUTE ESTA VERIFICAÇÃO DE CONSISTÊNCIA EM 4 PASSOS (preenchendo o objeto thematicAudit):
+     1. O diagnóstico identifica corretamente o assunto efetivamente desenvolvido? (thematicAudit.developedSubject)
+     2. Existe relação temática real (direta ou dentro do mesmo campo semântico) com a proposta considerando o sentido global? (thematicAudit.hasRealThematicRelation)
+     3. A classificação é fuga_total, tangenciamento, abordagem_parcial ou abordagem_completa? (thematicAudit.classification)
+     4. A nota final respeita as regras oficiais correspondentes (0/1000 para fuga_total; C2=40 e C3/C5<=40 para tangenciamento)? (thematicAudit.consistencyJustification)
 
-3. SIMULAÇÃO REALÍSTICA DE DUPLO AVALIADOR (INEP):
-   - Simule o procedimento oficial de dupla correção independente:
-     * Avaliador 1: Foco em domínio linguístico/normativo (C1, C4) e consistência temática.
-     * Avaliador 2: Foco em projeto de texto, repertório, autoria (C2, C3) e proposta de intervenção (C5).
-   - Cada nota individual atribuída deve ser múltiplo de 40 (0, 40, 80, 120, 160, 200).
-   - A nota oficial da redação é a média aritmética dos dois corretores independentes (permitindo 880, 920, 940, 960, 980 e 1000).
+1. IDENTIFICAÇÃO DO TEMA E RECORTE TEMÁTICO:
+   Antes de atribuir qualquer pontuação, identifique:
+   - O tema central da proposta;
+   - O recorte temático específico ("${calibrationAudit.themeDecomposition.specificCutWords.join(' + ') || theme}");
+   - O problema ou fenômeno que precisa ser discutido;
+   - A relação que os argumentos devem estabelecer com esse recorte.
+   Não considere suficiente a simples presença isolada de palavras soltas; examine sempre o sentido global da redação.
+   Diferencie rigorosamente:
+   A) Abordagem completa: o texto desenvolve o tema e respeita seu recorte específico (120 a 200 pts em C2, conforme o repertório).
+   B) Abordagem parcial: o texto trata do tema, mas desenvolve apenas parte de seus aspectos ou apresenta compreensão limitada.
+   C) Tangenciamento: o texto pertence ao campo semântico/temático amplo da proposta (possui relação temática global real com o assunto), mas desloca o foco para outro problema sem desenvolver efetivamente o recorte solicitado (C2=40, C3<=40, C5<=40; C1 e C4 normais; NÃO é nota zero).
+   D) Fuga total ao tema: o texto desenvolve assunto efetivamente alheio à proposta, sem relação temática suficiente, direta ou contextual (NOTA ZERO INTEGRAL).
+   ATENÇÃO: Não classifique automaticamente como tangenciamento uma redação que utiliza argumentos diferentes dos esperados pelo avaliador. Existem diversas abordagens legítimas para um mesmo tema (Ex.: no tema "Os desafios para combater a evasão escolar no Brasil", discutir vulnerabilidade socioeconômica/falta de acolhimento OU discutir trabalho infantil e gravidez na adolescência como causas da não permanência na escola são AMBAS abordagens completas; já discutir exclusivamente a baixa qualidade do ensino público, falta de bibliotecas, infraestrutura precária e desvalorização dos professores sem relacionar esses problemas à evasão escolar é TANGENCIAMENTO; e escrever sobre preservação dos oceanos/poluição marinha é FUGA TOTAL AO TEMA).
 
-4. VALIDADOR DE EVIDÊNCIAS TEXTUAIS OBRIGATÓRIAS:
-   Para cada uma das 5 competências, cite o trecho textual exato da redação em 'primaryEvidenceQuote' e fundamente sua análise com rigor e clareza pedagógica.`;
+2. TRATAMENTO DO TANGENCIAMENTO NA PONTUAÇÃO:
+   - Quando houver tangenciamento (e houver relação temática real com o assunto geral), aplique a penalização oficial na Competência II (C2 = 40 pontos, Nível 1) e considere as repercussões oficiais do INEP nas Competências III (teto de 40 pontos em C3) e V (teto de 40 pontos em C5).
+   - NÃO atribua automaticamente zero à redação inteira por tangenciamento. Avalie C1 e C4 normalmente conforme seu desempenho.
+   - Não confunda: ausência de repertório sociocultural, argumentação superficial, desenvolvimento insuficiente, tangenciamento e fuga total ao tema. São problemas diferentes com tratamentos diferentes.
+
+3. SITUAÇÕES DE NOTA ZERO NA REDAÇÃO INTEIRA:
+   Verifique expressamente apenas as situações previstas nas regras oficiais do ENEM:
+   - Fuga total ao tema (C1=0, C2=0, C3=0, C4=0, C5=0, Total=0);
+   - Não atendimento ao tipo dissertativo-argumentativo;
+   - Texto com até sete linhas manuscritas (ou equivalente insuficiente);
+   - Folha de redação em branco;
+   - Texto predominantemente desconectado do tema e sem propósito comunicativo;
+   - Identificação indevida do participante;
+   - Outras situações de anulação previstas na cartilha oficial (impropérios, desenhos).
+   Não invente novas hipóteses de nota zero.
+
+4. DESRESPEITO AOS DIREITOS HUMANOS — COMPETÊNCIA V E REGRA DE ISOLAMENTO:
+   - Avalie se a proposta de intervenção defende violência física ou tortura (ex: "Submeter estudantes faltosos a castigos físicos e humilhações públicas"), humilhação/perseguição/exposição degradante, discriminação/exclusão de grupos sociais (ex: "Impedir que crianças de famílias pobres frequentem determinadas escolas"), supressão de direitos fundamentais ou medidas coercitivas incompatíveis com a dignidade humana.
+   - NÃO classifique automaticamente como violação de direitos humanos medidas legais e proporcionais previstas em lei (ex: "Aplicar medidas administrativas e acompanhamento obrigatório aos responsáveis legais que descumprirem deveres previstos em lei" ou programas de acompanhamento psicológico e pedagógico).
+   - REGRA FUNDAMENTAL: NOTA ZERO NA C5 NÃO SIGNIFICA NOTA ZERO NA REDAÇÃO! Quando a proposta de intervenção desrespeitar os direitos humanos, atribua ZERO (0) exclusivamente à Competência V (e respectsHumanRights = false), mas NÃO zere automaticamente as Competências I, II, III e IV. Avalie C1, C2, C3 e C4 normalmente e some as cinco competências (salvo se houver outra condição independente de nota zero, como fuga total ao tema).
+
+5. EXIGÊNCIA DE JUSTIFICATIVA E PRINCÍPIO FINAL:
+   Sempre que identificar tangenciamento, fuga ao tema ou desrespeito aos direitos humanos:
+   1) Identifique e cite o trecho específico do texto que fundamenta a classificação;
+   2) Explique por que ele se enquadra naquela situação;
+   3) Diferencie penalização em competência específica (C2=40 no tangenciamento; C5=0 em Direitos Humanos) de anulação da redação inteira (Nota Zero global por Fuga Total ao Tema);
+   4) Aplique a pontuação correspondente sem inventar justificativas para sustentar uma nota previamente escolhida.
+
+DIRETRIZES POR COMPETÊNCIA DA MATRIZ DO INEP (DISTINÇÃO RIGOROSA ENTRE ADEQUAÇÃO E EXCELÊNCIA):
+- C1 (0 a 200 pts) — MODALIDADE ESCRITA FORMAL E PRECISÃO VOCABULAR:
+  * NÃO atribua 200 pontos apenas pela ausência de erros ortográficos.
+  * Se o texto apresentar marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas", "hoje em dia", "nos dias de hoje", "a gente"), limite a nota da C1 a no máximo 160 pontos.
+  * Reserve 200 pontos EXCLUSIVAMENTE para textos com períodos complexos bem articulados (orações subordinadas/coordenadas bem encadeadas e pontuação precisa), vocabulário formal preciso e no máximo 1–2 microdesvios pontuais leves e não reincidentes.
+  * Textos corretos ortograficamente, porém com períodos simples/pouco articulados ou vocabulário cotidiano/impreciso, devem ficar em no máximo 160 pontos. Continue não classificando períodos longos bem pontuados como erro apenas por sua extensão. Em caso de Fuga Total ou Nota Zero global, C1 = 0.
+- C2 (0 a 200 pts) — TEMA E REPERTÓRIO PRODUTIVO NOS DESENVOLVIMENTOS:
+  * Diferencie rigorosamente a simples menção de uma referência sociocultural de seu efetivo aproveitamento produtivo na argumentação.
+  * REGRA CRÍTICA DE EXCLUSÃO: Nomes de ministérios, leis ou órgãos citados apenas como agentes da Proposta de Intervenção (Conclusão) NÃO contam como repertório sociocultural.
+  * REGRA CRÍTICA DE DISTRIBUIÇÃO (INTRODUÇÃO VS. DESENVOLVIMENTOS): Se o aluno trouxer repertório sociocultural legitimado APENAS na introdução (ex.: citar a Constituição Federal na introdução e não usar nenhum repertório externo no D1 nem no D2), limite a nota da C2 a no máximo 160 pontos.
+  * Para atingir 200 pontos (ou 180–200) na C2, é OBRIGATÓRIO haver repertório sociocultural legítimo, pertinente e produtivo também na argumentação (D1 e/ou D2), devidamente contextualizado, explicado e integrado ao raciocínio defendido.
+  * Domínio consistente do tema sem repertório externo (ou com repertório restrito à introdução, ou citações apenas como agentes na conclusão): teto máximo de 160 pts. Se houver tangenciamento ao tema, C2 = 40 pts. Se houver Fuga Total, C2 = 0 pts (e todas as demais = 0).
+- C3 (0 a 200 pts) — DIFERENÇA ENTRE EXPOSIÇÃO E ARGUMENTAÇÃO APROFUNDADA:
+  * Manter a estrutura de 4 parágrafos com dois argumentos distintos garante NO MÁXIMO 160 pontos se os parágrafos de desenvolvimento forem apenas expositivos/superficiais (constatam o problema e suas consequências óbvias sem analisar as causas estruturais ou mecanismos sociais).
+  * Reserve 200 pontos na C3 EXCLUSIVAMENTE para textos que articulam repertório, causa estrutural profunda e consequência crítica nos DOIS parágrafos de desenvolvimento (D1 e D2), com progressão consistente das ideias.
+  * Argumentos corretos, mas predominantemente expositivos/superficiais em D1 ou D2 (ou sem articulação de repertório + causa estrutural profunda + consequência crítica em ambos os desenvolvimentos), NÃO podem receber 200 pontos (teto máximo de 160 pts; ou 120 pts se houver repetição literal de ideias entre parágrafos ou lacuna grave).
+  * Avalie a capacidade de selecionar, relacionar, organizar e interpretar informações e argumentos, explicando mecanismos sociais, causas estruturais e consequências críticas. NÃO exija argumentos predeterminados ou fórmulas fixas.
+  * Se houver tangenciamento temático, teto máximo de 40 pts. Se houver Fuga Total, C3 = 0.
+- C4 (0 a 200 pts) — COESÃO TEXTUAL:
+  * Diferencie coesão adequada de coesão excelente. Uma redação pode apresentar conectivos corretos e relações compreensíveis, mas utilizar mecanismos previsíveis e estruturas repetitivas (nesse caso, considere 160–180 pts em vez de 200 automático).
+  * Considere a qualidade e a funcionalidade da articulação textual, sem exigir conectivos raros ou variedade artificial; NÃO avalie pela quantidade de conectivos utilizados.
+  * Observe a adequação, a variedade funcional, a precisão dos mecanismos linguísticos, a retomada de referentes e a progressão entre frases e parágrafos.
+  * Identifique repetições excessivas de estruturas, relações lógicas previsíveis ou artificiais, articulação mecânica e falhas na retomada de referentes.
+  * NÃO penalize automaticamente expressões frequentes como "Além disso", "Portanto", "Dessa forma" ou "Nesse sentido" quando empregadas adequadamente.
+  * NÃO atribua 200 pontos automaticamente porque todos os parágrafos apresentam conectivos.
+  * Quando houver limitações perceptíveis na articulação textual, considere a faixa de 120 a 160 pontos como referência, ajustando à gravidade real.
+  * Se houver Fuga Total, C4 = 0.
+- C5 (0 a 200 pts) — PROPOSTA DE INTERVENÇÃO E DIREITOS HUMANOS:
+  * Audite os 5 elementos canônicos (Agente, Ação, Meio/Modo, Finalidade/Efeito e Detalhamento), atribuindo 40 pts por elemento válido efetivamente comprovado.
+  * Diferencie rigorosamente DETALHAMENTO de MEIO/MODO e FINALIDADE: o detalhamento deve acrescentar uma informação específica que caracterize ou explique melhor um elemento da proposta (ex.: especificação do agente, explicação de como o meio se concretiza com exemplos/etapas concretas ou desdobramento específico do efeito).
+  * NÃO marque automaticamente como detalhamento um trecho que apenas repete a ação, descreve seu meio de execução ou reformula sua finalidade (preencha c5DetailingIsDistinctAndSpecific = false nesses casos e não atribua 200 pts por mero cumprimento estrutural aparente).
+  * Respeito aos Direitos Humanos obrigatório (0 pts em C5 se violar Direitos Humanos, mantendo C1–C4 normais; teto de 40 pts se houver tangenciamento temático; 0 se houver Fuga Total).
+
+DIRETRIZES GERAIS DE CALIBRAÇÃO INTEGRADA E VALIDAÇÃO ESTRUTURAL (OBRIGATÓRIO):
+1. A pontuação máxima (200 pts) deve ser sustentada por evidências de excelência na competência avaliada, não apenas pela ausência de erros graves ou pelo cumprimento dos elementos estruturais.
+2. Avalie cada competência de maneira independente, sem permitir que uma qualidade ou deficiência determine automaticamente a pontuação das demais.
+3. Preserve o equilíbrio da correção: não invente limitações ou falhas artificiais para reduzir notas nem invente qualidades inexistentes para sustentar 200 pontos.
+4. Utilize as faixas sugeridas (120–160, 160–180) como referências de calibração, respeitando rigorosamente os tetos de 160 pts em C1, C2 e C3 quando os critérios de excelência acima não forem atendidos.
+5. VALIDAÇÃO RIGOROSA DE EVIDÊNCIAS:
+   - Toda falha identificada deve corresponder a um trecho efetivamente presente (literal) na redação, preservando sua localização exata (parágrafo, frase e contexto).
+   - NUNCA associe um erro a um trecho diferente daquele em que ocorreu; NUNCA contabilize o mesmo problema várias vezes como desvios independentes; NUNCA utilize evidências incompletas, truncadas com reticências ("...") ou reconstruídas como fundamento de descontos.
+   - Se não conseguir identificar concretamente o problema no texto do aluno, NÃO o apresente como erro confirmado.
+6. C1 — PRECISÃO VOCABULAR, SINTAXE COMPLEXA E ERROS GRAMATICAIS REAIS:
+   - NUNCA classifique períodos longos bem pontuados como erros apenas por sua extensão; diferencie complexidade sintática e efetivo problema de construção sintática.
+   - Exija identificação precisa do problema gramatical, vocabular ou de oralidade (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas"), sua localização exata no parágrafo/frase e explicação objetiva.
+   - NÃO atribua 200 pts apenas por ausência de erros ortográficos: reserve 200 pts exclusivamente a textos com períodos complexos bem articulados e vocabulário formal preciso.
+7. C2 — RECONHECIMENTO CONSISTENTE DO REPERTÓRIO NOS DESENVOLVIMENTOS:
+   - Verifique novamente TODAS as referências socioculturais identificadas na redação antes de declarar ausência de repertório, lembrando que nomes de ministérios, leis ou órgãos citados apenas como agentes da Proposta de Intervenção (Conclusão) NÃO contam como repertório.
+   - Se houver repertório legitimado APENAS na introdução (D1 e D2 sem repertório externo), limite C2 a 160 pts; para 200 pts, é obrigatório repertório pertinente e produtivo também em D1 e/ou D2.
+   - Diferencie repertório produtivo nos desenvolvimentos de repertório restrito à introdução ou pouco explorado, mantendo coerência estrita entre localização/produtividade e a nota.
+8. C3 — DIFERENÇA ENTRE EXPOSIÇÃO E ARGUMENTAÇÃO APROFUNDADA:
+   - NÃO atribua 200 pts apenas por 4 parágrafos com dois argumentos distintos quando D1 e/ou D2 forem apenas expositivos/superficiais (constatam problema e consequências óbvias sem analisar causas estruturais ou mecanismos sociais).
+   - Reserve 200 pts em C3 apenas para textos que articulam repertório, causa estrutural profunda e consequência crítica nos dois parágrafos de desenvolvimento (D1 e D2).
+9. C5 — ANÁLISE COMPLETA E DETALHAMENTO CONCRETO DAS INTERVENÇÕES:
+   - Analise separadamente TODAS as propostas presentes na conclusão (Agente, Ação, Meio/Modo, Finalidade e Detalhamento).
+   - Reconheça como DETALHAMENTO especificações concretas sobre público atendido, localização, critérios de prioridade, condições de execução ou outros aspectos específicos, SEM exigir expressões fixas ou fórmulas prontas (não confundindo detalhamento com mera repetição da ação, do meio/modo ou da finalidade).
+   - Considere o conjunto das propostas e a articulação entre seus elementos.
+10. VERIFICAÇÃO FINAL DE CONSISTÊNCIA ANTES DE CONCLUIR (PREENCHER NO 'argumentativeAndCohesionAudit'):
+   Antes de encerrar a correção, confirme internamente todos os 6 pontos (revisando a análise se houver qualquer contradição):
+   (1) Toda falha mencionada possui evidência textual correspondente literal?
+   (2) A evidência realmente demonstra o problema descrito?
+   (3) A mesma falha foi contabilizada indevidamente mais de uma vez?
+   (4) A justificativa da pontuação corresponde aos critérios da competência?
+   (5) Existe alguma contradição entre o diagnóstico e as evidências?
+   (6) Todas as referências e propostas presentes no texto foram efetivamente consideradas?
+11. REGRAS CRÍTICAS ANTI-CLICHÊ, C3/C5 E PLANO DE AÇÃO DINÂMICO:
+   - C3 (Projeto de Texto): NÃO busque palavras-chave artificiais de "marcas de autoria". Só aponte "Repetição de Ideias Entre Parágrafos" se D1 e D2 defenderem literalmente o mesmo argumento central; se abordarem causas ou dimensões diferentes, não aponte repetição. Se C3 = 200, NÃO gere erros nem reescritas ("Antes → Depois") para C3. Em eventuais reescritas da C3, é PROIBIDO usar clichês genéricos como "omissão institucional", "naturalização social", "na contemporaneidade" ou "essa problemática na contemporaneidade" — mantenha o tema específico e o repertório do aluno, apenas aprofundando causa e consequência.
+   - C5 (Agente Único e Detalhamento): Em 'c5Structure.agent.text', extraia APENAS UM agente institucional limpo e específico (nunca concatene com "/" como "Governo Federal / Ministério"). Extraia o Detalhamento mesmo quando estiver embutido dentro da ação, meio ou efeito (entre travessões "— ... —", parênteses, aposto explicativo, exemplificação ou efeito do efeito). Se C5 = 200, NÃO gere erros nem reescritas para C5.
+   - Feedback Dinâmico ('top3Problems', 'actionPlanToImprove', 'highPerformanceComparison'): NUNCA invente problemas ausentes no texto (não cite "'o mesmo'" se não houver uso anafórico real no texto; não sugira conectivos de abertura se D1, D2 e Conclusão já tiverem operadores; não mencione Direitos Humanos se não houver violação). Em redações de 960 a 1000 pontos, apresente exclusivamente "Ajustes Finos de Excelência" fundamentados em trechos reais do texto.
+12. Preencha o objeto 'argumentativeAndCohesionAudit' com total fidelidade textual, citando trechos literais completos e localizados para C2, C3, C4 e C5.`;
 
 
-    const prompt = `Analise detalhadamente e atribua notas baseadas estritamente na soma ponderada de evidências para a seguinte redação do ENEM sobre o tema: "${theme}".
+    const prompt = `Analise detalhadamente e atribua notas baseadas estritamente na evidência textual para a seguinte redação do ENEM sobre o tema: "${theme}".
+
+DIAGNÓSTICO PRÉVIO DE CALIBRAÇÃO OFICIAL DO TEMA:
+- Tema completo: "${theme}"
+- Recorte temático específico exigido: "${calibrationAudit.themeDecomposition.specificCutWords.join(', ') || theme}"
+- Pré-auditoria temática: ${calibrationAudit.thematicClassification.toUpperCase()} (${calibrationAudit.thematicJustification})
+- Pré-auditoria de Nota Zero: ${calibrationAudit.zeroScoreCondition.isZeroScore ? `ALERTA DE NOTA ZERO (${calibrationAudit.zeroScoreCondition.officialReasonTitle})` : 'Nenhuma situação formal de anulação global pré-detectada (ainda assim, verifique obrigatoriamente pela leitura semântica se o texto trata de assunto alheio — FUGA TOTAL AO TEMA)'}
+- Pré-auditoria Direitos Humanos (C5): ${!calibrationAudit.humanRightsAudit.respectsHumanRights ? `VIOLAÇÃO DETECTADA NO TRECHO "${calibrationAudit.humanRightsAudit.violationSnippet}" (${calibrationAudit.humanRightsAudit.violationReason}) -> Atribuir 0 apenas na C5, avaliando C1-C4 normalmente` : calibrationAudit.humanRightsAudit.isLawfulAdministrativeMeasureOnly ? 'Medida legal/administrativa proporcional detectada (NÃO caracteriza violação de Direitos Humanos)' : 'Sem violação explícita pré-detectada'}
 
 TEXTO DA REDAÇÃO:
 """
@@ -1578,6 +3326,64 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
                 explanation: { type: Type.STRING }
               },
               required: ["evaluatorA", "evaluatorB", "discrepancyC1", "discrepancyC2", "discrepancyC3", "discrepancyC4", "discrepancyC5", "totalDiscrepancy", "status", "explanation"]
+            },
+            thematicAudit: {
+              type: Type.OBJECT,
+              properties: {
+                developedSubject: { type: Type.STRING },
+                hasRealThematicRelation: { type: Type.BOOLEAN },
+                classification: { type: Type.STRING },
+                consistencyJustification: { type: Type.STRING }
+              },
+              required: ["developedSubject", "hasRealThematicRelation", "classification", "consistencyJustification"]
+            },
+            argumentativeAndCohesionAudit: {
+              type: Type.OBJECT,
+              properties: {
+                c1HasComplexSyntaxAndFormalPrecision: { type: Type.BOOLEAN },
+                c2RepertoireUsage: { type: Type.STRING },
+                c2RepertoireEvidence: { type: Type.STRING },
+                c2HasRepertoireInDevelopment: { type: Type.BOOLEAN },
+                c2DevelopmentRepertoireEvidence: { type: Type.STRING },
+                c3AddsDistinctDimensions: { type: Type.BOOLEAN },
+                c3HasCrossParagraphRepetition: { type: Type.BOOLEAN },
+                c3RepetitionEvidence: { type: Type.STRING },
+                c3HasCausalAndConsequentialDepth: { type: Type.BOOLEAN },
+                c3BothDevelopmentsHaveDeepCauseAndConsequence: { type: Type.BOOLEAN },
+                c3HasOwnReflectionAndArgumentLinkage: { type: Type.BOOLEAN },
+                c4HasFunctionalPrecisionAndProgression: { type: Type.BOOLEAN },
+                c4HasArtificialOrMechanicalLinkage: { type: Type.BOOLEAN },
+                c4HasRepetitiveSyntacticStructures: { type: Type.BOOLEAN },
+                c4LinkageEvidence: { type: Type.STRING },
+                c5DetailingIsDistinctAndSpecific: { type: Type.BOOLEAN },
+                c5DetailingOverlapReason: { type: Type.STRING },
+                c5AllProposalsIdentified: { type: Type.ARRAY, items: { type: Type.STRING } },
+                c5FullConclusionVerifiedForMissingElements: { type: Type.BOOLEAN },
+                evidenceAllVerifiedVerbatim: { type: Type.BOOLEAN },
+                c1LengthOrStyleNotPenalized: { type: Type.BOOLEAN },
+                c2RepertoirePresenceConsistentWithDiagnosis: { type: Type.BOOLEAN },
+                c3AuthorshipRecognizedInArgumentArticulation: { type: Type.BOOLEAN },
+                c5ConcreteDetailingAssessedWithoutFixedFormula: { type: Type.BOOLEAN },
+                finalConsistencyChecklistPassed: { type: Type.BOOLEAN }
+              },
+              required: [
+                "c1HasComplexSyntaxAndFormalPrecision",
+                "c2RepertoireUsage",
+                "c2HasRepertoireInDevelopment",
+                "c3AddsDistinctDimensions",
+                "c3HasCrossParagraphRepetition",
+                "c3HasCausalAndConsequentialDepth",
+                "c3BothDevelopmentsHaveDeepCauseAndConsequence",
+                "c3HasOwnReflectionAndArgumentLinkage",
+                "c4HasFunctionalPrecisionAndProgression",
+                "c4HasArtificialOrMechanicalLinkage",
+                "c4HasRepetitiveSyntacticStructures",
+                "c5DetailingIsDistinctAndSpecific",
+                "c5AllProposalsIdentified",
+                "c5FullConclusionVerifiedForMissingElements",
+                "evidenceAllVerifiedVerbatim",
+                "finalConsistencyChecklistPassed"
+              ]
             }
           },
           required: [
@@ -1591,7 +3397,9 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
             "actionPlanToImprove",
             "highPerformanceComparison",
             "pedagogicalRewrites",
-            "dualEvaluatorSimulation"
+            "dualEvaluatorSimulation",
+            "thematicAudit",
+            "argumentativeAndCohesionAudit"
           ]
         }
       }
@@ -1603,6 +3411,7 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
 
     // Helper to sanitize score to valid multiple of 40 (0, 40, 80, 120, 160, 200)
     const toEnemScore = (val: any, fallback = 160): number => {
+      if (val === 0 || val === "0") return 0;
       const num = typeof val === 'number' ? val : parseInt(val, 10);
       if ([0, 40, 80, 120, 160, 200].includes(num)) return num;
       if (isNaN(num)) return fallback;
@@ -1610,15 +3419,106 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       return Math.max(0, Math.min(200, rounded));
     };
 
+    // Detect official calibration conditions combining deterministic audit and LLM semantic diagnosis
+    // REGRA PRIORITÁRIA E DISTINÇÃO GLOBAL:
+    // - Condições mecânicas oficiais (em branco, <=7 linhas, identificação, não dissertativo, texto desconexo) sempre zeram.
+    // - Se a IA identificar Fuga Total ao Tema (assunto efetivamente alheio sem relação temática real), prevalece sobre eventual tangenciamento lexical.
+    // - Se a auditoria lexical sugerir fuga_total_ao_tema apenas por ausência de palavras-chave específicas em um tema não mapeado, mas a IA confirmar relação temática real no mesmo campo semântico (ex.: tangenciamento de saúde nutricional/obesidade em tema de insegurança alimentar), prevalece a leitura global da IA (tangenciamento, não fuga total).
+    const llmThematicClass = String(parsed.thematicAudit?.classification || "").toLowerCase().trim();
+    const llmThematicAuditValid = Boolean(
+      parsed.thematicAudit &&
+      typeof parsed.thematicAudit.hasRealThematicRelation === 'boolean' &&
+      ['fuga_total', 'tangenciamento', 'abordagem_parcial', 'abordagem_completa'].includes(llmThematicClass)
+    );
+    const llmDiagnosticBlob = `${parsed.thematicAudit?.consistencyJustification || ""} ${parsed.generalDiagnostic || ""} ${parsed.competencies?.c2?.levelTitle || ""} ${parsed.competencies?.c2?.diagnostic || ""} ${parsed.competencies?.c2?.evaluation || ""}`;
+    const isLlmFugaTotal = !isOfficialBenchmark && (
+      llmThematicClass === 'fuga_total' ||
+      parsed.thematicAudit?.hasRealThematicRelation === false ||
+      (parsed.competencies?.c2?.score === 0 && !calibrationAudit.zeroScoreCondition.isZeroScore && (!llmThematicAuditValid || llmThematicClass === 'fuga_total')) ||
+      (!llmThematicAuditValid && /\b(fuga\s+total(\s+ao\s+tema)?|fuga\s+completa\s+ao\s+tema|assunto\s+(completamente\s+|totalmente\s+|integralmente\s+|exclusivamente\s+)?alheio|sem\s+rela[çc][ãa]o\s+tem[áa]tica\s+(suficiente|efetiva|real))\b/i.test(llmDiagnosticBlob))
+    );
+
+    const isMechanicalZero = calibrationAudit.zeroScoreCondition.isZeroScore && calibrationAudit.zeroScoreCondition.reasonCode !== 'fuga_total_ao_tema';
+    const deterministicThematicZeroOverriddenByLlm =
+      calibrationAudit.zeroScoreCondition.reasonCode === 'fuga_total_ao_tema' &&
+      llmThematicAuditValid &&
+      !isLlmFugaTotal;
+
+    const effectiveZeroCondition = isMechanicalZero
+      ? calibrationAudit.zeroScoreCondition
+      : isLlmFugaTotal
+        ? {
+            isZeroScore: true,
+            reasonCode: 'fuga_total_ao_tema' as const,
+            officialReasonTitle: 'Fuga Total ao Tema Proposto',
+            evidenceSnippet: parsed.competencies?.c2?.primaryEvidenceQuote || calibrationAudit.thematicEvidenceSnippet || essayText.slice(0, 160),
+            analyticalJustification: `FUGA TOTAL AO TEMA IDENTIFICADA (REGRA PRIORITÁRIA): Assunto efetivamente desenvolvido no texto: "${parsed.thematicAudit?.developedSubject || 'assunto alheio ao tema proposto'}". ${parsed.thematicAudit?.consistencyJustification || `O texto desenvolve assunto efetivamente alheio à proposta ("${theme}"), sem relação temática suficiente, direta ou contextual.`} Conforme a Cartilha do Participante do ENEM, boa estrutura dissertativa, gramática, coesão, repertório ou proposta de intervenção NÃO anulam a fuga total ao tema: resultado obrigatório é NOTA ZERO INTEGRAL (0/1000).`
+          }
+        : deterministicThematicZeroOverriddenByLlm
+          ? {
+              isZeroScore: false,
+              reasonCode: 'none' as const,
+              officialReasonTitle: '',
+              evidenceSnippet: '',
+              analyticalJustification: ''
+            }
+          : calibrationAudit.zeroScoreCondition;
+
+    const isWholeEssayZero = !isOfficialBenchmark && effectiveZeroCondition.isZeroScore;
+    const llmTangenciamentoSignal = !isOfficialBenchmark && !isWholeEssayZero && (
+      llmThematicClass === 'tangenciamento' ||
+      parsed.competencies?.c2?.score === 40 ||
+      (!llmThematicAuditValid && /tangenciamento|abordagem tangencial|tangenciou o recorte/i.test(
+        `${parsed.competencies?.c2?.levelTitle || ""} ${parsed.competencies?.c2?.diagnostic || ""} ${parsed.competencies?.c2?.evaluation || ""}`
+      ))
+    );
+    // Do NOT classify alternative legitimate arguments as tangenciamento if our deterministic thematic audit verified the specific cut is addressed
+    const isTangenciamento = !isOfficialBenchmark && !isWholeEssayZero && (
+      calibrationAudit.thematicClassification === 'tangenciamento' ||
+      (llmTangenciamentoSignal && calibrationAudit.thematicClassification !== 'abordagem_completa')
+    );
+
+    const effectiveThematicSnippet =
+      calibrationAudit.thematicClassification === 'tangenciamento'
+        ? (calibrationAudit.thematicEvidenceSnippet || parsed.competencies?.c2?.primaryEvidenceQuote || essayText.substring(0, 160))
+        : (parsed.competencies?.c2?.primaryEvidenceQuote || essayText.substring(0, 160));
+    const effectiveThematicJustification =
+      calibrationAudit.thematicClassification === 'tangenciamento'
+        ? calibrationAudit.thematicJustification
+        : (parsed.thematicAudit?.consistencyJustification || `TANGENCIAMENTO TEMÁTICO IDENTIFICADO (NÃO É FUGA TOTAL): O texto desenvolve "${parsed.thematicAudit?.developedSubject || 'eixo correlato do campo semântico'}" mantendo vínculo temático global com o assunto amplo da proposta, mas desloca a discussão sem desenvolver o recorte específico ("${theme}").`);
+
+    const llmHumanRightsViolationSignal = !isOfficialBenchmark && !isWholeEssayZero && (
+      parsed.c5Structure?.respectsHumanRights === false ||
+      (parsed.competencies?.c5?.score === 0 && /direitos humanos|castigos? f[ií]sicos?|humilha[cç][aã]o|tortura|discrimina[cç][aã]o|exclus[aã]o/i.test(
+        `${parsed.competencies?.c5?.diagnostic || ""} ${parsed.competencies?.c5?.evaluation || ""} ${parsed.c5Structure?.humanRightsObservations || ""}`
+      ))
+    );
+    const isHumanRightsViolationC5 = !isOfficialBenchmark && !isWholeEssayZero && (
+      !calibrationAudit.humanRightsAudit.respectsHumanRights ||
+      (llmHumanRightsViolationSignal && !calibrationAudit.humanRightsAudit.isLawfulAdministrativeMeasureOnly)
+    );
+
     // Extract or compute Dual Evaluator Simulation with realistic variance
     let simA = parsed.dualEvaluatorSimulation?.evaluatorA;
     let simB = parsed.dualEvaluatorSimulation?.evaluatorB;
 
-    const baseC1 = toEnemScore(parsed.competencies?.c1?.score, 160);
-    const baseC2 = toEnemScore(parsed.competencies?.c2?.score, 160);
-    const baseC3 = toEnemScore(parsed.competencies?.c3?.score, 160);
-    const baseC4 = toEnemScore(parsed.competencies?.c4?.score, 160);
-    const baseC5 = toEnemScore(parsed.competencies?.c5?.score, 160);
+    let baseC1 = toEnemScore(parsed.competencies?.c1?.score, 160);
+    let baseC2 = toEnemScore(parsed.competencies?.c2?.score, 160);
+    let baseC3 = toEnemScore(parsed.competencies?.c3?.score, 160);
+    let baseC4 = toEnemScore(parsed.competencies?.c4?.score, 160);
+    let baseC5 = toEnemScore(parsed.competencies?.c5?.score, 160);
+
+    // Protect C1-C4 if LLM mistakenly zeroed them due to C5 human rights violation or tangenciamento
+    if (!isWholeEssayZero) {
+      if (baseC1 === 0) baseC1 = 120;
+      if (baseC2 === 0) baseC2 = isTangenciamento ? 40 : 120;
+      if (baseC3 === 0) baseC3 = isTangenciamento ? 40 : 120;
+      if (baseC4 === 0) baseC4 = 120;
+      if (baseC5 === 0 && !isHumanRightsViolationC5 && calibrationAudit.humanRightsAudit.isLawfulAdministrativeMeasureOnly) {
+        const restoredElements = Math.max(3, Math.min(5, parsed.c5Structure?.validElementsCount || 4));
+        baseC5 = restoredElements * 40;
+      }
+    }
 
     let evalA_c1 = simA ? toEnemScore(simA.c1, baseC1) : baseC1;
     let evalA_c2 = simA ? toEnemScore(simA.c2, baseC2) : baseC2;
@@ -1632,22 +3532,34 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
     let evalB_c4 = simB ? toEnemScore(simB.c4, baseC4) : baseC4;
     let evalB_c5 = simB ? toEnemScore(simB.c5, baseC5) : baseC5;
 
-    // REALISTIC INEP VARIANCE INJECTION IF SCORES ARE COMPLETELY IDENTICAL AND NOT A FLAWLESS 1000
-    // In real INEP blind evaluations, essays in the intermediate ranges (680-880) may show slight 40-pt divergence
-    const initialTotalA = evalA_c1 + evalA_c2 + evalA_c3 + evalA_c4 + evalA_c5;
-    const initialTotalB = evalB_c1 + evalB_c2 + evalB_c3 + evalB_c4 + evalB_c5;
-    const isIdentical = evalA_c1 === evalB_c1 && evalA_c2 === evalB_c2 && evalA_c3 === evalB_c3 && evalA_c4 === evalB_c4 && evalA_c5 === evalB_c5;
+    if (!isWholeEssayZero) {
+      if (evalA_c1 === 0) evalA_c1 = baseC1;
+      if (evalB_c1 === 0) evalB_c1 = baseC1;
+      if (evalA_c2 === 0) evalA_c2 = baseC2;
+      if (evalB_c2 === 0) evalB_c2 = baseC2;
+      if (evalA_c3 === 0) evalA_c3 = baseC3;
+      if (evalB_c3 === 0) evalB_c3 = baseC3;
+      if (evalA_c4 === 0) evalA_c4 = baseC4;
+      if (evalB_c4 === 0) evalB_c4 = baseC4;
+      if (!isHumanRightsViolationC5 && evalA_c5 === 0 && baseC5 > 0) evalA_c5 = baseC5;
+      if (!isHumanRightsViolationC5 && evalB_c5 === 0 && baseC5 > 0) evalB_c5 = baseC5;
+    }
 
-    if (isIdentical && initialTotalA < 960 && initialTotalA >= 680) {
-      // For intermediate scores, allow subtle evaluator profile variations if grounded
-      if (parsed.c1Deviations && parsed.c1Deviations.length > 0 && evalA_c1 === 160) {
-        evalB_c1 = 200; // Evaluator 2 values overall flow and complex syntax
-      } else if (evalA_c3 === 160 && initialTotalA <= 880) {
-        evalA_c3 = 200; // Evaluator 1 values macro thesis clarity
+    // Apply strict INEP locks for Whole-Essay Zero, Tangenciamento, and C5 Human Rights Isolation
+    if (isWholeEssayZero) {
+      evalA_c1 = 0; evalA_c2 = 0; evalA_c3 = 0; evalA_c4 = 0; evalA_c5 = 0;
+      evalB_c1 = 0; evalB_c2 = 0; evalB_c3 = 0; evalB_c4 = 0; evalB_c5 = 0;
+    } else {
+      if (isTangenciamento) {
+        evalA_c2 = 40; evalB_c2 = 40;
+        evalA_c3 = Math.min(evalA_c3, 40); evalB_c3 = Math.min(evalB_c3, 40);
+        evalA_c5 = Math.min(evalA_c5, 40); evalB_c5 = Math.min(evalB_c5, 40);
+      }
+      if (isHumanRightsViolationC5) {
+        evalA_c5 = 0; evalB_c5 = 0;
       }
     }
 
-    // Ensure discrepancies don't exceed INEP limits (max 80 pts per competency, max 100 total)
     const capDisc = (a: number, b: number) => {
       if (Math.abs(a - b) > 80) return a > b ? b + 80 : b - 80;
       return a;
@@ -1658,36 +3570,95 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
     evalA_c4 = capDisc(evalA_c4, evalB_c4);
     evalA_c5 = capDisc(evalA_c5, evalB_c5);
 
-    const totalA = evalA_c1 + evalA_c2 + evalA_c3 + evalA_c4 + evalA_c5;
-    const totalB = evalB_c1 + evalB_c2 + evalB_c3 + evalB_c4 + evalB_c5;
-
-    const discC1 = Math.abs(evalA_c1 - evalB_c1);
-    const discC2 = Math.abs(evalA_c2 - evalB_c2);
-    const discC3 = Math.abs(evalA_c3 - evalB_c3);
-    const discC4 = Math.abs(evalA_c4 - evalB_c4);
-    const discC5 = Math.abs(evalA_c5 - evalB_c5);
-    const totalDisc = Math.abs(totalA - totalB);
-
-    // Official competency scores: Arithmetic mean of Evaluator A and Evaluator B (INEP official rule)
     let c1s = (evalA_c1 + evalB_c1) / 2;
     let c2s = (evalA_c2 + evalB_c2) / 2;
     let c3s = (evalA_c3 + evalB_c3) / 2;
     let c4s = (evalA_c4 + evalB_c4) / 2;
     let c5s = (evalA_c5 + evalB_c5) / 2;
     let finalTotal = c1s + c2s + c3s + c4s + c5s;
+    let c1MaxCap = isWholeEssayZero ? 0 : 200;
+    let c2MaxCap = isWholeEssayZero ? 0 : (isTangenciamento ? 40 : 200);
+    let c3MaxCap = isWholeEssayZero ? 0 : (isTangenciamento ? 40 : 200);
+    let c4MaxCap = isWholeEssayZero ? 0 : 200;
+    let c5MaxCap = isWholeEssayZero || isHumanRightsViolationC5 ? 0 : (isTangenciamento ? 40 : 200);
 
-    // -------------------------------------------------------------
-    // CURVA ESTATÍSTICA DE RIGOR INEP PARA RESULTADOS DE ALTO NÍVEL (>900)
-    // -------------------------------------------------------------
-    // Redações não pertencentes ao banco oficial homologado passam por calibragem rigorosa
-    // para mapear notas na distribuição realista de 920, 940, 960, 980 e 1000.
-    const essayLower = essayText.toLowerCase();
+    const essayParas = essayText.split(/\n\s*\n/).map((p: string) => p.trim()).filter(Boolean);
+
+    const c1VagueOralityList = isOfficialBenchmark ? [] : findC1OralityOrVagueVocabulary(essayText);
+    const mergedRawC1Deviations = isOfficialBenchmark
+      ? []
+      : [
+          ...(Array.isArray(parsed.c1Deviations) ? parsed.c1Deviations : []),
+          ...c1VagueOralityList.map((v) => ({
+            snippet: v.snippet,
+            problem: v.problem,
+            bestForm: v.bestForm,
+            category: v.category
+          }))
+        ];
+
+    // Preservar desvios/reescritas brutos da IA antes de deduplicações para a auditoria de consistência
+    const rawAiC1DeviationsForAudit = Array.isArray(parsed.c1Deviations) ? JSON.parse(JSON.stringify(parsed.c1Deviations)) : [];
+    const rawAiRewritesForAudit = Array.isArray(parsed.pedagogicalRewrites) ? JSON.parse(JSON.stringify(parsed.pedagogicalRewrites)) : [];
+    const rawAiCompetenciesForAudit = parsed.competencies ? JSON.parse(JSON.stringify(parsed.competencies)) : {};
+
+    // Validação estrutural de evidências C1 (verbatim, localizada, sem truncamento, sem penalizar extensão nem duplicidades)
+    parsed.c1Deviations = isOfficialBenchmark
+      ? []
+      : validateAndDeduplicateC1Deviations(mergedRawC1Deviations, essayText);
+
+    // Filtrar reescritas pedagógicas sem trecho literal real ou puramente sobre extensão de período longo
+    if (Array.isArray(parsed.pedagogicalRewrites)) {
+      parsed.pedagogicalRewrites = parsed.pedagogicalRewrites
+        .filter((rw: any) => {
+          const orig = String(rw?.original || "").trim();
+          const prob = String(rw?.problem || "").toLowerCase();
+          if (!orig || orig.length < 8) return false;
+          const loc = locateSnippetInEssay(orig, essayText);
+          if (!loc.found) return false;
+          if (/per[ií]odo\s+(?:excessivamente\s+|muito\s+)?longo/i.test(prob) && !/(concord[âa]ncia|reg[êe]ncia|crase|pontua[çc][ãa]o|v[íi]rgula|truncamento|ortograf|acentu|oralidade|imprecis[ãa]o|clich[êe])/i.test(prob)) {
+            return false;
+          }
+          rw.original = loc.wasTruncated || orig.length < 15 ? loc.fullSentenceContext : loc.exactSpan;
+          if (!/par[áa]grafo\s+\d+/i.test(String(rw.problem || ""))) {
+            rw.problem = `[${loc.locationTag}] ${rw.problem || ""}`.trim();
+          }
+          return true;
+        });
+    }
+
+    const c3c4Audit = parsed.argumentativeAndCohesionAudit;
     const wordCount = essayText.split(/\s+/).filter(Boolean).length;
     const devCount = (parsed.c1Deviations || []).length;
-    const hasOralMarks = /(a gente\b|tipo assim\b|pra\b|onde onde\b|muito ruim\b|coisa\b|fazer com que\b)/i.test(essayText);
-    const hasSyntaxFault = (parsed.c1Deviations || []).some(d => d.category === 'estrutura_sintatica' || /truncamento|paralelismo/i.test(d.description || ''));
-    
-    // Penalties Matrix
+    const hasOralOrVagueMarks = c1VagueOralityList.length > 0 ||
+      /(a gente\b|tipo assim\b|\bpra\b|onde onde\b)/i.test(essayText) ||
+      (parsed.c1Deviations || []).some((d: any) => d.category === 'registro' || d.category === 'vocabular');
+    const hasSyntaxFault = (parsed.c1Deviations || []).some((d: any) => d.category === 'estrutura_sintatica' || /truncamento|justaposi[çc][ãa]o/i.test(d.problem || d.description || ''));
+    const hasComplexSyntaxC1 = hasComplexWellArticulatedSyntax(essayText, 3);
+    const lacksC1Excellence = hasOralOrVagueMarks || !hasComplexSyntaxC1 || c3c4Audit?.c1HasComplexSyntaxAndFormalPrecision === false;
+
+    // Guardião de consistência C1: apenas restaura para 200 se NÃO houver desvios, NÃO houver oralidade/imprecisão vocabular,
+    // houver períodos complexos bem articulados e a única crítica tiver sido extensão pura de período longo.
+    if (!isOfficialBenchmark && !isWholeEssayZero && devCount === 0 && !lacksC1Excellence && !hasSyntaxFault && c1s < 200) {
+      const c1TextBlob = `${parsed.competencies?.c1?.diagnostic || ""} ${parsed.competencies?.c1?.evaluation || ""} ${(parsed.competencies?.c1?.problemsIdentified || []).join(" ")}`;
+      const onlyLengthPenalty = /(per[ií]odo\s+(?:excessivamente\s+|muito\s+)?longo|frase\s+(?:muito\s+)?longa)/i.test(c1TextBlob) &&
+        !/(desvio|erro\s+gramatical|concord[âa]ncia|reg[êe]ncia|crase|pontua[çc][ãa]o\s+incorreta|ortograf|oralidade|imprecis[ãa]o|clich[êe])/i.test(c1TextBlob);
+      if (onlyLengthPenalty) {
+        c1s = 200;
+        evalA_c1 = 200;
+        evalB_c1 = 200;
+      }
+    }
+
+    // Regra C1 (Precisão Vocabular e Registro Formal): 200 pts exige períodos complexos bem articulados e vocabulário formal preciso.
+    // Oralidade, clichês vagos ou imprecisão vocabular (ou sintaxe simples sem articulação complexa) limitam C1 a no máximo 160 pts.
+    if (!isOfficialBenchmark && !isWholeEssayZero && lacksC1Excellence) {
+      c1MaxCap = Math.min(c1MaxCap, 160);
+      if (c1s > 160) {
+        c1s = 160;
+      }
+    }
+
     const penaltiesApplied: Array<{
       competencyAffected: string;
       penaltyName: string;
@@ -1697,25 +3668,52 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       severity: 'leve' | 'moderada' | 'severa' | 'critica';
     }> = [];
 
-    // Critério C1: Norma culta e sintaxe erudita
-    const hasEruditeVocab = /(imprescindível|paulatinamente|consectário|mitigar|deletério|primordial|efetivar|fomentar|inoperância|prerrogativa|contingência|inexorável|fulcral|salutar|endêmico)/i.test(essayText);
-    const c1_normativeMastery = isOfficialBenchmark || (
-      devCount <= 1 && 
-      !hasOralMarks && 
-      !hasSyntaxFault &&
-      wordCount >= 260 &&
-      hasEruditeVocab
-    );
+    if (isWholeEssayZero) {
+      penaltiesApplied.push({
+        competencyAffected: 'GLOBAL (C1 a C5)',
+        penaltyName: `Anulação Oficial — ${effectiveZeroCondition.officialReasonTitle || 'Situação de Nota Zero'}`,
+        penaltyPoints: 1000,
+        reason: `${effectiveZeroCondition.analyticalJustification} Diferenciação oficial: trata-se de hipótese de anulação da redação inteira prevista na Cartilha do Participante, e não de penalização isolada de competência.`,
+        evidenceSnippet: effectiveZeroCondition.evidenceSnippet,
+        severity: 'critica'
+      });
+    } else if (isTangenciamento) {
+      penaltiesApplied.push({
+        competencyAffected: 'C2, C3 e C5',
+        penaltyName: 'Tangenciamento Temático (Abordagem Apenas do Campo Semântico Geral)',
+        penaltyPoints: 160,
+        reason: `${effectiveThematicJustification} Repercussão oficial do INEP: C2 fixada em 40 pts (Nível 1), com teto de 40 pts em C3 e C5. Diferenciação: o tangenciamento NÃO configura fuga total e NÃO zera a redação inteira; C1 e C4 são avaliadas normalmente.`,
+        evidenceSnippet: effectiveThematicSnippet,
+        severity: 'critica'
+      });
+    }
 
-    if (hasOralMarks) {
+    // C1: 200 pts reservado exclusivamente para períodos complexos bem articulados + vocabulário formal preciso
+    const c1_normativeMastery = !isWholeEssayZero && (isOfficialBenchmark || (
+      devCount <= 1 &&
+      !lacksC1Excellence &&
+      !hasSyntaxFault &&
+      c1s >= 180
+    ));
+
+    if (!isWholeEssayZero && hasOralOrVagueMarks) {
       penaltiesApplied.push({
         competencyAffected: 'C1',
-        penaltyName: 'Registro Informal ou Marca de Oralidade',
-        penaltyPoints: 40,
-        reason: 'Uso de expressões informais, gírias ou marcas de oralidade incompatíveis com a norma culta formal do ENEM.',
+        penaltyName: 'Marcas de Oralidade, Clichês Vagos ou Imprecisão Vocabular (Teto 160 pts)',
+        penaltyPoints: Math.max(40, 200 - c1s),
+        reason: 'Presença de marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas"), limitando C1 a no máximo 160 pontos conforme a régua do INEP.',
+        evidenceSnippet: c1VagueOralityList[0] ? `[${c1VagueOralityList[0].locationTag}] ${c1VagueOralityList[0].fullSentence}` : undefined,
         severity: 'severa'
       });
-    } else if (devCount >= 3 || hasSyntaxFault) {
+    } else if (!isWholeEssayZero && (!hasComplexSyntaxC1 || c3c4Audit?.c1HasComplexSyntaxAndFormalPrecision === false) && !isOfficialBenchmark) {
+      penaltiesApplied.push({
+        competencyAffected: 'C1',
+        penaltyName: 'Ausência de Períodos Complexos Bem Articulados e Precisão Formal (Teto 160 pts)',
+        penaltyPoints: Math.max(40, 200 - c1s),
+        reason: 'Ausência de erros ortográficos não garante 200 pontos: o nível máximo exige períodos complexos bem articulados e vocabulário formal preciso.',
+        severity: 'moderada'
+      });
+    } else if (!isWholeEssayZero && (devCount >= 3 || hasSyntaxFault)) {
       penaltiesApplied.push({
         competencyAffected: 'C1',
         penaltyName: 'Múltiplos Desvios Gramaticais ou Falha Sintática',
@@ -1723,7 +3721,7 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
         reason: `${devCount} desvios gramaticais/sintáticos identificados, limitando C1 ao nível 3/4 do INEP.`,
         severity: 'moderada'
       });
-    } else if (devCount === 2) {
+    } else if (!isWholeEssayZero && devCount === 2) {
       penaltiesApplied.push({
         competencyAffected: 'C1',
         penaltyName: 'Dois Desvios Pontuais na Norma Culta',
@@ -1733,139 +3731,475 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       });
     }
 
-    // Critério C2: Repertório sociocultural legitimado e produtivo
-    const hasRepertoireAuthors = /(segundo|conforme|de acordo com|filósofo|sociólogo|antropólogo|constituição|artigo|ibge|ipea|século|historiador|literatura|obra|machado de assis|bauman|durkheim|foucault|kant|aristóteles|platão|locke|rousseau|hannah arendt|sartre|gilberto freyre|sergio buarque|simone de beauvoir|norberto bobbio|carolina maria de jesus|stefan zweig|thomas hobbes|pierre bourdieu|milton santos|darcy ribeiro|paulo freire|vidas secas|cidadão de papel|estatuto|lei)/i.test(essayText);
-    const hasProductiveLink = hasRepertoireAuthors && /(nesse sentido|sob essa ótica|nesse viés|nesse prisma|ilustra|evidencia|converge|corrobora|dialoga|revela a persistência|reforça o papel|visto que|infere-se que|nesse contexto|outrossim|ademais)/i.test(essayText);
-    const c2_productiveRepertoire = isOfficialBenchmark || (hasRepertoireAuthors && hasProductiveLink);
+    let c2Usage = String(c3c4Audit?.c2RepertoireUsage || '').toLowerCase().trim();
+    const repertoireDist = analyzeRepertoireDistribution(essayText);
+    const recognizedRepertoires = repertoireDist.all;
+    const llmC2EvidenceStr = String(c3c4Audit?.c2RepertoireEvidence || parsed.competencies?.c2?.primaryEvidenceQuote || parsed.competencies?.c2?.evidenceSnippets?.[0] || '').trim();
+    const llmC2DevEvidenceStr = String(c3c4Audit?.c2DevelopmentRepertoireEvidence || '').trim();
+    const llmC2Loc = locateSnippetInEssay(llmC2EvidenceStr, essayText);
+    const llmC2DevLoc = llmC2DevEvidenceStr ? locateSnippetInEssay(llmC2DevEvidenceStr, essayText) : null;
 
-    if (!hasRepertoireAuthors) {
-      penaltiesApplied.push({
-        competencyAffected: 'C2',
-        penaltyName: 'Ausência de Repertório Sociocultural Legitimado',
-        penaltyPoints: 40,
-        reason: 'O texto não mobilizou referências legitimadas por áreas do conhecimento formal (filosofia, história, sociologia, literatura ou legislação).',
-        severity: 'severa'
-      });
-    } else if (!hasProductiveLink) {
-      penaltiesApplied.push({
-        competencyAffected: 'C2',
-        penaltyName: 'Repertório Legitimado porém Improdutivo',
-        penaltyPoints: 20,
-        reason: 'A alusão foi citada mas não estabeleceu vínculo argumentativo direto e produtivo com a tese defendida.',
-        severity: 'moderada'
-      });
+    const isConclusionProposalAgencyOnly = (txt: string) =>
+      /\b(portanto|logo|assim|dessa\s+forma|desse\s+modo|cabe\s+a[oa]?|deve\s+(?:criar|implementar|promover|ampliar|realizar|fiscalizar|garantir|investir)|por\s+meio\s+de)\b/i.test(txt) &&
+      /\b(minist[ée]rio|secretaria|governo|poder\s+executivo|lei|estatuto|c[óo]digo)\b/i.test(txt) &&
+      !/\b(fil[óo]sof|soci[óo]log|historiador|ge[óo]graf|economista|educador|te[óo]ric|psiquiatra|ibge|ipea|unesco|oms|onu|machado|bauman|foucault|bourdieu|arendt|durkheim|kant|hobbes|locke|rousseau|habermas|paulo\s+freire|milton\s+santos|vidas\s+secas)\b/i.test(txt);
+
+    const repertoireCueRegex = /(segundo|conforme|de acordo|constitui[çc][ãa]o|artigo|ibge|ipea|onu|oms|unesco|estatuto|lei\b|fil[óo]sof|soci[óo]log|historiador|ge[óo]graf|economista|educador|te[óo]ric|psiquiatra|jurista|escritor|professor|cientista|pesquisador|pensador|obra|livro|filme|s[ée]rie|document[áa]rio|poema|autor|autora|teoria|conceito|pesquisa|dados|estudo|s[ée]culo|d[ée]cada)/i;
+
+    const llmC2MainUsable = Boolean(
+      llmC2Loc.found &&
+      !(essayParas.length >= 3 && llmC2Loc.paragraphIndex >= essayParas.length) &&
+      !isConclusionProposalAgencyOnly(llmC2Loc.fullSentenceContext) &&
+      repertoireCueRegex.test(llmC2Loc.fullSentenceContext)
+    );
+    const llmC2InDevVerified = Boolean(
+      essayParas.length >= 3 &&
+      llmC2DevLoc?.found &&
+      llmC2DevLoc.paragraphIndex > 1 &&
+      llmC2DevLoc.paragraphIndex < essayParas.length &&
+      !isConclusionProposalAgencyOnly(llmC2DevLoc.fullSentenceContext) &&
+      repertoireCueRegex.test(llmC2DevLoc.fullSentenceContext)
+    );
+    const llmC2MainInDevVerified = Boolean(
+      essayParas.length >= 3 &&
+      llmC2MainUsable &&
+      llmC2Loc.paragraphIndex > 1 &&
+      llmC2Loc.paragraphIndex < essayParas.length
+    );
+
+    const hasVerifiedRepertoireEvidence = recognizedRepertoires.length > 0 || llmC2MainUsable || llmC2InDevVerified;
+    const hasVerifiedDevRepertoire = essayParas.length >= 3
+      ? (repertoireDist.hasRepertoireInDev || llmC2InDevVerified || llmC2MainInDevVerified)
+      : hasVerifiedRepertoireEvidence;
+    const hasRepertoireOnlyInIntro = essayParas.length >= 3 && !hasVerifiedDevRepertoire && (repertoireDist.introRepertoires.length > 0 || (llmC2MainUsable && llmC2Loc.paragraphIndex === 1));
+
+    // Regra C2: Repertório apenas na introdução (D1 e D2 sem repertório externo) ou ausência de repertório produtivo nos desenvolvimentos limita C2 a no máximo 160 pts.
+    // Nomes de ministérios, leis ou órgãos citados apenas como agentes na Conclusão não contam como repertório.
+    if (!isOfficialBenchmark && !isWholeEssayZero && !isTangenciamento && essayParas.length >= 3 && (!hasVerifiedDevRepertoire || c3c4Audit?.c2HasRepertoireInDevelopment === false)) {
+      c2MaxCap = Math.min(c2MaxCap, 160);
+      if (c2s > 160) {
+        c2s = 160;
+      }
     }
 
-    // Critério C3: Projeto de texto estratégico e autoria crítica
-    const hasCausality = /(por conseguinte|haja vista|em decorrência|gerando|resultando em|culminando|visto que|fato que desencadeia|o que perpetua|isso porque|desse modo|sob este viés|com efeito)/i.test(essayText);
-    const hasCriticalVoice = /(nefasto|imperativo|urgente|negligência|retrocesso|inaceitável|imprescindível|perverso|omissão|indispensável|crucial|deplorável|alarmante|inadmissível|óbice|precariedade|vulnerabilidade)/i.test(essayText);
-    const c3_strategicProject = isOfficialBenchmark || (hasCausality && hasCriticalVoice && wordCount >= 260);
-
-    if (!hasCausality) {
-      penaltiesApplied.push({
-        competencyAffected: 'C3',
-        penaltyName: 'Fragilidade na Cadeia de Causa e Efeito',
-        penaltyPoints: 20,
-        reason: 'Desenvolvimento argumentativo com lacunas nas relações de causalidade e desdobramento das consequências.',
-        severity: 'moderada'
-      });
+    // Guardião de consistência C2: NUNCA declarar ausência de repertório quando há referência verificada no texto ou nas evidências
+    if (hasVerifiedRepertoireEvidence && c2Usage === 'sem_repertorio_externo') {
+      c2Usage = (c2s >= 180 && hasVerifiedDevRepertoire) ? 'produtivo_integrado' : 'pertinente_pouco_explorado';
+      if (c3c4Audit) {
+        c3c4Audit.c2RepertoireUsage = c2Usage;
+        if (!c3c4Audit.c2RepertoireEvidence && recognizedRepertoires[0]) {
+          c3c4Audit.c2RepertoireEvidence = `[${recognizedRepertoires[0].locationTag}] ${recognizedRepertoires[0].fullSentence}`;
+        }
+      }
+    }
+    if (hasVerifiedRepertoireEvidence && parsed.competencies?.c2) {
+      const hasFalseAbsenceClaim = /(aus[êe]ncia\s+de\s+repert[óo]rio|sem\s+repert[óo]rio\s+sociocultural|n[ãa]o\s+apresenta\s+repert[óo]rio|nenhum\s+repert[óo]rio)/i;
+      const repLabel = recognizedRepertoires[0]
+        ? `"${recognizedRepertoires[0].matched}" (${recognizedRepertoires[0].locationTag})`
+        : (llmC2Loc.found ? `"${llmC2Loc.exactSpan}" (${llmC2Loc.locationTag})` : 'referência identificada no texto');
+      if (hasFalseAbsenceClaim.test(String(parsed.competencies.c2.diagnostic || ''))) {
+        parsed.competencies.c2.diagnostic = hasRepertoireOnlyInIntro
+          ? `Repertório sociocultural identificado apenas na introdução (${repLabel}), sem repertório externo produtivo nos parágrafos de desenvolvimento (D1/D2), limitando C2 a ${c2s} pontos.`
+          : `Repertório sociocultural identificado (${repLabel}), avaliado conforme o grau de contextualização e produtividade nos desenvolvimentos.`;
+      }
+      if (hasFalseAbsenceClaim.test(String(parsed.competencies.c2.evaluation || ''))) {
+        parsed.competencies.c2.evaluation = String(parsed.competencies.c2.evaluation).replace(
+          hasFalseAbsenceClaim,
+          `repertório presente (${repLabel}) com necessidade de produtividade na argumentação (D1/D2)`
+        );
+      }
+      if (Array.isArray(parsed.competencies.c2.problemsIdentified)) {
+        parsed.competencies.c2.problemsIdentified = parsed.competencies.c2.problemsIdentified.filter((p: string) => !hasFalseAbsenceClaim.test(String(p || '')));
+      }
     }
 
-    // Critério C4: Diversidade coesiva inter e intraparágrafos
-    const hasInterConnectives = /(em primeiro lugar|outrossim|além disso|sob essa ótica|nesse prisma|infere-se, portanto|desse modo|diante desse cenário|nesse contexto|ademais|somado a isso|paralelamente a isso|torna-se imperioso, dessarte)/i.test(essayText);
-    const c4_cohesiveDiversity = isOfficialBenchmark || (hasInterConnectives && !/onde onde\b/.test(essayText));
+    const hasRepertoireAuthorsRegex = hasVerifiedRepertoireEvidence;
+    const devParagraphsText = essayParas.length >= 3 ? essayParas.slice(1, -1).join("\n\n") : essayText;
+    const hasProductiveLinkRegex = hasVerifiedDevRepertoire && /(nesse sentido|sob essa ótica|nesse viés|nesse prisma|ilustra|evidencia|converge|corrobora|dialoga|revela a persistência|reforça o papel|visto que|infere-se que|nesse contexto|outrossim|ademais|analogamente|de maneira análoga)/i.test(devParagraphsText);
 
-    if (!hasInterConnectives) {
-      penaltiesApplied.push({
-        competencyAffected: 'C4',
-        penaltyName: 'Ausência de Operadores Interparágrafos Obrigatórios',
-        penaltyPoints: 20,
-        reason: 'Falta de conectivos interparágrafos em pelo menos dois pontos de transição estrutural da redação.',
-        severity: 'moderada'
-      });
+    const c2HasUnderExploredOrMentionOnly = !hasVerifiedDevRepertoire || (c2Usage
+      ? ['pertinente_pouco_explorado', 'apenas_mencionado', 'sem_repertorio_externo'].includes(c2Usage)
+      : (c2s < 200 || !hasProductiveLinkRegex));
+    const c2_productiveRepertoire = !isWholeEssayZero && !isTangenciamento && (isOfficialBenchmark || (
+      hasVerifiedDevRepertoire && c2s >= 180 && (c2Usage === 'produtivo_integrado' || (!c2Usage && (c2s === 200 || hasProductiveLinkRegex)))
+    ));
+
+    if (!isWholeEssayZero && !isTangenciamento && c2s < 200) {
+      const c2VerifiedEv = recognizedRepertoires[0]
+        ? `[${recognizedRepertoires[0].locationTag}] ${recognizedRepertoires[0].fullSentence}`
+        : (llmC2Loc.found ? `[${llmC2Loc.locationTag}] ${llmC2Loc.fullSentenceContext}` : undefined);
+      if (hasRepertoireOnlyInIntro) {
+        penaltiesApplied.push({
+          competencyAffected: 'C2',
+          penaltyName: 'Repertório Sociocultural Restrito à Introdução (Teto 160 pts)',
+          penaltyPoints: Math.max(40, 200 - c2s),
+          reason: `Repertório sociocultural legitimado mobilizado apenas na introdução, sem repertório pertinente e produtivo nos desenvolvimentos (D1 e/ou D2). Pela régua do INEP, atingir 200 pts exige repertório produtivo também na argumentação (teto de 160 pts).`,
+          evidenceSnippet: c2VerifiedEv,
+          severity: 'moderada'
+        });
+      } else if (!hasVerifiedRepertoireEvidence && (c2Usage === 'sem_repertorio_externo' || (!c2Usage && c2s <= 160))) {
+        penaltiesApplied.push({
+          competencyAffected: 'C2',
+          penaltyName: 'Domínio Temático Sem Repertório Sociocultural Externo na Argumentação (C2)',
+          penaltyPoints: Math.max(40, 200 - c2s),
+          reason: `O texto desenvolve o tema sem repertório sociocultural externo produtivo nos desenvolvimentos (nomes de ministérios, leis ou órgãos citados apenas como agentes na Conclusão não contam como repertório; teto de 160 pts).`,
+          evidenceSnippet: c2VerifiedEv,
+          severity: c2s <= 120 ? 'moderada' : 'leve'
+        });
+      } else {
+        penaltiesApplied.push({
+          competencyAffected: 'C2',
+          penaltyName: !hasVerifiedDevRepertoire ? 'Ausência de Repertório Produtivo em D1/D2 (Teto 160 pts)' : c2Usage === 'apenas_mencionado' ? 'Repertório Apenas Mencionado sem Integração (C2)' : 'Repertório Pertinente Pouco Explorado (C2)',
+          penaltyPoints: Math.max(20, 200 - c2s),
+          reason: !hasVerifiedDevRepertoire
+            ? `Para atingir 200 pontos na C2, é obrigatório haver repertório pertinente e produtivo também na argumentação (D1 e/ou D2).${c2VerifiedEv ? ` Evidência localizada: ${c2VerifiedEv}` : ''}`
+            : `A referência sociocultural identificada no texto precisa de maior contextualização, explicação e integração ao ponto de vista defendido para alcançar 200 pts.${c2VerifiedEv ? ` Evidência localizada: ${c2VerifiedEv}` : ''}`,
+          evidenceSnippet: c2VerifiedEv,
+          severity: c2s <= 160 ? 'moderada' : 'leve'
+        });
+      }
     }
 
-    // Critério C5: 5 elementos completos com detalhamento autêntico
-    const has5Elements = /(por meio|mediante|por intermédio|com o objetivo|com o intuito|a fim de|para que|visando a)/i.test(essayText) &&
-      /(ministério|governo federal|secretaria|poder público|escolas|sociedade civil|mídia)/i.test(essayText) &&
-      (parsed.c5Structure?.validElementsCount ? parsed.c5Structure.validElementsCount >= 5 : true);
-    const respectsHumanRights = parsed.c5Structure?.respectsHumanRights !== false;
-    const c5_fiveCanonicalElements = isOfficialBenchmark || (has5Elements && respectsHumanRights);
+    // Guardião anti-falso-positivo de "Repetição de Ideias Entre Parágrafos" na C3:
+    // Se D1 e D2 desenvolvem eixos causais distintos, não penalizar como repetição
+    const hasLiteralD1D2Rep = essayParas.length >= 4
+      ? detectLiteralD1D2CentralRepetition(essayParas[1], essayParas[2], calibrationAudit.themeDecomposition.specificCutWords || [])
+      : false;
+    if (c3c4Audit && c3c4Audit.c3HasCrossParagraphRepetition && !hasLiteralD1D2Rep) {
+      c3c4Audit.c3HasCrossParagraphRepetition = false;
+      c3c4Audit.c3AddsDistinctDimensions = true;
+      if (!isOfficialBenchmark && !isWholeEssayZero && !isTangenciamento && c3s < 160) {
+        c3s = 160;
+        evalA_c3 = Math.max(evalA_c3, 160);
+        evalB_c3 = Math.max(evalB_c3, 160);
+      }
+    }
 
-    if (!respectsHumanRights) {
+    const c3DepthAudit = analyzeC3DevelopmentDepth(essayText);
+    const c3AiVerifiedDepthWithSupport = Boolean(
+      c3c4Audit?.c3BothDevelopmentsHaveDeepCauseAndConsequence === true &&
+      c3c4Audit?.c3HasCausalAndConsequentialDepth === true &&
+      c3DepthAudit.d1WordCount >= 42 &&
+      c3DepthAudit.d2WordCount >= 42 &&
+      (c3DepthAudit.d1HasDeepAnalysis || c3DepthAudit.d2HasDeepAnalysis)
+    );
+    const c3MeetsDeepExcellence = Boolean(
+      (c3DepthAudit.bothDevsDeepAndArticulated || c3AiVerifiedDepthWithSupport) &&
+      hasVerifiedDevRepertoire &&
+      c3c4Audit?.c3BothDevelopmentsHaveDeepCauseAndConsequence !== false &&
+      c3c4Audit?.c3HasCausalAndConsequentialDepth !== false &&
+      !c3c4Audit?.c3HasCrossParagraphRepetition &&
+      c3c4Audit?.c3AddsDistinctDimensions !== false
+    );
+
+    // Regra C3: 4 parágrafos com dois argumentos distintos garante no máximo 160 pts se D1/D2 forem expositivos/superficiais.
+    // 200 pts é reservado exclusivamente para textos que articulam repertório, causa estrutural profunda e consequência crítica nos DOIS desenvolvimentos (D1 e D2).
+    if (!isOfficialBenchmark && !isWholeEssayZero && !isTangenciamento && !c3MeetsDeepExcellence) {
+      c3MaxCap = Math.min(c3MaxCap, 160);
+      if (c3s > 160) {
+        c3s = 160;
+      }
+    }
+
+    const c3HasRepetitionOrSuperficiality = Boolean(
+      !c3MeetsDeepExcellence ||
+      (c3c4Audit && (!c3c4Audit.c3AddsDistinctDimensions || c3c4Audit.c3HasCrossParagraphRepetition || !c3c4Audit.c3HasCausalAndConsequentialDepth || c3c4Audit.c3BothDevelopmentsHaveDeepCauseAndConsequence === false))
+    );
+    const c4HasFunctionalOrProgressionFlaw = Boolean(
+      c3c4Audit && (!c3c4Audit.c4HasFunctionalPrecisionAndProgression || c3c4Audit.c4HasArtificialOrMechanicalLinkage || c3c4Audit.c4HasRepetitiveSyntacticStructures)
+    );
+    if (!isOfficialBenchmark && !isWholeEssayZero && c3c4Audit?.c4HasRepetitiveSyntacticStructures === true) {
+      c4MaxCap = Math.min(c4MaxCap, 160);
+      if (c4s > 160) {
+        c4s = 160;
+      }
+    }
+
+    // Priorizar a nota da IA em C3 respeitando a trava de profundidade em D1+D2
+    const hasCausalityRegex = /(por conseguinte|haja vista|em decorrência|gerando|resultando em|culminando|visto que|fato que desencadeia|o que perpetua|isso porque|desse modo|sob este viés|com efeito|consequentemente|decorre de|porque|implica)/i.test(essayText);
+    const c3_strategicProject = !isWholeEssayZero && !isTangenciamento && (isOfficialBenchmark || (
+      c3s >= 180 && c3MeetsDeepExcellence
+    ));
+
+    const c3RepLoc = c3c4Audit?.c3RepetitionEvidence ? locateSnippetInEssay(c3c4Audit.c3RepetitionEvidence, essayText) : null;
+    const c3VerifiedEvidence = c3RepLoc?.found ? `[${c3RepLoc.locationTag}] ${c3RepLoc.fullSentenceContext}` : undefined;
+
+    if (!isWholeEssayZero && !isTangenciamento && (!c3MeetsDeepExcellence || c3HasRepetitionOrSuperficiality || c3s <= 160)) {
+      const c3Reasons: string[] = [];
+      if (c3c4Audit?.c3HasCrossParagraphRepetition) {
+        c3Reasons.push('Repetição literal do mesmo argumento central entre D1 e D2');
+      }
+      if (c3c4Audit && !c3c4Audit.c3AddsDistinctDimensions) {
+        c3Reasons.push('Baixa progressão argumentativa entre as informações e dimensões selecionadas');
+      }
+      if (!c3DepthAudit.bothDevsDeepAndArticulated || c3c4Audit?.c3BothDevelopmentsHaveDeepCauseAndConsequence === false || !c3c4Audit?.c3HasCausalAndConsequentialDepth || !hasVerifiedDevRepertoire) {
+        c3Reasons.push('Desenvolvimentos (D1/D2) predominantemente expositivos ou sem articulação simultânea de repertório, causa estrutural profunda e consequência crítica em ambos os parágrafos (teto de 160 pts)');
+      }
+      if (c3Reasons.length === 0 && c3s <= 160) {
+        c3Reasons.push('Limitações na profundidade analítica estrutural ou na articulação causal de D1 e D2');
+      }
+      if (c3Reasons.length > 0) {
+        penaltiesApplied.push({
+          competencyAffected: 'C3',
+          penaltyName: c3c4Audit?.c3HasCrossParagraphRepetition ? 'Repetição Argumentativa Entre Parágrafos (C3)' : 'Desenvolvimento Expositivo Sem Aprofundamento Estrutural Completo (C3)',
+          penaltyPoints: Math.max(20, 200 - c3s),
+          reason: `${c3Reasons.join('; ')}.${c3VerifiedEvidence ? ` Evidência localizada: ${c3VerifiedEvidence}` : ''}`,
+          evidenceSnippet: c3VerifiedEvidence,
+          severity: c3s <= 120 ? 'severa' : 'moderada'
+        });
+      }
+    }
+
+    const hasInterConnectivesRegex = /(em primeiro lugar|outrossim|além disso|sob essa ótica|nesse prisma|infere-se, portanto|desse modo|diante desse cenário|nesse contexto|ademais|somado a isso|paralelamente a isso|torna-se imperioso, dessarte|portanto|dessa forma|nesse sentido)/i.test(essayText);
+    // Priorizar a nota da IA em C4 (nunca penalizar conectivos comuns corretos nem exigir variedade vocabular)
+    const c4_cohesiveDiversity = !isWholeEssayZero && (isOfficialBenchmark || (
+      c4s >= 180 && !c4HasFunctionalOrProgressionFlaw
+    ));
+
+    const c4LinkLoc = c3c4Audit?.c4LinkageEvidence ? locateSnippetInEssay(c3c4Audit.c4LinkageEvidence, essayText) : null;
+    const c4VerifiedEvidence = c4LinkLoc?.found ? `[${c4LinkLoc.locationTag}] ${c4LinkLoc.fullSentenceContext}` : undefined;
+
+    if (!isWholeEssayZero && (c4HasFunctionalOrProgressionFlaw || c4s <= 160)) {
+      const c4Reasons: string[] = [];
+      if (c3c4Audit?.c4HasRepetitiveSyntacticStructures) {
+        c4Reasons.push('Repetição de estruturas sintáticas, mecanismos de articulação ou construções explicativas semelhantes em parágrafos consecutivos');
+      }
+      if (c3c4Audit?.c4HasArtificialOrMechanicalLinkage) {
+        c4Reasons.push('Previsibilidade das construções ou articulação mecânica');
+      }
+      if (c3c4Audit && !c3c4Audit.c4HasFunctionalPrecisionAndProgression) {
+        c4Reasons.push('Limitação na fluidez da progressão textual entre frases e parágrafos');
+      }
+      if (c4Reasons.length === 0 && c4s <= 160) {
+        c4Reasons.push('Limitações na articulação coesiva ou fluidez da progressão observadas pela banca');
+      }
+      if (c4Reasons.length > 0) {
+        penaltiesApplied.push({
+          competencyAffected: 'C4',
+          penaltyName: c3c4Audit?.c4HasRepetitiveSyntacticStructures ? 'Repetição de Estruturas Sintáticas / Previsibilidade (C4)' : 'Coesão Adequada Sem Fluidez de Excelência (C4)',
+          penaltyPoints: Math.max(20, 200 - c4s),
+          reason: `${c4Reasons.join('; ')}.${c4VerifiedEvidence ? ` Evidência localizada: ${c4VerifiedEvidence}` : ''}`,
+          evidenceSnippet: c4VerifiedEvidence,
+          severity: c4s <= 120 ? 'severa' : 'moderada'
+        });
+      }
+    }
+
+    // Verificação integral da conclusão para C5 (analisando todas as propostas separadamente e reconhecendo detalhamento concreto sem fórmulas fixas)
+    const conclusionCheckText = essayParas.length >= 2 && /^(portanto|logo|assim|dessa\s+forma|desse\s+modo|em\s+suma|infere-se|conclui-se)/i.test(essayParas[essayParas.length - 2])
+      ? `${essayParas[essayParas.length - 2]}\n\n${essayParas[essayParas.length - 1]}`
+      : (essayParas[essayParas.length - 1] || essayText);
+    const conclusionAudit = auditConclusionInterventions(conclusionCheckText);
+
+    if (c3c4Audit && (!Array.isArray(c3c4Audit.c5AllProposalsIdentified) || c3c4Audit.c5AllProposalsIdentified.length === 0) && conclusionAudit.proposals.length > 0) {
+      c3c4Audit.c5AllProposalsIdentified = conclusionAudit.proposals.map((p, idx) =>
+        `Proposta ${idx + 1}: Agente(${p.agents.join(', ') || 'contexto'}) | Ação(${p.actions.join(', ') || 'identificada'}) | Detalhamento(${p.detailings.join(', ') || 'em verificação'})`
+      );
+    }
+
+    if (parsed.c5Structure?.agent?.present && parsed.c5Structure.agent.text) {
+      const cleanedAgent = cleanSingleAgentCandidate(parsed.c5Structure.agent.text);
+      if (cleanedAgent) {
+        parsed.c5Structure.agent.text = cleanedAgent;
+      }
+    }
+
+    if (parsed.c5Structure && !isOfficialBenchmark && !isWholeEssayZero && !isTangenciamento && !isHumanRightsViolationC5) {
+      if (parsed.c5Structure.action && !parsed.c5Structure.action.present && conclusionAudit.hasAction) {
+        parsed.c5Structure.action.present = true;
+        parsed.c5Structure.action.text = conclusionAudit.actionText;
+        parsed.c5Structure.action.details = "Ação propositiva identificada na verificação integral da conclusão (não confundir ausência de detalhamento com ausência de ação).";
+      }
+      // Extrair detalhamento embutido dentro de Ação, Meio/Modo, Efeito ou Agente antes de declarar ausência
+      if (parsed.c5Structure.detailing && !parsed.c5Structure.detailing.present) {
+        const spanTargets: Array<{ key: 'action' | 'modeMedium' | 'effect' | 'agent'; obj: any }> = [
+          { key: 'action', obj: parsed.c5Structure.action },
+          { key: 'modeMedium', obj: parsed.c5Structure.modeMedium },
+          { key: 'effect', obj: parsed.c5Structure.effect },
+          { key: 'agent', obj: parsed.c5Structure.agent }
+        ];
+        let extractedFromSpan: { detailingExtracted: string; targetHint: string } | null = null;
+        for (const t of spanTargets) {
+          if (t.obj?.present && t.obj.text) {
+            const detRes = extractDetailingFromTextSpan(t.obj.text);
+            if (detRes.detailingExtracted) {
+              if (detRes.cleanedCore && detRes.cleanedCore.length >= 6) {
+                t.obj.text = detRes.cleanedCore;
+              }
+              extractedFromSpan = { detailingExtracted: detRes.detailingExtracted, targetHint: detRes.targetHint };
+              break;
+            }
+          }
+        }
+        if (extractedFromSpan) {
+          parsed.c5Structure.detailing.present = true;
+          parsed.c5Structure.detailing.text = extractedFromSpan.detailingExtracted;
+          parsed.c5Structure.detailing.targetElement = extractedFromSpan.targetHint;
+          parsed.c5Structure.detailing.details = "Detalhamento específico extraído do contexto sintático da proposta (travessão, aposto, exemplificação ou desdobramento).";
+          if (c3c4Audit) {
+            c3c4Audit.c5DetailingIsDistinctAndSpecific = true;
+          }
+        } else if (conclusionAudit.hasDetailing && c3c4Audit?.c5DetailingIsDistinctAndSpecific !== false) {
+          parsed.c5Structure.detailing.present = true;
+          parsed.c5Structure.detailing.text = conclusionAudit.detailingText;
+          parsed.c5Structure.detailing.details = "Detalhamento concreto identificado na conclusão (público atendido, localização, critérios de prioridade ou condições de execução, sem exigir expressão fixa).";
+          if (c3c4Audit) {
+            c3c4Audit.c5DetailingIsDistinctAndSpecific = true;
+          }
+        }
+      }
+      const baseCountBefore = [
+        parsed.c5Structure.agent?.present,
+        parsed.c5Structure.action?.present,
+        parsed.c5Structure.modeMedium?.present,
+        parsed.c5Structure.effect?.present,
+        parsed.c5Structure.detailing?.present
+      ].filter(Boolean).length;
+      parsed.c5Structure.validElementsCount = baseCountBefore;
+      if (c5s < baseCountBefore * 40 && baseCountBefore >= 4) {
+        const restoredC5 = Math.min(200, baseCountBefore * 40);
+        c5s = restoredC5;
+        evalA_c5 = Math.max(evalA_c5, restoredC5);
+        evalB_c5 = Math.max(evalB_c5, restoredC5);
+      }
+    }
+
+    const c5DetailingRaw = (parsed.c5Structure?.detailing?.text || '').trim().toLowerCase();
+    const c5ActionRaw = (parsed.c5Structure?.action?.text || '').trim().toLowerCase();
+    const c5ModeRaw = (parsed.c5Structure?.modeMedium?.text || '').trim().toLowerCase();
+    const c5EffectRaw = (parsed.c5Structure?.effect?.text || '').trim().toLowerCase();
+    const c5DetailingOverlaps = Boolean(
+      c5DetailingRaw.length > 0 && (
+        isVagueOrAcronymDetailing(c5DetailingRaw) ||
+        (c5ActionRaw.length >= 6 && (c5DetailingRaw === c5ActionRaw || (c5DetailingRaw.length >= 12 && c5ActionRaw.includes(c5DetailingRaw.slice(0, 18))))) ||
+        (c5ModeRaw.length >= 6 && (c5DetailingRaw === c5ModeRaw || (c5DetailingRaw.length >= 12 && c5ModeRaw.includes(c5DetailingRaw.slice(0, 18))))) ||
+        (c5EffectRaw.length >= 6 && (c5DetailingRaw === c5EffectRaw || (c5DetailingRaw.length >= 12 && c5EffectRaw.includes(c5DetailingRaw.slice(0, 18))))) ||
+        /^(por meio de|mediante|através de|por intermédio de|a fim de|com o objetivo de|com o fito de|com o intuito de|para que|visando)\b/i.test(c5DetailingRaw)
+      )
+    );
+    const c5DetailingAuthentic = Boolean(
+      parsed.c5Structure?.detailing?.present &&
+      !c5DetailingOverlaps &&
+      (c3c4Audit?.c5DetailingIsDistinctAndSpecific !== false)
+    );
+    if (parsed.c5Structure && !isOfficialBenchmark && !isWholeEssayZero && !isHumanRightsViolationC5 && (c5DetailingOverlaps || c3c4Audit?.c5DetailingIsDistinctAndSpecific === false)) {
+      if (parsed.c5Structure.detailing) {
+        parsed.c5Structure.detailing.present = false;
+        parsed.c5Structure.detailing.details = c3c4Audit?.c5DetailingOverlapReason || 'Trecho apenas repete a ação, descreve o meio de execução ou reformula a finalidade, não caracterizando detalhamento específico.';
+      }
+      const recalculatedValidCount = [
+        parsed.c5Structure.agent?.present,
+        parsed.c5Structure.action?.present,
+        parsed.c5Structure.modeMedium?.present,
+        parsed.c5Structure.effect?.present,
+        false
+      ].filter(Boolean).length;
+      parsed.c5Structure.validElementsCount = recalculatedValidCount;
+      c5MaxCap = Math.min(c5MaxCap, Math.min(160, recalculatedValidCount * 40));
+      if (c5s > c5MaxCap) {
+        c5s = c5MaxCap;
+      }
+    }
+
+    const has5Elements = Boolean(
+      parsed.c5Structure?.agent?.present &&
+      parsed.c5Structure?.action?.present &&
+      parsed.c5Structure?.modeMedium?.present &&
+      parsed.c5Structure?.effect?.present &&
+      c5DetailingAuthentic &&
+      c5s >= 180
+    );
+    const respectsHumanRights = !isHumanRightsViolationC5;
+    if (parsed.c5Structure) {
+      parsed.c5Structure.respectsHumanRights = respectsHumanRights;
+      if (isHumanRightsViolationC5) {
+        parsed.c5Structure.humanRightsObservations = calibrationAudit.humanRightsAudit.violationReason || parsed.c5Structure.humanRightsObservations;
+      } else if (calibrationAudit.humanRightsAudit.isLawfulAdministrativeMeasureOnly) {
+        parsed.c5Structure.humanRightsObservations = calibrationAudit.humanRightsAudit.violationReason;
+      }
+    }
+    const c5_fiveCanonicalElements = !isWholeEssayZero && !isTangenciamento && (isOfficialBenchmark || (has5Elements && respectsHumanRights));
+
+    if (!isWholeEssayZero && !respectsHumanRights) {
       penaltiesApplied.push({
-        competencyAffected: 'C5',
-        penaltyName: 'Violação aos Direitos Humanos',
+        competencyAffected: 'C5 (Exclusivamente)',
+        penaltyName: `Desrespeito aos Direitos Humanos na C5`,
         penaltyPoints: 200,
-        reason: 'Proposta contém teor incompatível com os Direitos Humanos, gerando anulação total de C5.',
+        reason: `${calibrationAudit.humanRightsAudit.violationReason || 'Proposta contém teor incompatível com os Direitos Humanos.'} REGRA FUNDAMENTAL INEP: Atribui-se nota ZERO (0) exclusivamente à Competência V; as Competências I, II, III e IV NÃO são zeradas e mantêm suas pontuações normais.`,
+        evidenceSnippet: calibrationAudit.humanRightsAudit.violationSnippet,
         severity: 'critica'
       });
-    } else if (!has5Elements) {
+    } else if (!isWholeEssayZero && !isTangenciamento && (!has5Elements || c5s < 200)) {
+      const c5OverlapMsg = (c5DetailingOverlaps || c3c4Audit?.c5DetailingIsDistinctAndSpecific === false)
+        ? (c3c4Audit?.c5DetailingOverlapReason || 'Trecho indicado como detalhamento apenas repete a ação, descreve o meio ou reformula a finalidade, sem acrescentar informação específica.')
+        : 'Proposta incompleta ou sem detalhamento específico distinto do meio/finalidade (4 elementos ou menos comprovados).';
       penaltiesApplied.push({
         competencyAffected: 'C5',
-        penaltyName: 'Proposta de Intervenção com Elementos Faltantes',
-        penaltyPoints: 20,
-        reason: 'Proposta incompleta ou com detalhamento não substantivo (ausência de 1 dos 5 elementos canônicos).',
-        severity: 'moderada'
+        penaltyName: 'Detalhamento Não Específico ou Elemento Faltante (C5)',
+        penaltyPoints: Math.max(20, 200 - c5s),
+        reason: c5OverlapMsg,
+        severity: c5s <= 120 ? 'severa' : 'moderada'
       });
     }
 
-    // Portas de Evidência de Excelência
     const requiredExcellenceEvidence = [
       {
-        gateName: 'Norma Culta & Sintaxe Erudita',
+        gateName: 'Precisão Vocabular, Registro Formal & Períodos Complexos',
         competency: 'C1',
-        requirement: 'Ausência de desvios graves (máx. 1 microdesvio isolado) e domínio de sintaxe complexa.',
+        requirement: 'Períodos complexos bem articulados, vocabulário formal preciso (sem oralidade ou clichês vagos) e no máximo 1–2 microdesvios leves isolados.',
         isMet: c1_normativeMastery,
-        verbatimEvidenceFound: hasEruditeVocab ? 'Vocabulário formal e orações subordinadas consistentes' : undefined,
-        impactOnScore: c1_normativeMastery ? 'Desbloqueia teto de 180-200 pts em C1' : 'Limita C1 a 120-160 pts'
+        verbatimEvidenceFound: c1_normativeMastery ? 'Períodos complexos bem articulados e vocabulário formal preciso' : undefined,
+        impactOnScore: c1_normativeMastery ? 'Sustenta faixa de 180-200 pts em C1' : 'Teto de 160 pts por oralidade/imprecisão vocabular, sintaxe simples ou desvios formais'
       },
       {
-        gateName: 'Repertório Sociocultural Legitimado & Produtivo',
+        gateName: 'Repertório Produtivo nos Desenvolvimentos (D1/D2) & Tema',
         competency: 'C2',
-        requirement: 'Alusão com autor/obra de área do conhecimento e vínculo produtivo explícito à tese.',
+        requirement: 'Abordagem completa do recorte temático com repertório sociocultural pertinente e produtivo também na argumentação (D1 e/ou D2; agentes na Conclusão não contam).',
         isMet: c2_productiveRepertoire,
-        verbatimEvidenceFound: hasProductiveLink ? 'Repertório legitimado com conectivo de produtividade' : undefined,
-        impactOnScore: c2_productiveRepertoire ? 'Desbloqueia teto de 180-200 pts em C2' : 'Limita C2 a 120-160 pts'
+        verbatimEvidenceFound: isTangenciamento ? `Tangenciamento no trecho: "${calibrationAudit.thematicEvidenceSnippet}"` : (c3c4Audit?.c2DevelopmentRepertoireEvidence || c3c4Audit?.c2RepertoireEvidence || (hasProductiveLinkRegex ? 'Repertório integrado nos desenvolvimentos' : undefined)),
+        impactOnScore: isTangenciamento ? 'Trava oficial de Tangenciamento: C2 = 40 pts' : (c2_productiveRepertoire ? 'Sustenta faixa de 180-200 pts em C2' : 'Teto de 160 pts quando restrito à introdução ou ausente em D1/D2')
       },
       {
-        gateName: 'Projeto de Texto & Autoria Crítica',
+        gateName: 'Argumentação Aprofundada: Repertório + Causa Estrutural + Consequência Crítica em D1 e D2',
         competency: 'C3',
-        requirement: 'Tese bipartida com nexos causais rigorosos e posicionamento crítico evidente.',
+        requirement: 'Articulação de repertório, causa estrutural profunda e consequência crítica em ambos os parágrafos de desenvolvimento (D1 e D2), além do nível meramente expositivo.',
         isMet: c3_strategicProject,
-        verbatimEvidenceFound: hasCausality ? 'Causalidade explícita com marcas avaliativas autorais' : undefined,
-        impactOnScore: c3_strategicProject ? 'Desbloqueia teto de 180-200 pts em C3' : 'Limita C3 a 120-160 pts'
+        verbatimEvidenceFound: c3_strategicProject && hasCausalityRegex ? 'Causa estrutural profunda, consequência crítica e repertório articulados em D1 e D2' : undefined,
+        impactOnScore: isTangenciamento ? 'Trava oficial de Tangenciamento: C3 <= 40 pts' : (c3_strategicProject ? 'Sustenta faixa de 180-200 pts em C3' : 'Teto de 160 pts quando D1/D2 permanecem expositivos ou superficiais')
       },
       {
-        gateName: 'Diversidade Coesiva Inter/Intraparágrafo',
+        gateName: 'Coesão Funcional, Fluidez & Progressão',
         competency: 'C4',
-        requirement: 'Operadores interparágrafos em D1/D2/Conclusão e variedade de conectivos sem repetição.',
+        requirement: 'Adequação semântica, funcionalidade coesiva sem estruturas previsíveis/repetitivas, progressão fluida e retomada de referentes (sem exigir conectivos raros).',
         isMet: c4_cohesiveDiversity,
-        verbatimEvidenceFound: hasInterConnectives ? 'Operadores interparágrafos validados' : undefined,
-        impactOnScore: c4_cohesiveDiversity ? 'Desbloqueia teto de 180-200 pts em C4' : 'Limita C4 a 120-160 pts'
+        verbatimEvidenceFound: c4_cohesiveDiversity && hasInterConnectivesRegex ? 'Articulação funcional e progressão validadas' : undefined,
+        impactOnScore: c4_cohesiveDiversity ? 'Sustenta faixa de 180-200 pts em C4' : 'Referência de 120-160 pts ou 160-180 se previsível/repetitiva'
       },
       {
-        gateName: 'Proposta Completa (5 Elementos + Detalhamento)',
+        gateName: 'Proposta Completa (5 Elementos + Detalhamento Específico)',
         competency: 'C5',
-        requirement: 'Agente, Ação, Meio/Modo, Efeito e Detalhamento autêntico sem ferir Direitos Humanos.',
+        requirement: 'Agente, Ação, Meio/Modo, Finalidade e Detalhamento específico distinto do meio/finalidade, respeitando os Direitos Humanos.',
         isMet: c5_fiveCanonicalElements,
-        verbatimEvidenceFound: has5Elements ? '5 elementos canônicos estruturados' : undefined,
-        impactOnScore: c5_fiveCanonicalElements ? 'Desbloqueia teto de 180-200 pts em C5' : 'Limita C5 a 120-160 pts'
+        verbatimEvidenceFound: !respectsHumanRights ? `Violação de DH no trecho: "${calibrationAudit.humanRightsAudit.violationSnippet}"` : (has5Elements ? '5 elementos canônicos com detalhamento específico estruturados' : undefined),
+        impactOnScore: !respectsHumanRights ? 'Desrespeito aos Direitos Humanos: C5 = 0 pts (C1-C4 normais)' : isTangenciamento ? 'Trava oficial de Tangenciamento: C5 <= 40 pts' : (c5_fiveCanonicalElements ? 'Sustenta faixa de 180-200 pts em C5' : 'Limita C5 a 120-160 pts')
       }
     ];
 
-    // Índices ponderados de domínio técnico e argumentativo (0 a 100)
-    let techScore = 60;
-    if (c1_normativeMastery) techScore += 22;
-    else if (devCount <= 2 && !hasOralMarks) techScore += 12;
-    if (c4_cohesiveDiversity) techScore += 18;
-    else techScore += 8;
+    let techScore = isWholeEssayZero ? 0 : 60;
+    if (!isWholeEssayZero) {
+      if (c1_normativeMastery) techScore += 22;
+      else if (devCount <= 2 && !hasOralOrVagueMarks) techScore += 12;
+      if (c4_cohesiveDiversity) techScore += 18;
+      else techScore += 8;
+    }
     const technicalMasteryIndex = isOfficialBenchmark ? 100 : Math.min(100, techScore);
 
-    let argScore = 55;
-    if (c2_productiveRepertoire) argScore += 16;
-    if (c3_strategicProject) argScore += 15;
-    if (c5_fiveCanonicalElements) argScore += 14;
+    let argScore = isWholeEssayZero ? 0 : (isTangenciamento ? 25 : 55);
+    if (!isWholeEssayZero && !isTangenciamento) {
+      if (c2_productiveRepertoire) argScore += 16;
+      if (c3_strategicProject) argScore += 15;
+      if (c5_fiveCanonicalElements) argScore += 14;
+    }
     const argumentativeDepthIndex = isOfficialBenchmark ? 100 : Math.min(100, argScore);
 
     const verifiedCriteriaList = [
@@ -1877,7 +4211,67 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
     ];
     const passedCount = verifiedCriteriaList.filter(Boolean).length;
 
-    // Calibração estrita para notas acima de 900 em redações de estudantes
+    if (parsed.competencies) {
+      if (parsed.competencies.c1) { parsed.competencies.c1.score = c1s; parsed.competencies.c1.nota = c1s; }
+      if (parsed.competencies.c2) { parsed.competencies.c2.score = c2s; parsed.competencies.c2.nota = c2s; }
+      if (parsed.competencies.c3) { parsed.competencies.c3.score = c3s; parsed.competencies.c3.nota = c3s; }
+      if (parsed.competencies.c4) { parsed.competencies.c4.score = c4s; parsed.competencies.c4.nota = c4s; }
+      if (parsed.competencies.c5) { parsed.competencies.c5.score = c5s; parsed.competencies.c5.nota = c5s; }
+    }
+    parsed.totalScore = c1s + c2s + c3s + c4s + c5s;
+
+    const serverReconcile = (!isOfficialBenchmark && !isWholeEssayZero)
+      ? reconcileEvaluationWithConsistencyAudit(parsed, essayText, theme || "", {
+          isOfficialBenchmark,
+          isWholeEssayZero,
+          isTangenciamento,
+          isHumanRightsViolationC5,
+          caps: {
+            c1Max: c1MaxCap,
+            c2Max: c2MaxCap,
+            c3Max: c3MaxCap,
+            c4Max: c4MaxCap,
+            c5Max: c5MaxCap
+          }
+        })
+      : null;
+
+    if (serverReconcile?.concessionApplied) {
+      c1s = serverReconcile.reconciledScores.c1;
+      c2s = serverReconcile.reconciledScores.c2;
+      c3s = serverReconcile.reconciledScores.c3;
+      c4s = serverReconcile.reconciledScores.c4;
+      c5s = serverReconcile.reconciledScores.c5;
+      finalTotal = serverReconcile.reconciledScores.total;
+
+      const adjustConcededPair = (meanVal: number, strictSide: 'A' | 'B'): [number, number] => {
+        const clean = Math.max(0, Math.min(200, Math.round(meanVal / 20) * 20));
+        if (clean % 40 === 0) return [clean, clean];
+        const low = Math.max(0, clean - 20);
+        const high = Math.min(200, clean + 20);
+        return strictSide === 'A' ? [low, high] : [high, low];
+      };
+      for (const cd of serverReconcile.concessionDetails) {
+        const upCap = cd.reconciledScore === 180 ? 200 : Math.min(200, Math.ceil(cd.reconciledScore / 40) * 40);
+        if (cd.competency === 'C1') {
+          c1MaxCap = cd.reconciledScore > cd.previousScore ? Math.max(c1MaxCap, upCap) : Math.min(c1MaxCap, cd.reconciledScore <= 160 ? 160 : 200);
+          [evalA_c1, evalB_c1] = adjustConcededPair(c1s, 'A');
+        } else if (cd.competency === 'C2') {
+          c2MaxCap = cd.reconciledScore > cd.previousScore ? Math.max(c2MaxCap, upCap) : Math.min(c2MaxCap, cd.reconciledScore <= 160 ? 160 : 200);
+          [evalA_c2, evalB_c2] = adjustConcededPair(c2s, 'B');
+        } else if (cd.competency === 'C3') {
+          c3MaxCap = cd.reconciledScore > cd.previousScore ? Math.max(c3MaxCap, upCap) : Math.min(c3MaxCap, cd.reconciledScore <= 160 ? 160 : 200);
+          [evalA_c3, evalB_c3] = adjustConcededPair(c3s, 'B');
+        } else if (cd.competency === 'C4') {
+          c4MaxCap = cd.reconciledScore > cd.previousScore ? Math.max(c4MaxCap, upCap) : Math.min(c4MaxCap, cd.reconciledScore <= 160 ? 160 : 200);
+          [evalA_c4, evalB_c4] = adjustConcededPair(c4s, 'A');
+        } else if (cd.competency === 'C5') {
+          c5MaxCap = cd.reconciledScore > cd.previousScore ? Math.max(c5MaxCap, upCap) : Math.min(c5MaxCap, cd.reconciledScore <= 160 ? 160 : 200);
+          [evalA_c5, evalB_c5] = adjustConcededPair(c5s, 'B');
+        }
+      }
+    }
+
     let curveTier: 'Excelência Máxima (1000)' | 'Excelência Rara (980)' | 'Alto Nível Superior (960)' | 'Alto Nível Consistente (940)' | 'Alto Nível Inicial (920)' | 'Faixa 900' | 'Padrão Regular (<900)' = 'Padrão Regular (<900)';
     let percentileEstimate = 'Faixa regular';
     let rigorVerdict = 'Pontuação regular validada sob a Matriz do INEP.';
@@ -1892,62 +4286,47 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       evalA_c1 = 200; evalA_c2 = 200; evalA_c3 = 200; evalA_c4 = 200; evalA_c5 = 200;
       evalB_c1 = 200; evalB_c2 = 200; evalB_c3 = 200; evalB_c4 = 200; evalB_c5 = 200;
       finalTotal = 1000;
+    } else if (isWholeEssayZero) {
+      curveTier = 'Padrão Regular (<900)';
+      percentileEstimate = 'Nota Zero Oficial (Anulação INEP)';
+      rigorVerdict = `Redação enquadrada em situação oficial de Nota Zero (${effectiveZeroCondition.officialReasonTitle}): ${effectiveZeroCondition.analyticalJustification}`;
+      scoreGateSummary = `Anulação global da redação (0/1000) com base nas regras oficiais da Cartilha do Participante.`;
+      c1s = 0; c2s = 0; c3s = 0; c4s = 0; c5s = 0;
+      evalA_c1 = 0; evalA_c2 = 0; evalA_c3 = 0; evalA_c4 = 0; evalA_c5 = 0;
+      evalB_c1 = 0; evalB_c2 = 0; evalB_c3 = 0; evalB_c4 = 0; evalB_c5 = 0;
+      finalTotal = 0;
+    } else if (isTangenciamento) {
+      curveTier = 'Padrão Regular (<900)';
+      percentileEstimate = 'Penalização Oficial por Tangenciamento Temático';
+      rigorVerdict = `Tangenciamento temático identificado: o texto abordou o assunto geral, mas desviou do recorte específico da proposta. Aplicadas as travas oficiais do INEP em C2 (40 pts), C3 (máx. 40 pts) e C5 (máx. 40 pts), preservando a avaliação normal de C1 e C4.`;
+      scoreGateSummary = `Tangenciamento não gera nota zero na redação inteira. Penalização aplicada estritamente em C2 (40 pts) com repercussão em C3 (${c3s} pts) e C5 (${c5s} pts).`;
+    } else if (isHumanRightsViolationC5) {
+      curveTier = 'Padrão Regular (<900)';
+      percentileEstimate = 'Penalização Isolada na C5 (Direitos Humanos)';
+      rigorVerdict = `Desrespeito aos Direitos Humanos identificado na proposta de intervenção. Atribuída nota 0 exclusivamente à Competência V, mantendo a pontuação normal das Competências I (${c1s}), II (${c2s}), III (${c3s}) e IV (${c4s}).`;
+      scoreGateSummary = `Regra Fundamental do INEP aplicada: Nota zero na C5 (0 pts) NÃO zera a redação inteira. Soma normal das demais competências.`;
     } else if (finalTotal > 900) {
-      if (passedCount === 5 && technicalMasteryIndex >= 95 && argumentativeDepthIndex >= 95 && devCount === 0 && !hasOralMarks && wordCount >= 270) {
-        // Rara excelência quase impecável: 980 pts (200 em 4 e 180 em 1)
-        curveTier = 'Excelência Rara (980)';
+      const aiCalibratedAny = c1s < 200 || c2s < 200 || c3s < 200 || c4s < 200 || c5s < 200 || c2HasUnderExploredOrMentionOnly || c3HasRepetitionOrSuperficiality || c4HasFunctionalOrProgressionFlaw;
+      if (aiCalibratedAny) {
+        curveTier = finalTotal >= 980 ? 'Excelência Rara (980)' : finalTotal >= 960 ? 'Alto Nível Superior (960)' : finalTotal >= 940 ? 'Alto Nível Consistente (940)' : finalTotal >= 920 ? 'Alto Nível Inicial (920)' : 'Faixa 900';
+        percentileEstimate = finalTotal >= 960 ? 'Alto Desempenho Calibrado por Evidência' : 'Calibração Independente por Evidência (C1–C5)';
+        rigorVerdict = 'Pontuações das competências preservadas de forma independente conforme a distinção entre adequação e excelência fundamentada em evidências do texto.';
+        scoreGateSummary = 'Notas individuais calibradas pela régua oficial do INEP sem inflação automática.';
+      } else if (passedCount === 5 && devCount <= 1 && !hasOralOrVagueMarks) {
+        curveTier = 'Excelência Máxima (1000)';
         percentileEstimate = 'Top 0.05% dos candidatos do ENEM';
-        rigorVerdict = 'Desempenho de excelência técnica e argumentativa excepcional. Calibrado para 980 pontos segundo a curva estatística do INEP (consenso com 1 divergência leve de 180 pts em C1).';
-        scoreGateSummary = 'Todos os 5 pilares de excelência foram comprovados com 0 desvios. Nota 980 validada sob simulação de duplo corretor (180 em C1 e 200 nas demais).';
-        c1s = 180; c2s = 200; c3s = 200; c4s = 200; c5s = 200;
-        finalTotal = 980;
-        evalA_c1 = 160; evalB_c1 = 200;
-      } else if (passedCount >= 4 && devCount <= 1 && !hasOralMarks && technicalMasteryIndex >= 88 && argumentativeDepthIndex >= 88) {
-        // Alto Nível Superior: 960 pts (3 x 200 e 2 x 180)
+        rigorVerdict = 'Desempenho de excelência comprovada em todas as competências, sem limitações artificiais.';
+        scoreGateSummary = 'Todos os 5 pilares de excelência foram comprovados com evidências textuais na correção.';
+      } else if (passedCount >= 4 && devCount <= 1 && !hasOralOrVagueMarks) {
         curveTier = 'Alto Nível Superior (960)';
         percentileEstimate = 'Top 0.3% dos candidatos do ENEM';
-        rigorVerdict = 'Redação de alto nível com solidez nos 5 eixos. Curva estatística do INEP calibrada para 960 pts (médias de duplo avaliador: C1 180 pts, C4 180 pts e 200 nas demais).';
-        scoreGateSummary = '4 pilares de excelência comprovados. Desvios controlados (máx. 1). Calibrado para 960 pts pela média aritmética oficial.';
-        c1s = 180; c2s = 200; c3s = 200; c4s = 180; c5s = 200;
-        finalTotal = 960;
-        evalA_c1 = 160; evalB_c1 = 200;
-        evalA_c4 = 160; evalB_c4 = 200;
-      } else if (passedCount >= 3 && devCount <= 1 && !hasOralMarks && technicalMasteryIndex >= 82 && argumentativeDepthIndex >= 82) {
-        // Alto Nível Consistente: 940 pts (2 x 200 e 3 x 180)
-        curveTier = 'Alto Nível Consistente (940)';
-        percentileEstimate = 'Top 0.8% dos candidatos do ENEM';
-        rigorVerdict = 'Redação consistente de alto padrão. Curva calibrada para 940 pts pela simulação de avaliadores independentes (C1 180, C3 180, C4 180, C2 200, C5 200).';
-        scoreGateSummary = '3 pilares de excelência comprovados com evidências. Calibrado para 940 pts com rigor estatístico anti-inflação.';
-        c1s = 180; c2s = 200; c3s = 180; c4s = 180; c5s = 200;
-        finalTotal = 940;
-        evalA_c1 = 160; evalB_c1 = 200;
-        evalA_c3 = 160; evalB_c3 = 200;
-        evalA_c4 = 160; evalB_c4 = 200;
-      } else if (passedCount >= 2 && devCount <= 2 && !hasOralMarks && technicalMasteryIndex >= 76 && argumentativeDepthIndex >= 76) {
-        // Alto Nível Inicial: 920 pts (1 x 200 e 4 x 180)
-        curveTier = 'Alto Nível Inicial (920)';
-        percentileEstimate = 'Top 1.8% dos candidatos do ENEM';
-        rigorVerdict = 'Redação com ótima estrutura dissertativa. Curva do INEP calibrada para 920 pts (4 competências em 180 pts e 1 em 200 pts) para evitar inflação artificial.';
-        scoreGateSummary = '2 pilares de excelência confirmados. Calibrado para 920 pts para refletir com fidelidade a curva real do ENEM.';
-        c1s = 180; c2s = 200; c3s = 180; c4s = 180; c5s = 180;
-        finalTotal = 920;
-        evalA_c1 = 160; evalB_c1 = 200;
-        evalA_c3 = 160; evalB_c3 = 200;
-        evalA_c4 = 160; evalB_c4 = 200;
-        evalA_c5 = 160; evalB_c5 = 200;
+        rigorVerdict = 'Redação de alto nível com solidez nos 5 eixos avaliada com independência entre competências.';
+        scoreGateSummary = '4+ pilares comprovados com evidências textuais. Notas individuais da banca preservadas sem inflação artificial.';
       } else {
-        // Faixa 900
-        curveTier = 'Faixa 900';
-        percentileEstimate = 'Top 3.5% dos candidatos do ENEM';
-        rigorVerdict = 'Redação com bom desempenho geral situada na faixa de 880-900 pts conforme matriz oficial.';
-        scoreGateSummary = 'Não atingiu os requisitos de excelência afirmativa para notas superiores a 900. Pontuação fixada em 880/900 pts.';
-        c1s = 160; c2s = 200; c3s = 160; c4s = 180; c5s = 180;
-        finalTotal = 880;
-        evalA_c1 = 160; evalB_c1 = 160;
-        evalA_c2 = 200; evalB_c2 = 200;
-        evalA_c3 = 160; evalB_c3 = 160;
-        evalA_c4 = 160; evalB_c4 = 200;
-        evalA_c5 = 160; evalB_c5 = 200;
+        curveTier = finalTotal >= 920 ? 'Alto Nível Inicial (920)' : 'Faixa 900';
+        percentileEstimate = 'Top 2%–3.5% dos candidatos do ENEM';
+        rigorVerdict = 'Redação com bom domínio dissertativo e pontuação preservada com independência por competência.';
+        scoreGateSummary = 'Pontuação consolidada a partir das evidências concretas identificadas em cada competência.';
       }
     } else if (finalTotal === 900) {
       curveTier = 'Faixa 900';
@@ -1956,15 +4335,58 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       scoreGateSummary = 'Desempenho equilibrado com consolidação na faixa de 900 pontos.';
     }
 
-    if (c1s === 200 && c2s === 200 && c3s === 200 && c4s === 200 && c5s === 200) {
-      evalA_c1 = 200; evalA_c2 = 200; evalA_c3 = 200; evalA_c4 = 200; evalA_c5 = 200;
-      evalB_c1 = 200; evalB_c2 = 200; evalB_c3 = 200; evalB_c4 = 200; evalB_c5 = 200;
-    }
+    const calibratedDual = calibrateDualEvaluatorProfiles({
+      rawA: { c1: evalA_c1, c2: evalA_c2, c3: evalA_c3, c4: evalA_c4, c5: evalA_c5 },
+      rawB: { c1: evalB_c1, c2: evalB_c2, c3: evalB_c3, c4: evalB_c4, c5: evalB_c5 },
+      isOfficialBenchmark,
+      isWholeEssayZero,
+      isTangenciamento,
+      isHumanRightsViolationC5,
+      caps: {
+        c1Max: c1MaxCap,
+        c2Max: c2MaxCap,
+        c3Max: c3MaxCap,
+        c4Max: c4MaxCap,
+        c5Max: c5MaxCap
+      },
+      tensions: {
+        c1HasDeviationsOrOral: hasOralOrVagueMarks || !hasComplexSyntaxC1 || hasSyntaxFault || c3c4Audit?.c1HasComplexSyntaxAndFormalPrecision === false || devCount > 0,
+        c1DeviationsCount: devCount,
+        c2Tension: c2HasUnderExploredOrMentionOnly || hasRepertoireOnlyInIntro || !hasVerifiedDevRepertoire,
+        c3Tension: c3HasRepetitionOrSuperficiality || !c3MeetsDeepExcellence,
+        c4Tension: c4HasFunctionalOrProgressionFlaw || findAnaphoricMesmoExcerpts(essayText).length > 0,
+        c5ElementsCount: parsed.c5Structure?.validElementsCount ?? (c5s >= 200 ? 5 : Math.round(c5s / 40)),
+        c5DetailingAuthentic
+      }
+    });
 
-    const finalEvaluatorATotal = evalA_c1 + evalA_c2 + evalA_c3 + evalA_c4 + evalA_c5;
-    const finalEvaluatorBTotal = evalB_c1 + evalB_c2 + evalB_c3 + evalB_c4 + evalB_c5;
-    // A nota oficial a considerar é rigorosamente a média aritmética dos corretores (soma das médias das competências)
-    finalTotal = Math.round((finalEvaluatorATotal + finalEvaluatorBTotal) / 2);
+    evalA_c1 = calibratedDual.evalA.c1;
+    evalA_c2 = calibratedDual.evalA.c2;
+    evalA_c3 = calibratedDual.evalA.c3;
+    evalA_c4 = calibratedDual.evalA.c4;
+    evalA_c5 = calibratedDual.evalA.c5;
+    evalB_c1 = calibratedDual.evalB.c1;
+    evalB_c2 = calibratedDual.evalB.c2;
+    evalB_c3 = calibratedDual.evalB.c3;
+    evalB_c4 = calibratedDual.evalB.c4;
+    evalB_c5 = calibratedDual.evalB.c5;
+
+    c1s = calibratedDual.means.c1;
+    c2s = calibratedDual.means.c2;
+    c3s = calibratedDual.means.c3;
+    c4s = calibratedDual.means.c4;
+    c5s = calibratedDual.means.c5;
+
+    const finalEvaluatorATotal = calibratedDual.evalA.total;
+    const finalEvaluatorBTotal = calibratedDual.evalB.total;
+    finalTotal = calibratedDual.means.total;
+
+    const finalDiscC1 = calibratedDual.discrepancies.c1;
+    const finalDiscC2 = calibratedDual.discrepancies.c2;
+    const finalDiscC3 = calibratedDual.discrepancies.c3;
+    const finalDiscC4 = calibratedDual.discrepancies.c4;
+    const finalDiscC5 = calibratedDual.discrepancies.c5;
+    const finalTotalDisc = calibratedDual.discrepancies.total;
 
     parsed.competencies.c1.score = c1s;
     parsed.competencies.c2.score = c2s;
@@ -1972,6 +4394,159 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
     parsed.competencies.c4.score = c4s;
     parsed.competencies.c5.score = c5s;
     parsed.totalScore = finalTotal;
+
+    if (isWholeEssayZero) {
+      const zeroSnippet = effectiveZeroCondition.evidenceSnippet || essayText.substring(0, 140);
+      const zeroExplanation = `[SITUAÇÃO OFICIAL DE NOTA ZERO — ${effectiveZeroCondition.officialReasonTitle?.toUpperCase()}] Trecho analisado: "${zeroSnippet}". Fundamentação: ${effectiveZeroCondition.analyticalJustification} Diferenciação técnica: Trata-se de hipótese expressa de ANULAÇÃO GLOBAL da redação (Nota Zero nas 5 competências: C1=0, C2=0, C3=0, C4=0, C5=0) conforme a Cartilha do Participante do ENEM; boa gramática, estrutura dissertativa, coesão, repertório ou proposta de intervenção NÃO anulam esta condição.`;
+      parsed.generalDiagnostic = `${zeroExplanation} ${parsed.generalDiagnostic || ""}`.trim();
+      (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((ck) => {
+        if (parsed.competencies[ck]) {
+          parsed.competencies[ck].level = 0;
+          parsed.competencies[ck].levelTitle = `Nível 0 — Anulação Oficial (${effectiveZeroCondition.officialReasonTitle})`;
+          parsed.competencies[ck].primaryEvidenceQuote = zeroSnippet;
+          parsed.competencies[ck].evidenceSnippets = [zeroSnippet];
+          parsed.competencies[ck].diagnostic = zeroExplanation;
+          parsed.competencies[ck].evaluation = zeroExplanation;
+          parsed.competencies[ck].problemsIdentified = [zeroExplanation];
+        }
+      });
+    } else {
+      if (isTangenciamento) {
+        const tangSnippet = effectiveThematicSnippet;
+        const tangExplanationC2 = `[TANGENCIAMENTO TEMÁTICO IDENTIFICADO — C2 = 40 PONTOS (NÍVEL 1)] Trecho evidenciado: "${tangSnippet}". Fundamentação: ${effectiveThematicJustification} Diferenciação técnica: O tangenciamento ocorre quando o texto pertence ao campo semântico/temático amplo da proposta, mas desloca a discussão sem desenvolver o recorte temático específico. Conforme a Cartilha do Participante do ENEM, o tangenciamento NÃO configura fuga total e NÃO zera a redação inteira: penaliza-se a Competência II no Nível 1 (40 pts), com repercussão oficial de teto Nível 1 (40 pts) nas Competências III e V, enquanto C1 e C4 são avaliadas normalmente.`;
+        const tangExplanationC3 = `[REPERCUSSÃO OFICIAL DE TANGENCIAMENTO EM C3 — TETO DE 40 PONTOS] Trecho evidenciado: "${tangSnippet}". Como a argumentação defendeu um eixo tangencial sem desenvolver o recorte específico ("${calibrationAudit.themeDecomposition.specificCutWords.join(', ')}"), o projeto de texto fica limitado ao Nível 1 (${c3s} pts) segundo a Matriz do INEP.`;
+        const tangExplanationC5 = !isHumanRightsViolationC5
+          ? `[REPERCUSSÃO OFICIAL DE TANGENCIAMENTO EM C5 — TETO DE 40 PONTOS] Trecho evidenciado: "${tangSnippet}". Conforme diretriz oficial do INEP, propostas de intervenção em textos que tangenciam o recorte temático não resolvem a problemática central da proposta e têm pontuação máxima limitada a 40 pontos (${c5s} pts).`
+          : undefined;
+
+        parsed.generalDiagnostic = `${tangExplanationC2} ${parsed.generalDiagnostic || ""}`.trim();
+        if (parsed.competencies.c2) {
+          parsed.competencies.c2.level = 1;
+          parsed.competencies.c2.levelTitle = "Nível 1 (40 pts) — Tangenciamento ao Tema";
+          parsed.competencies.c2.primaryEvidenceQuote = tangSnippet;
+          parsed.competencies.c2.evidenceSnippets = [tangSnippet, ...(parsed.competencies.c2.evidenceSnippets || [])].slice(0, 3);
+          parsed.competencies.c2.diagnostic = tangExplanationC2;
+          parsed.competencies.c2.evaluation = `${tangExplanationC2} ${parsed.competencies.c2.evaluation || ""}`.trim();
+        }
+        if (parsed.competencies.c3) {
+          parsed.competencies.c3.level = Math.min(1, Math.floor(c3s / 40));
+          parsed.competencies.c3.levelTitle = `Nível ${Math.floor(c3s / 40)} (${c3s} pts) — Limitado por Tangenciamento Temático`;
+          parsed.competencies.c3.primaryEvidenceQuote = tangSnippet;
+          parsed.competencies.c3.diagnostic = tangExplanationC3;
+          parsed.competencies.c3.evaluation = `${tangExplanationC3} ${parsed.competencies.c3.evaluation || ""}`.trim();
+        }
+        if (parsed.competencies.c5 && tangExplanationC5) {
+          parsed.competencies.c5.level = Math.min(1, Math.floor(c5s / 40));
+          parsed.competencies.c5.levelTitle = `Nível ${Math.floor(c5s / 40)} (${c5s} pts) — Limitado por Tangenciamento Temático`;
+          parsed.competencies.c5.diagnostic = tangExplanationC5;
+          parsed.competencies.c5.evaluation = `${tangExplanationC5} ${parsed.competencies.c5.evaluation || ""}`.trim();
+        }
+      }
+
+      if (isHumanRightsViolationC5) {
+        const dhSnippet = calibrationAudit.humanRightsAudit.violationSnippet || parsed.c5Structure?.action?.text || parsed.competencies.c5?.primaryEvidenceQuote || "";
+        const dhExplanation = `[DESRESPEITO AOS DIREITOS HUMANOS NA COMPETÊNCIA V — C5 = 0 PONTOS] Trecho específico identificado: "${dhSnippet}". Enquadramento: ${calibrationAudit.humanRightsAudit.violationReason || "A proposta de intervenção defende medidas incompatíveis com a dignidade humana e os Direitos Humanos."} Diferenciação fundamental (Regra Oficial do INEP): A violação aos Direitos Humanos gera NOTA ZERO EXCLUSIVAMENTE NA COMPETÊNCIA V (0/200), mas NÃO anula a redação inteira. As Competências I (${c1s} pts), II (${c2s} pts), III (${c3s} pts) e IV (${c4s} pts) foram avaliadas e somadas normalmente, totalizando ${finalTotal}/1000 pontos.`;
+        parsed.generalDiagnostic = `${dhExplanation} ${parsed.generalDiagnostic || ""}`.trim();
+        if (parsed.competencies.c5) {
+          parsed.competencies.c5.level = 0;
+          parsed.competencies.c5.levelTitle = "Nível 0 (0 pts) — Desrespeito aos Direitos Humanos na Intervenção";
+          parsed.competencies.c5.primaryEvidenceQuote = dhSnippet;
+          parsed.competencies.c5.evidenceSnippets = [dhSnippet];
+          parsed.competencies.c5.diagnostic = dhExplanation;
+          parsed.competencies.c5.evaluation = dhExplanation;
+          parsed.competencies.c5.problemsIdentified = [
+            `Desrespeito aos Direitos Humanos no trecho: "${dhSnippet}" (${calibrationAudit.humanRightsAudit.violationReason || "violação à dignidade humana"}).`,
+            "Penalização restrita à Competência V (0 pontos), preservando as notas das Competências I, II, III e IV."
+          ];
+        }
+      }
+    }
+
+    // Deduplicar penalidades e validar localização de evidenceSnippet antes de montar relatórios finais
+    const seenPenaltyKeys = new Set<string>();
+    for (let i = penaltiesApplied.length - 1; i >= 0; i--) {
+      const p = penaltiesApplied[i];
+      if (p.evidenceSnippet) {
+        const pLoc = locateSnippetInEssay(p.evidenceSnippet, essayText);
+        if (pLoc.found) {
+          p.evidenceSnippet = pLoc.wasTruncated ? `[${pLoc.locationTag}] ${pLoc.fullSentenceContext}` : `[${pLoc.locationTag}] ${pLoc.exactSpan}`;
+        }
+      }
+      const key = `${p.competencyAffected}:${p.penaltyName}`.toLowerCase();
+      if (seenPenaltyKeys.has(key)) {
+        penaltiesApplied.splice(i, 1);
+      } else {
+        seenPenaltyKeys.add(key);
+      }
+    }
+
+    // Validar primaryEvidenceQuote / evidenceSnippets de cada competência com localização literal no texto
+    const essaySentencesList = essayText.split(/(?<=[.!?])\s+/).map((s: string) => s.trim()).filter(Boolean);
+    (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((ck, idx) => {
+      const compObj = parsed.competencies?.[ck];
+      if (!compObj) return;
+      const cand = compObj.primaryEvidenceQuote || (Array.isArray(compObj.evidenceSnippets) ? compObj.evidenceSnippets[0] : '');
+      const loc = locateSnippetInEssay(cand, essayText);
+      if (loc.found) {
+        compObj.primaryEvidenceQuote = loc.wasTruncated || loc.exactSpan.length < 12 ? loc.fullSentenceContext : loc.exactSpan;
+      } else if (ck === 'c2' && recognizedRepertoires[0]) {
+        compObj.primaryEvidenceQuote = recognizedRepertoires[0].fullSentence;
+      } else if (ck === 'c5' && conclusionAudit.proposals[0]) {
+        compObj.primaryEvidenceQuote = conclusionAudit.proposals[0].sentence;
+      } else {
+        const paraFallback = essayParas[Math.min(idx, Math.max(0, essayParas.length - 1))] || essaySentencesList[0] || '';
+        const firstCompleteSent = paraFallback.split(/(?<=[.!?])\s+/)[0] || paraFallback;
+        if (firstCompleteSent) compObj.primaryEvidenceQuote = firstCompleteSent;
+      }
+      if (Array.isArray(compObj.evidenceSnippets)) {
+        compObj.evidenceSnippets = compObj.evidenceSnippets
+          .map((s: string) => {
+            const sl = locateSnippetInEssay(s, essayText);
+            return sl.found ? (sl.wasTruncated ? sl.fullSentenceContext : sl.exactSpan) : '';
+          })
+          .filter(Boolean);
+        if (compObj.evidenceSnippets.length === 0 && compObj.primaryEvidenceQuote) {
+          compObj.evidenceSnippets = [compObj.primaryEvidenceQuote];
+        }
+      }
+    });
+
+    // Validação cruzada e reancoramento factual de C3 (D1/D2) e C5 (Conclusão) antes dos relatórios
+    if (!isOfficialBenchmark && !isWholeEssayZero && !isTangenciamento) {
+      const preGrounding = groundC3AndC5FeedbackInEssayFacts(parsed, essayText, theme || "");
+      if (preGrounding.c3ReanchoredQuote && parsed.competencies?.c3) {
+        parsed.competencies.c3.primaryEvidenceQuote = preGrounding.c3ReanchoredQuote;
+        parsed.competencies.c3.trecho_evidencia = preGrounding.c3ReanchoredQuote;
+        const restC3 = Array.isArray(parsed.competencies.c3.evidenceSnippets)
+          ? parsed.competencies.c3.evidenceSnippets.filter((s: string) => s && s !== preGrounding.c3ReanchoredQuote)
+          : [];
+        parsed.competencies.c3.evidenceSnippets = [preGrounding.c3ReanchoredQuote, ...restC3].slice(0, 3);
+      }
+      if (preGrounding.c5ReanchoredQuote && !isHumanRightsViolationC5 && parsed.competencies?.c5) {
+        parsed.competencies.c5.primaryEvidenceQuote = preGrounding.c5ReanchoredQuote;
+        parsed.competencies.c5.trecho_evidencia = preGrounding.c5ReanchoredQuote;
+        const restC5 = Array.isArray(parsed.competencies.c5.evidenceSnippets)
+          ? parsed.competencies.c5.evidenceSnippets.filter((s: string) => s && s !== preGrounding.c5ReanchoredQuote)
+          : [];
+        parsed.competencies.c5.evidenceSnippets = [preGrounding.c5ReanchoredQuote, ...restC5].slice(0, 3);
+      }
+      if (c3s < 200 && parsed.competencies?.c3 && preGrounding.c3GroundedSummary) {
+        const curC3Just = String(parsed.competencies.c3.justificativa_analitica || "").trim();
+        if (!curC3Just.includes("Resumo dos desenvolvimentos") && !curC3Just.includes("Resumo de D1") && !curC3Just.includes("Fatos extraídos") && !curC3Just.includes("D1 (")) {
+          parsed.competencies.c3.justificativa_analitica = curC3Just
+            ? `${curC3Just} — ${preGrounding.c3GroundedSummary}`
+            : preGrounding.c3GroundedSummary;
+        }
+      }
+      if (c5s < 200 && !isHumanRightsViolationC5 && parsed.competencies?.c5 && preGrounding.c5GroundedSummary) {
+        const curC5Just = String(parsed.competencies.c5.justificativa_analitica || "").trim();
+        if (!curC5Just.includes("Resumo da conclusão") && !curC5Just.includes("Na conclusão:") && !curC5Just.includes("Fatos extraídos da conclusão")) {
+          parsed.competencies.c5.justificativa_analitica = curC5Just
+            ? `${curC5Just} — ${preGrounding.c5GroundedSummary}`
+            : preGrounding.c5GroundedSummary;
+        }
+      }
+    }
 
     const highPerformanceCurveReport = {
       isHighScore: finalTotal >= 900,
@@ -2010,10 +4585,10 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
         c4: evalA_c4,
         c5: evalA_c5,
         total: finalEvaluatorATotal,
-        evaluatorProfile: "Avaliador 1 (Perfil Normativo e Sintático)",
-        notes: simA?.notes || (discC1 > 0 
-          ? `Auditoria estrita de convenções formais. C1 atribuída em ${evalA_c1} pts e C4 em ${evalA_c4} pts com escrutínio minucioso de desvios e coesão.`
-          : `Auditoria de conformidade padrão INEP com foco em estrutura sintática e operadores argumentativos.`)
+        evaluatorProfile: "Avaliador 1 (Perfil Normativo, Sintático e Coesivo)",
+        notes: calibratedDual.wasAdjusted || !simA?.notes
+          ? calibratedDual.notesA
+          : simA.notes
       },
       evaluatorB: {
         c1: evalB_c1,
@@ -2022,145 +4597,373 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
         c4: evalB_c4,
         c5: evalB_c5,
         total: finalEvaluatorBTotal,
-        evaluatorProfile: "Avaliador 2 (Perfil Estrutural e Temático)",
-        notes: simB?.notes || (discC2 > 0 || discC3 > 0
-          ? `Auditoria de macroestrutura e densidade argumentativa. C2 em ${evalB_c2} pts e C3 em ${evalB_c3} pts avaliando a produtividade do repertório e projeto de texto.`
-          : `Auditoria da coerência temática, pertinência dos repertórios socioculturais e completude dos 5 elementos da intervenção.`)
+        evaluatorProfile: "Avaliador 2 (Perfil Estrutural, Temático e Interventivo)",
+        notes: calibratedDual.wasAdjusted || !simB?.notes
+          ? calibratedDual.notesB
+          : simB.notes
       },
-      discrepancyC1: discC1,
-      discrepancyC2: discC2,
-      discrepancyC3: discC3,
-      discrepancyC4: discC4,
-      discrepancyC5: discC5,
-      totalDiscrepancy: totalDisc,
-      status: totalDisc === 0 ? "consenso_direto" : "divergencia_tolerada",
-      explanation: totalDisc === 0
-        ? "Consenso unânime direto: Ambos os avaliadores atribuíram notas rigorosamente idênticas em todas as 5 competências."
-        : `Divergência tolerada pela Matriz do INEP (diferença total de ${totalDisc} pts, com máxima de ${Math.max(discC1, discC2, discC3, discC4, discC5)} pts em uma competência). A nota final é a média aritmética oficial.`
+      discrepancyC1: finalDiscC1,
+      discrepancyC2: finalDiscC2,
+      discrepancyC3: finalDiscC3,
+      discrepancyC4: finalDiscC4,
+      discrepancyC5: finalDiscC5,
+      totalDiscrepancy: finalTotalDisc,
+      status: calibratedDual.status,
+      explanation: calibratedDual.explanation
     };
 
-    // Generate strict Internal Audit Log verifying textual evidence and preventing 200 rounding bias
+    const c1DeviationsFormatted = Array.isArray(parsed.c1Deviations) && parsed.c1Deviations.length > 0
+      ? parsed.c1Deviations.map((d: any, idx: number) => `${idx + 1}) "${d.snippet}" (${d.problem} → forma culta: "${d.bestForm}")`).join("; ")
+      : "Nenhum desvio normativo grave extraído literalmente do texto.";
+
     parsed.auditLog = {
       auditTimestamp: new Date().toISOString(),
-      modelEngine: "Gemini 2.5/3.7 Conservative INEP Protocol",
+      modelEngine: "Gemini Conservative INEP Protocol",
       roundingBiasRemoved: true,
       auditorProtocol: "Matriz Oficial de Correção do INEP - Auditoria Estrita de Evidências Textuais",
-      generalObservations: `Auditoria realizada com remoção estrita do viés de arredondamento para nota máxima. Cada nota exigiu comprovação textual direta extraída do rascunho do candidato. Nota total calculada: ${finalTotal}/1000.`,
+      generalObservations: isWholeEssayZero
+        ? `ANULAÇÃO OFICIAL DA REDAÇÃO (NOTA ZERO GLOBAL — ${effectiveZeroCondition.officialReasonTitle}): ${effectiveZeroCondition.analyticalJustification} Trecho analisado: "${effectiveZeroCondition.evidenceSnippet}". Nota final: 0/1000.`
+        : isTangenciamento
+        ? `TANGENCIAMENTO TEMÁTICO DETECTADO (NÃO É FUGA TOTAL): ${effectiveThematicJustification} Trecho evidenciado: "${effectiveThematicSnippet}". Aplicadas as travas oficiais do INEP (C2 = 40, C3 = ${c3s}, C5 = ${c5s}), sem zerar a redação inteira. Nota total: ${finalTotal}/1000.`
+        : isHumanRightsViolationC5
+        ? `VIOLAÇÃO AOS DIREITOS HUMANOS EM C5: Trecho evidenciado: "${calibrationAudit.humanRightsAudit.violationSnippet}". ${calibrationAudit.humanRightsAudit.violationReason} Regra Oficial do INEP: C5 zerada isoladamente (0 pts), mantendo as notas normais de C1 (${c1s}), C2 (${c2s}), C3 (${c3s}) e C4 (${c4s}). Nota total: ${finalTotal}/1000.`
+        : `Avaliação concluída com verificação dos trechos da sua redação nas 5 competências do ENEM. Nota final: ${finalTotal}/1000.`,
       competencyLogs: [
         {
           competencyNum: 1,
-          competencyName: "C1 - Norma Culta & Estrutura Sintática",
+          competencyName: "C1 - Escrita Formal & Gramática",
           assignedScore: c1s,
           isMaxScore200: c1s === 200,
-          scoreJustification: c1s === 200
-            ? "Nota máxima 200 confirmada por evidência de períodos complexos com subordinação madura e ausência de reincidência de desvios."
-            : `Nota ${c1s} atribuída devido à presença de desvios normativos ou ausência de complexidade sintática de nível excepcional. Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "Períodos complexos subordinados, vocabulário formal preciso e no máximo 2 desvios leves.",
-          evidenceQuoteFromStudent: parsed.competencies.c1.evidenceSnippets?.[0] || parsed.c1Deviations?.[0]?.snippet || "Trecho sob análise da norma culta",
-          reasonNotRoundedTo200: c1s < 200 ? (parsed.c1Deviations?.[0]?.problem || "Presença de desvios gramaticais/estruturais que impedem a nota 200.") : undefined,
+          scoreJustification: isWholeEssayZero
+            ? `Nota 0 por anulação oficial da redação (${effectiveZeroCondition.officialReasonTitle}).`
+            : c1s === 200
+            ? "Nota máxima (200/200): frases bem construídas, vocabulário formal preciso e ausência de desvios relevantes."
+            : `Nota ${c1s}/200: avaliamos a construção das frases, a formalidade do vocabulário e os desvios gramaticais identificados (${devCount} ocorrência(s) no texto).`,
+          requiredTextualEvidence: "Frases bem pontuadas, vocabulário formal preciso e controle de desvios gramaticais.",
+          evidenceQuoteFromStudent: Array.isArray(parsed.c1Deviations) && parsed.c1Deviations.length > 0
+            ? parsed.c1Deviations[0].snippet
+            : (parsed.competencies.c1.evidenceSnippets?.[0] || "Trecho analisado quanto à escrita formal"),
+          reasonNotRoundedTo200: c1s < 200
+            ? (hasOralOrVagueMarks
+              ? "Presença de expressões informais ou termos vagos no texto, o que limita a nota a 160 pontos."
+              : !hasComplexSyntaxC1 || c3c4Audit?.c1HasComplexSyntaxAndFormalPrecision === false
+                ? "Faltaram períodos mais bem articulados e vocabulário mais formal para chegar aos 200 pontos."
+                : `Foram encontrados ${devCount} desvio(s) de escrita formal no texto (veja a lista logo abaixo).`)
+            : undefined,
           qualityPillarsChecked: [
-            { pillar: "Complexidade Sintática & Subordinação", status: c1s >= 160 ? "atendido" : "parcial", detail: "Estruturação dos períodos sintáticos" },
-            { pillar: "Vocabulário Culto & Registro Formal", status: c1s >= 160 ? "atendido" : "parcial", detail: "Ausência de coloquialismos e anafóricos informais" },
-            { pillar: "Controle Estrito de Desvios (Máx 2)", status: c1s === 200 ? "atendido" : "ausente", detail: `Desvios identificados: ${parsed.c1Deviations?.length || 0}` }
+            { pillar: "Construção das frases", status: c1s === 200 && hasComplexSyntaxC1 ? "atendido" : "parcial", detail: c1s === 200 ? "Frases claras e bem pontuadas." : "Conecte e pontue melhor os períodos." },
+            { pillar: "Vocabulário formal", status: c1s >= 180 && !hasOralOrVagueMarks ? "atendido" : "parcial", detail: !hasOralOrVagueMarks ? "Linguagem formal adequada." : "Substitua termos informais ou vagos." },
+            { pillar: "Revisão de desvios", status: c1s === 200 ? "atendido" : "ausente", detail: devCount === 0 ? "Sem desvios graves no texto." : `${devCount} ponto(s) de revisão encontrados.` }
           ]
         },
         {
           competencyNum: 2,
-          competencyName: "C2 - Tema & Repertório Sociocultural Produtivo",
+          competencyName: "C2 - Tema & Repertório Sociocultural",
           assignedScore: c2s,
           isMaxScore200: c2s === 200,
-          scoreJustification: c2s === 200
-            ? "Nota 200 confirmada por repertório legitimado pelas áreas do saber com uso comprovadamente PRODUTIVO articulado à tese."
-            : `Nota ${c2s} atribuída. Repertório sem uso produtivo profundo ou sem legitimidade indiscutível. Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "Repertório legitimado, pertinente ao tema e com vínculo produtivo direto na sustentação do argumento.",
-          evidenceQuoteFromStudent: parsed.competencies.c2.evidenceSnippets?.[0] || "Alusão/Conceito sociocultural analisado",
-          reasonNotRoundedTo200: c2s < 200 ? "O repertório citado carece de desdobramento produtivo completo ou a abordagem do tema foi apenas parcial." : undefined,
+          scoreJustification: isWholeEssayZero
+            ? `Nota 0 por anulação oficial da redação (${effectiveZeroCondition.officialReasonTitle}).`
+            : isTangenciamento
+            ? "Nota 40/200 por tangenciamento: o texto tratou apenas do assunto geral, sem desenvolver o recorte específico do tema."
+            : c2s === 200
+            ? "Nota máxima (200/200): tema abordado por completo com repertório legítimo e bem explicado nos desenvolvimentos."
+            : hasRepertoireOnlyInIntro
+            ? `Nota ${c2s}/200: você usou repertório apenas na introdução, faltando trazer referência externa também nos desenvolvimentos (D1/D2).`
+            : c2Usage === 'sem_repertorio_externo' || !hasVerifiedDevRepertoire
+            ? `Nota ${c2s}/200: bom domínio do tema, mas faltou usar repertório sociocultural produtivo nos desenvolvimentos (D1/D2).`
+            : `Nota ${c2s}/200: você abordou o tema e trouxe repertório, mas faltou explicar melhor a relação dele com seu argumento.`,
+          requiredTextualEvidence: "Abordagem completa do tema + repertório legítimo e explicado nos desenvolvimentos (D1/D2).",
+          evidenceQuoteFromStudent: isTangenciamento
+            ? `Trecho tangencial: "${effectiveThematicSnippet}"`
+            : (c3c4Audit?.c2DevelopmentRepertoireEvidence || c3c4Audit?.c2RepertoireEvidence || parsed.competencies.c2.evidenceSnippets?.[0] || "Trecho temático / repertório analisado"),
+          reasonNotRoundedTo200: c2s < 200
+            ? (isWholeEssayZero
+              ? `Anulação global (${effectiveZeroCondition.officialReasonTitle}).`
+              : isTangenciamento
+              ? "O texto abordou apenas o assunto amplo, sem focar no recorte específico do tema."
+              : hasRepertoireOnlyInIntro
+              ? "O repertório apareceu só na introdução; para 200 pontos, use repertório também no D1 ou D2."
+              : !hasVerifiedDevRepertoire || c2Usage === 'sem_repertorio_externo'
+              ? "Faltou inserir um repertório sociocultural legítimo nos parágrafos de desenvolvimento (D1/D2)."
+              : "Faltou explicar de forma mais direta como a referência citada comprova o seu argumento.")
+            : undefined,
           qualityPillarsChecked: [
-            { pillar: "Compreensão Integral do Tema", status: c2s >= 120 ? "atendido" : "parcial", detail: "Abordagem dos núcleos semânticos da proposta" },
-            { pillar: "Repertório Sociocultural Legitimado", status: c2s >= 160 ? "atendido" : "parcial", detail: "Citação de pensadores, legislação, dados ou história" },
-            { pillar: "Uso 100% Produtivo Articulado à Tese", status: c2s === 200 ? "atendido" : "ausente", detail: "O repertório sustenta a tese, não é adereço" }
+            { pillar: "Foco no tema", status: isWholeEssayZero || isTangenciamento ? "ausente" : "atendido", detail: isWholeEssayZero || isTangenciamento ? "Faltou desenvolver o recorte específico do tema." : "Tema abordado dentro do recorte proposto." },
+            { pillar: "Repertório em D1/D2", status: hasVerifiedDevRepertoire && c2s >= 180 ? "atendido" : (hasRepertoireOnlyInIntro ? "parcial" : "ausente"), detail: hasVerifiedDevRepertoire ? "Referência presente no desenvolvimento." : "Inclua repertório também no D1 ou D2." },
+            { pillar: "Uso do repertório", status: c2s === 200 ? "atendido" : (c2s >= 160 ? "parcial" : "ausente"), detail: c2s === 200 ? "Referência bem conectada à tese." : "Explique melhor a referência junto ao argumento." }
           ]
         },
         {
           competencyNum: 3,
-          competencyName: "C3 - Projeto de Texto, Causalidade & Autoria",
+          competencyName: "C3 - Projeto de Texto & Argumentação",
           assignedScore: c3s,
           isMaxScore200: c3s === 200,
-          scoreJustification: c3s === 200
-            ? "Nota 200 confirmada por projeto de texto estratégico com tese bipartida cumprida e desdobramento completo de causa e efeito."
-            : `Nota ${c3s} atribuída. Projeto de texto com lacunas explicativas ou argumentos meramente expositivos. Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "Tese explícita com direcionamento para D1/D2, encadeamento lógico de causa/efeito e marcas de autoria crítica.",
-          evidenceQuoteFromStudent: parsed.competencies.c3.evidenceSnippets?.[0] || "Argumentação central e juízo de valor autoral",
-          reasonNotRoundedTo200: c3s < 200 ? "Faltou aprofundamento das consequências concretas das causas apontadas ou houve lacuna no encadeamento de ideias." : undefined,
+          scoreJustification: isWholeEssayZero
+            ? `Nota 0 por anulação oficial da redação (${effectiveZeroCondition.officialReasonTitle}).`
+            : isTangenciamento
+            ? `Nota ${c3s}/200 limitada pelo tangenciamento do tema.`
+            : c3s === 200
+            ? "Nota máxima (200/200): os dois desenvolvimentos (D1 e D2) explicam bem a causa do problema e sua consequência prática."
+            : `Nota ${c3s}/200: seus parágrafos têm ideias organizadas, mas faltou aprofundar a causa e a consequência nos dois desenvolvimentos (D1 e D2).`,
+          requiredTextualEvidence: "Argumentos distintos em D1 e D2 com explicação clara de causa, repertório e consequência.",
+          evidenceQuoteFromStudent: c3c4Audit?.c3RepetitionEvidence || parsed.competencies.c3.evidenceSnippets?.[0] || "Argumentação central analisada",
+          reasonNotRoundedTo200: c3s < 200
+            ? (isWholeEssayZero
+              ? `Anulação global (${effectiveZeroCondition.officialReasonTitle}).`
+              : isTangenciamento
+              ? "Nota limitada a 40 pontos devido ao tangenciamento do tema."
+              : c3c4Audit?.c3HasCrossParagraphRepetition
+              ? "Os parágrafos D1 e D2 repetiram ideias parecidas em vez de defender duas causas diferentes."
+              : "Faltou ir além da exposição e explicar melhor a causa do problema e sua consequência prática tanto no D1 quanto no D2.")
+            : undefined,
           qualityPillarsChecked: [
-            { pillar: "Projeto de Texto Estratégico Bipartido", status: c3s >= 160 ? "atendido" : "parcial", detail: "Cumprimento das teses antecipadas na introdução" },
-            { pillar: "Causalidade Completa (Causa -> Efeito)", status: c3s >= 160 ? "atendido" : "parcial", detail: "Justificativa analítica sem saltos lógicos" },
-            { pillar: "Autoria Crítica & Não-Exposição", status: c3s === 200 ? "atendido" : "ausente", detail: "Juízo de valor explícito contra a passividade" }
+            { pillar: "Ideias diferentes em D1 e D2", status: c3s >= 160 && !c3c4Audit?.c3HasCrossParagraphRepetition ? "atendido" : (c3s >= 120 ? "parcial" : "ausente"), detail: !c3c4Audit?.c3HasCrossParagraphRepetition ? "Cada parágrafo defende um ponto próprio." : "Evite repetir o mesmo argumento em D1 e D2." },
+            { pillar: "Causa e consequência", status: c3s === 200 && c3MeetsDeepExcellence ? "atendido" : "parcial", detail: c3s === 200 ? "Causas e efeitos bem aprofundados." : "Explique melhor o porquê e o impacto do problema." },
+            { pillar: "Repertório nos argumentos", status: c3s === 200 && hasVerifiedDevRepertoire ? "atendido" : "parcial", detail: c3s === 200 ? "Ideias e referências bem ligadas." : "Conecte melhor repertório e argumento em D1 e D2." }
           ]
         },
         {
           competencyNum: 4,
-          competencyName: "C4 - Coesão Inter e Intraparágrafo",
+          competencyName: "C4 - Conectivos & Coesão Textual",
           assignedScore: c4s,
           isMaxScore200: c4s === 200,
-          scoreJustification: c4s === 200
-            ? "Nota 200 confirmada por pelo menos 2 operadores interparágrafos expressivos e ampla diversidade de conectivos internos sem repetições."
-            : `Nota ${c4s} atribuída. Ocorrência de repetições de conectivos padrão ou ausência de operador interparágrafo autêntico. Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "Mínimo 2 operadores interparágrafos expressivos (D1/D2/Conclusão) e coesão intraparágrafo diversificada.",
-          evidenceQuoteFromStudent: parsed.competencies.c4.evidenceSnippets?.[0] || "Conectores e operadores argumentativos empregados",
-          reasonNotRoundedTo200: c4s < 200 ? "Repetição de recursos coesivos (ex: 'além disso', 'portanto') ou conectivos ausentes em períodos internos." : undefined,
+          scoreJustification: isWholeEssayZero
+            ? `Nota 0 por anulação oficial da redação (${effectiveZeroCondition.officialReasonTitle}).`
+            : c4s === 200
+            ? "Nota máxima (200/200): excelente uso de conectivos entre parágrafos e frases, com leitura fluida e sem repetições."
+            : `Nota ${c4s}/200: boa ligação geral das ideias, mas com repetição de estruturas parecidas ou pequenos ajustes de conectivos.`,
+          requiredTextualEvidence: "Conectivos adequados entre parágrafos e dentro das frases, sem repetição de estruturas.",
+          evidenceQuoteFromStudent: c3c4Audit?.c4LinkageEvidence || parsed.competencies.c4.evidenceSnippets?.[0] || "Articulação e conectivos empregados",
+          reasonNotRoundedTo200: c4s < 200
+            ? "Algumas frases ou aberturas de explicação seguiram estruturas parecidas entre os parágrafos, pedindo maior fluidez."
+            : undefined,
           qualityPillarsChecked: [
-            { pillar: "Operadores Interparágrafos (mín. 2)", status: c4s >= 160 ? "atendido" : "parcial", detail: "Transições expressivas entre os parágrafos" },
-            { pillar: "Coesão Intraparágrafo Diversificada", status: c4s >= 160 ? "atendido" : "parcial", detail: "Ligação entre todos os períodos com conectivos variados" },
-            { pillar: "Ausência de Repetições Coesivas Viciosas", status: c4s === 200 ? "atendido" : "ausente", detail: "Variação vocabular de pronomes e conjunções" }
+            { pillar: "Variação das frases", status: c4s === 200 && !c3c4Audit?.c4HasRepetitiveSyntacticStructures ? "atendido" : "parcial", detail: c4s === 200 ? "Sem repetição de estruturas." : "Varie a forma de iniciar as explicações." },
+            { pillar: "Fluidez entre parágrafos", status: c4s >= 180 ? "atendido" : "parcial", detail: c4s >= 180 ? "Transição fluida entre os blocos." : "Melhore a conexão entre as frases internas." },
+            { pillar: "Naturalidade dos conectivos", status: c4s >= 160 && !c3c4Audit?.c4HasArtificialOrMechanicalLinkage ? "atendido" : "parcial", detail: c4s >= 160 ? "Conectivos bem empregados." : "Use conectivos no início de D1, D2 e Conclusão." }
           ]
         },
         {
           competencyNum: 5,
-          competencyName: "C5 - Proposta de Intervenção & 5 Elementos",
+          competencyName: "C5 - Proposta de Intervenção",
           assignedScore: c5s,
           isMaxScore200: c5s === 200,
-          scoreJustification: c5s === 200
-            ? "Nota 200 confirmada: todos os 5 elementos (Agente, Ação, Meio/Modo, Efeito e Detalhamento) estão presentes, válidos e detalhados."
-            : `Nota ${c5s} atribuída com base estrita nos ${parsed.c5Structure?.validElementsCount || (c5s / 40)} elementos válidos identificados (40 pts cada). Arredondamento para 200 bloqueado.`,
-          requiredTextualEvidence: "5 elementos completos (Agente, Ação, Meio, Efeito, Detalhamento substantivo) e respeito aos Direitos Humanos.",
-          evidenceQuoteFromStudent: parsed.c5Structure?.detailing?.text || parsed.c5Structure?.action?.text || parsed.competencies.c5.evidenceSnippets?.[0] || "Proposta de intervenção e detalhamento",
-          reasonNotRoundedTo200: c5s < 200 ? `Ausência ou incompletude de ${5 - (parsed.c5Structure?.validElementsCount || (c5s / 40))} elemento(s) obrigatório(s), como detalhamento substantivo.` : undefined,
+          scoreJustification: isWholeEssayZero
+            ? `Nota 0 por anulação oficial da redação (${effectiveZeroCondition.officialReasonTitle}).`
+            : isHumanRightsViolationC5
+            ? `Nota 0 na C5 por desrespeito aos Direitos Humanos no trecho citado (as notas de C1 a C4 foram mantidas normalmente).`
+            : isTangenciamento
+            ? `Nota ${c5s}/200 limitada pelo tangenciamento do tema.`
+            : c5s === 200
+            ? "Nota máxima (200/200): sua conclusão trouxe todos os 5 elementos obrigatórios (Agente, Ação, Meio/Modo, Finalidade e Detalhamento) respeitando os Direitos Humanos."
+            : `Nota ${c5s}/200: sua proposta na conclusão apresentou ${parsed.c5Structure?.validElementsCount || Math.round(c5s / 40)} de 5 elementos obrigatórios validados.`,
+          requiredTextualEvidence: "Agente, Ação, Meio/Modo, Finalidade e Detalhamento específico na conclusão.",
+          evidenceQuoteFromStudent: isHumanRightsViolationC5
+            ? `Trecho que viola Direitos Humanos: "${calibrationAudit.humanRightsAudit.violationSnippet}"`
+            : (parsed.c5Structure?.detailing?.text || parsed.c5Structure?.action?.text || parsed.competencies.c5.evidenceSnippets?.[0] || "Proposta de intervenção na conclusão"),
+          reasonNotRoundedTo200: c5s < 200
+            ? (isWholeEssayZero
+              ? `Anulação global (${effectiveZeroCondition.officialReasonTitle}).`
+              : isHumanRightsViolationC5
+              ? "Desrespeito aos Direitos Humanos zera exclusivamente a Competência 5."
+              : isTangenciamento
+              ? "Proposta limitada a 40 pontos devido ao tangenciamento do tema."
+              : (c5DetailingOverlaps || c3c4Audit?.c5DetailingIsDistinctAndSpecific === false)
+                ? "Faltou um detalhamento mais específico (uma explicação extra sobre quem faz, como funciona ou quem será atendido)."
+                : `Faltou completar ${Math.max(1, 5 - (parsed.c5Structure?.validElementsCount || Math.round(c5s / 40)))} elemento(s) obrigatório(s) na conclusão para chegar aos 200 pontos.`)
+            : undefined,
           qualityPillarsChecked: [
-            { pillar: "Agente, Ação, Meio e Efeito Válidos", status: (parsed.c5Structure?.validElementsCount || 0) >= 4 ? "atendido" : "parcial", detail: "Estrutura básica da intervenção" },
-            { pillar: "Detalhamento Substantivo Explícito", status: parsed.c5Structure?.detailing?.present ? "atendido" : "ausente", detail: parsed.c5Structure?.detailing?.text || "Faltou detalhamento" },
-            { pillar: "Respeito aos Direitos Humanos", status: parsed.c5Structure?.respectsHumanRights ? "atendido" : "ausente", detail: "Conformidade com a legislação" }
+            { pillar: "Elementos da proposta", status: (parsed.c5Structure?.validElementsCount || 0) >= 4 ? "atendido" : "parcial", detail: `${parsed.c5Structure?.validElementsCount || Math.round(c5s / 40)} de 5 elementos presentes na conclusão.` },
+            { pillar: "Detalhamento específico", status: parsed.c5Structure?.detailing?.present && c5DetailingAuthentic ? "atendido" : "ausente", detail: parsed.c5Structure?.detailing?.present && c5DetailingAuthentic ? "Detalhamento claro e válido." : "Faltou acrescentar uma explicação extra a um elemento." },
+            { pillar: "Direitos Humanos", status: respectsHumanRights ? "atendido" : "ausente", detail: respectsHumanRights ? "Proposta respeita os Direitos Humanos." : "Atenção: proposta incompatível com os Direitos Humanos." }
           ]
         }
       ]
     };
 
+    const c5MissingElements: string[] = [];
+    if (parsed.c5Structure && !isHumanRightsViolationC5 && !isWholeEssayZero) {
+      if (!parsed.c5Structure.agent?.present) c5MissingElements.push("Agente");
+      if (!parsed.c5Structure.action?.present) c5MissingElements.push("Ação");
+      if (!parsed.c5Structure.modeMedium?.present) c5MissingElements.push("Meio/Modo");
+      if (!parsed.c5Structure.effect?.present) c5MissingElements.push("Finalidade/Efeito");
+      if (!parsed.c5Structure.detailing?.present) c5MissingElements.push("Detalhamento");
+    }
+
+    const feedbackLists = buildDynamicFeedbackLists({
+      essayText,
+      theme: theme || "",
+      finalTotal,
+      c1s,
+      c2s,
+      c3s,
+      c4s,
+      c5s,
+      isWholeEssayZero,
+      zeroReason: effectiveZeroCondition?.analyticalJustification,
+      isTangenciamento,
+      tangenciamentoJustification: effectiveThematicJustification,
+      isHumanRightsViolationC5,
+      humanRightsSnippet: calibrationAudit.humanRightsAudit.violationSnippet,
+      humanRightsReason: calibrationAudit.humanRightsAudit.violationReason,
+      c1Deviations: parsed.c1Deviations || [],
+      recognizedRepertoires,
+      c2Usage,
+      c3HasCrossParagraphRepetition: Boolean(c3c4Audit?.c3HasCrossParagraphRepetition),
+      c3HasCausalDepth: c3c4Audit?.c3HasCausalAndConsequentialDepth !== false,
+      c3EvidenceQuote: parsed.competencies?.c3?.primaryEvidenceQuote,
+      c4EvidenceQuote: parsed.competencies?.c4?.primaryEvidenceQuote,
+      c5MissingElements,
+      c5DetailingText: parsed.c5Structure?.detailing?.text,
+      existingTop3Problems: Array.isArray(parsed.top3Problems) ? parsed.top3Problems : [],
+      existingActionPlan: Array.isArray(parsed.actionPlanToImprove) ? parsed.actionPlanToImprove : []
+    });
+
+    parsed.top3Problems = feedbackLists.top3Problems;
+    parsed.actionPlanToImprove = feedbackLists.actionPlanToImprove;
+
+    if (!Array.isArray(parsed.top3Strengths) || parsed.top3Strengths.filter((s: any) => String(s || "").trim()).length === 0) {
+      const generatedStrengths: string[] = [];
+      if (c2s >= 160) generatedStrengths.push(`Boa compreensão e desenvolvimento do recorte temático sobre "${theme}" (${c2s}/200 na C2).`);
+      if (c1s >= 160) generatedStrengths.push(`Bom domínio da norma-padrão e estruturação sintática clara dos períodos (${c1s}/200 na C1).`);
+      if (c4s >= 160) generatedStrengths.push(`Articulação coesiva funcional entre os parágrafos e ideias do texto (${c4s}/200 na C4).`);
+      if (c3s >= 160) generatedStrengths.push(`Projeto de texto organizado em introdução, desenvolvimentos e conclusão (${c3s}/200 na C3).`);
+      if (c5s >= 160) generatedStrengths.push(`Proposta de intervenção estruturada na conclusão respeitando os Direitos Humanos (${c5s}/200 na C5).`);
+      while (generatedStrengths.length < 3) {
+        if (generatedStrengths.length === 0) generatedStrengths.push("Atendimento à estrutura dissertativo-argumentativa exigida pelo ENEM.");
+        else if (generatedStrengths.length === 1) generatedStrengths.push("Presença de posicionamento diante da problemática proposta no tema.");
+        else generatedStrengths.push("Respeito aos Direitos Humanos e organização dos parágrafos do texto.");
+      }
+      parsed.top3Strengths = generatedStrengths.slice(0, 3);
+    }
+
+    const rawGeneralDiag = stripGenericC3Cliches(String(parsed.generalDiagnostic || "").trim(), theme || "");
+    if (!rawGeneralDiag || rawGeneralDiag.length < 20) {
+      const compEntries = [
+        { label: "C1 (Escrita Formal)", score: c1s },
+        { label: "C2 (Tema e Repertório)", score: c2s },
+        { label: "C3 (Argumentação)", score: c3s },
+        { label: "C4 (Coesão)", score: c4s },
+        { label: "C5 (Proposta de Intervenção)", score: c5s },
+      ];
+      const strongComps = compEntries.filter((c) => c.score >= 160).map((c) => `${c.label} (${c.score} pts)`);
+      const improveComps = compEntries.filter((c) => c.score < 200).sort((a, b) => a.score - b.score).map((c) => `${c.label} (${c.score} pts)`);
+      const strongPart = strongComps.length > 0
+        ? `Seus pontos mais sólidos foram ${strongComps.slice(0, 3).join(", ")}.`
+        : "Seu texto manteve a estrutura dissertativo-argumentativa sobre o tema proposto.";
+      const improvePart = improveComps.length > 0
+        ? `Para subir sua nota rumo aos 1000 pontos, priorize os ajustes em ${improveComps.slice(0, 2).join(" e ")}.`
+        : "Todas as 5 competências atingiram o nível máximo (200 pontos) na Matriz Oficial do INEP.";
+      parsed.generalDiagnostic = `Sua redação alcançou ${finalTotal}/1000 pontos no tema "${theme}" (C1: ${c1s} | C2: ${c2s} | C3: ${c3s} | C4: ${c4s} | C5: ${c5s}). ${strongPart} ${improvePart}`;
+    } else {
+      parsed.generalDiagnostic = rawGeneralDiag.replace(/\b\d{3,4}\s*\/\s*1000\b/g, `${finalTotal}/1000`);
+    }
+
+    // Sanitizar competências contra clichês genéricos, falsos apontamentos ('o mesmo', DH) e erros quando C3/C5 = 200
+    (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((ck) => {
+      const compObj = parsed.competencies?.[ck];
+      if (!compObj) return;
+      if (compObj.diagnostic) compObj.diagnostic = stripGenericC3Cliches(compObj.diagnostic, theme || "");
+      if (compObj.evaluation) compObj.evaluation = stripGenericC3Cliches(compObj.evaluation, theme || "");
+      if (compObj.howToImprove) compObj.howToImprove = stripGenericC3Cliches(compObj.howToImprove, theme || "");
+
+      const filterCompArray = (arr: any) =>
+        Array.isArray(arr)
+          ? arr
+              .map((s: any) => stripGenericC3Cliches(String(s || "").trim(), theme || ""))
+              .filter((s: string) => {
+                if (!s) return false;
+                if (/(?:o\s+mesmo|os\s+mesmos|a\s+mesma|as\s+mesmas)/i.test(s) && feedbackLists.anaphoricMesmos.length === 0) return false;
+                if (/(inicie\s+o\s+d1|conectivo\s+de\s+abertura)/i.test(s) && feedbackLists.missingOperators.length === 0) return false;
+                if (/direitos\s+humanos/i.test(s) && !isHumanRightsViolationC5 && ck !== 'c5') return false;
+                if (/direitos\s+humanos/i.test(s) && respectsHumanRights && /viol|desrespeit|penal|zer/i.test(s)) return false;
+                return true;
+              })
+          : [];
+
+      compObj.problemsIdentified = filterCompArray(compObj.problemsIdentified);
+      compObj.penaltiesOrGaps = filterCompArray(compObj.penaltiesOrGaps);
+
+      if (ck === 'c3' && c3s === 200) {
+        compObj.problemsIdentified = [];
+        compObj.penaltiesOrGaps = [];
+        compObj.howToImprove = "Mantenha a progressão entre dimensões causais distintas e o aprofundamento claro de causa e consequência.";
+      }
+      if (ck === 'c5' && c5s === 200) {
+        compObj.problemsIdentified = [];
+        compObj.penaltiesOrGaps = [];
+        compObj.howToImprove = "Mantenha os 5 elementos completos na conclusão (Agente, Ação, Meio/Modo, Finalidade e Detalhamento específico) com respeito aos Direitos Humanos.";
+      }
+    });
+
+    // Filtrar reescritas pedagógicas: remover C3/C5 quando 200, remover falsos avisos ('o mesmo', conectivos presentes) e limpar clichês
+    if (Array.isArray(parsed.pedagogicalRewrites)) {
+      parsed.pedagogicalRewrites = parsed.pedagogicalRewrites
+        .map((rw: any) => {
+          const cNum = inferRewriteCompetencyNum(rw);
+          return {
+            ...rw,
+            competencyNum: cNum,
+            improvedVersion: stripGenericC3Cliches(String(rw?.improvedVersion || ""), theme || ""),
+            explanation: stripGenericC3Cliches(String(rw?.explanation || ""), theme || "")
+          };
+        })
+        .filter((rw: any) => {
+          const cNum = rw.competencyNum;
+          const textBlob = `${rw.problem || ""} ${rw.explanation || ""} ${rw.improvedVersion || ""}`;
+          if (cNum === 3 && c3s === 200) return false;
+          if (cNum === 5 && c5s === 200) return false;
+          if (cNum === 1 && c1s === 200 && devCount === 0) return false;
+          if (/(?:o\s+mesmo|os\s+mesmos|a\s+mesma|as\s+mesmas)/i.test(textBlob) && feedbackLists.anaphoricMesmos.length === 0) return false;
+          if (/(inicie\s+o\s+d1|conectivo\s+de\s+abertura)/i.test(textBlob) && feedbackLists.missingOperators.length === 0) return false;
+          if (/direitos\s+humanos/i.test(textBlob) && respectsHumanRights) return false;
+          return true;
+        });
+    }
+
+    // Calibrar highPerformanceComparison dinamicamente (especialmente para 960–1000 pts e contra falsos diagnósticos)
+    const rawHighPerf = stripGenericC3Cliches(String(parsed.highPerformanceComparison || ""), theme || "");
+    const hasInvalidHighPerfClaim =
+      (/(?:o\s+mesmo|os\s+mesmos|a\s+mesma|as\s+mesmas)/i.test(rawHighPerf) && feedbackLists.anaphoricMesmos.length === 0) ||
+      (/(inicie\s+o\s+d1|conectivo\s+de\s+abertura)/i.test(rawHighPerf) && feedbackLists.missingOperators.length === 0) ||
+      (/direitos\s+humanos/i.test(rawHighPerf) && respectsHumanRights && /viol|desrespeit/i.test(rawHighPerf)) ||
+      (c3s === 200 && /repeti[çc][ãa]o\s+de\s+ideias|marcas\s+de\s+autoria/i.test(rawHighPerf)) ||
+      (c5s === 200 && /falt(?:ou|a)\s+detalhamento|incompleta\s+na\s+c5/i.test(rawHighPerf));
+
+    if (finalTotal >= 960 || !rawHighPerf || hasInvalidHighPerfClaim) {
+      if (finalTotal >= 960) {
+        parsed.highPerformanceComparison = `Ajustes Finos de Excelência (${finalTotal}/1000): ${feedbackLists.top3Problems.join(" ")} Próximo passo: ${feedbackLists.actionPlanToImprove.slice(0, 2).join(" ")}`;
+      } else {
+        parsed.highPerformanceComparison = feedbackLists.actionPlanToImprove.slice(0, 3).join(" ");
+      }
+    } else {
+      parsed.highPerformanceComparison = rawHighPerf;
+    }
+
     if (!parsed.cartilhaBenchmark) {
       let tier: 'Abaixo de 700' | 'Faixa 800 (Regular)' | 'Faixa 880-920 (Bom)' | 'Faixa 940-960 (Excelente)' | 'Faixa 1000 (Perfeição)' = 'Faixa 800 (Regular)';
       let closestProfileTitle = "Padrão Intermediário da Cartilha 800+";
-      let commonPatternIdentified = "Macroestrutura em 4 parágrafos e repertório institucional legítimo.";
-      let keyDifferenceTo900Plus = "1. Corrigir desvios ortográficos; 2. Eliminar 'o mesmo' anafórico; 3. Detalhar a C5.";
+      let commonPatternIdentified = "Macroestrutura dissertativa organizada e desenvolvimento temático consistente.";
+      let keyDifferenceTo900Plus = feedbackLists.actionPlanToImprove.slice(0, 3).join(" ");
 
       if (finalTotal >= 980) {
         tier = 'Faixa 1000 (Perfeição)';
         closestProfileTitle = "Redação Nota 1000 Oficial";
-        commonPatternIdentified = "Perfeição sintática, autoria marcante e intervenção detalhada.";
-        keyDifferenceTo900Plus = "Manter consistência temática.";
-      } else if (finalTotal >= 920) {
+        commonPatternIdentified = "Excelência sintática, progressão argumentativa consistente e intervenção detalhada.";
+        keyDifferenceTo900Plus = feedbackLists.top3Problems[0] || "Manter o padrão de precisão em todas as competências.";
+      } else if (finalTotal >= 940) {
         tier = 'Faixa 940-960 (Excelente)';
         closestProfileTitle = "Padrão 960 da Cartilha (Similar às Redações #11 Julie Anne e #14 Beatriz Santana)";
-        commonPatternIdentified = "Vocabulário culto e 5 elementos completos na C5.";
-        keyDifferenceTo900Plus = "Ajustar pontuações pontuais ou aprofundar o repertório.";
+        commonPatternIdentified = "Domínio formal consistente, repertório produtivo e intervenção completa.";
+        keyDifferenceTo900Plus = feedbackLists.actionPlanToImprove.slice(0, 2).join(" ");
       } else if (finalTotal >= 840) {
         tier = 'Faixa 880-920 (Bom)';
-        closestProfileTitle = "Padrão 880 da Cartilha (Similar à Redação #6 Wallison)";
-        commonPatternIdentified = "Boa fluidez e poucos desvios, com perdas em C3 ou C5.";
-        keyDifferenceTo900Plus = "Adicionar o detalhamento na C5 e refinar a causalidade na C3.";
-      } else if (finalTotal < 760) {
+        closestProfileTitle = "Padrão 880-920 da Cartilha 800+ (Similar à Redação #6 Wallison)";
+        commonPatternIdentified = "Boa fluidez textual com margem de ganho pontual nas competências abaixo de 200.";
+      } else if (finalTotal < 740) {
         tier = 'Abaixo de 700';
-        closestProfileTitle = "Estrutura Básica em Desenvolvimento";
-        commonPatternIdentified = "Dificuldade na articulação de repertórios e estruturação dos períodos.";
-        keyDifferenceTo900Plus = "Praticar a macroestrutura em 4 parágrafos canônicos e o esqueleto da C5.";
+        closestProfileTitle = isWholeEssayZero ? `Situação de Nota Zero Oficial da Cartilha (${effectiveZeroCondition.officialReasonTitle})` : isTangenciamento ? "Abordagem Tangencial ao Tema (Trava C2/C3/C5)" : "Estrutura Básica em Desenvolvimento";
+        commonPatternIdentified = isWholeEssayZero ? effectiveZeroCondition.analyticalJustification : isTangenciamento ? calibrationAudit.thematicJustification : "Dificuldade na articulação de repertórios e progressão argumentativa.";
       }
 
       parsed.cartilhaBenchmark = {
@@ -2174,9 +4977,15 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       };
     } else {
       const officialBenchmark = getCartilhaBenchmarkForScore(finalTotal, parsed.competencies);
+      const rawKeyDiff = stripGenericC3Cliches(String(parsed.cartilhaBenchmark.keyDifferenceTo900Plus || ""), theme || "");
+      const hasInvalidKeyDiff =
+        (/(?:o\s+mesmo|os\s+mesmos|a\s+mesma|as\s+mesmas)/i.test(rawKeyDiff) && feedbackLists.anaphoricMesmos.length === 0) ||
+        (c3s === 200 && /c3|repeti[çc][ãa]o|autoria/i.test(rawKeyDiff)) ||
+        (c5s === 200 && /c5|detalhamento/i.test(rawKeyDiff));
       parsed.cartilhaBenchmark = {
         ...officialBenchmark,
         ...parsed.cartilhaBenchmark,
+        keyDifferenceTo900Plus: (!rawKeyDiff || hasInvalidKeyDiff) ? feedbackLists.actionPlanToImprove.slice(0, 3).join(" ") : rawKeyDiff,
         edition: CARTILHA_METADATA.edition,
         officialMatrixAdherence: officialBenchmark.officialMatrixAdherence,
         inepDirectivesFollowed: officialBenchmark.inepDirectivesFollowed,
@@ -2184,10 +4993,95 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       };
     }
 
+    // Sincronizar competências em Benchmark Oficial Nota 1000 para evitar resíduos de justificativas antigas
+    if (isOfficialBenchmark && parsed.competencies) {
+      (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((ck) => {
+        if (parsed.competencies[ck]) {
+          parsed.competencies[ck].score = 200;
+          parsed.competencies[ck].level = 5;
+          parsed.competencies[ck].problemsIdentified = [];
+          parsed.competencies[ck].penaltiesOrGaps = [];
+        }
+      });
+    }
+
+    // Camada de Auditoria de Consistência final sobre o resultado já equilibrado (pós-concessão)
+    const consistencyAuditReport = auditDiagnosticVsEvidenceConsistency(parsed, essayText, theme || "");
+    if (serverReconcile?.concessionApplied) {
+      consistencyAuditReport.concessionApplied = true;
+      consistencyAuditReport.concessionDeltaPoints = serverReconcile.concessionDeltaPoints;
+      consistencyAuditReport.concessionDetails = serverReconcile.concessionDetails;
+      consistencyAuditReport.concessionSummaryPt = `Fizemos uma concessão entre a avaliação inicial (${serverReconcile.previousScores.total} pts) e as evidências encontradas no seu texto, resultando na nota equilibrada de ${parsed.totalScore} pts (${serverReconcile.concessionDeltaPoints >= 0 ? `+${serverReconcile.concessionDeltaPoints}` : serverReconcile.concessionDeltaPoints} pts).`;
+      consistencyAuditReport.summaryMessage = consistencyAuditReport.passed
+        ? `Nota equilibrada (${parsed.totalScore} pts): fizemos a concessão entre a análise inicial e o que está escrito na sua redação.`
+        : `Nota equilibrada (${parsed.totalScore} pts) após ajuste com base no texto. Confira abaixo os detalhes simplificados.`;
+    } else {
+      consistencyAuditReport.concessionApplied = false;
+      consistencyAuditReport.concessionDeltaPoints = 0;
+      consistencyAuditReport.concessionDetails = [];
+      consistencyAuditReport.concessionSummaryPt = isOfficialBenchmark
+        ? 'Redação oficial Nota 1000 conferida sem divergências.'
+        : 'A nota final está alinhada com os trechos encontrados na sua redação.';
+    }
+
+    parsed.scoreBlocked = false;
+    parsed.consistencyAuditReport = consistencyAuditReport;
+
     return res.json(parsed);
   } catch (error: any) {
     console.log("[Grade Essay] Realizando auditoria técnica ponderada por evidências textuais coletadas.");
-    const fallbackGrade = evaluateEssayByEvidence(req.body?.essayText || "", req.body?.theme || "");
+    const fallbackEssay = req.body?.essayText || "";
+    const fallbackTheme = req.body?.theme || "";
+    const fallbackGrade: any = evaluateEssayByEvidence(fallbackEssay, fallbackTheme);
+    const fallbackReconcile = reconcileEvaluationWithConsistencyAudit(fallbackGrade, fallbackEssay, fallbackTheme);
+    if (fallbackReconcile.concessionApplied && fallbackGrade.competencies) {
+      const fbScores = fallbackReconcile.reconciledScores;
+      (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((ck) => {
+        if (fallbackGrade.competencies[ck]) {
+          fallbackGrade.competencies[ck].score = fbScores[ck];
+          fallbackGrade.competencies[ck].nota = fbScores[ck];
+          fallbackGrade.competencies[ck].level = Math.round(fbScores[ck] / 40);
+          fallbackGrade.competencies[ck].nivel = Math.round(fbScores[ck] / 40);
+        }
+      });
+      fallbackGrade.totalScore = fbScores.total;
+      const fbDual = calibrateDualEvaluatorProfiles({
+        rawA: { c1: fbScores.c1, c2: fbScores.c2, c3: fbScores.c3, c4: fbScores.c4, c5: fbScores.c5 },
+        rawB: { c1: fbScores.c1, c2: fbScores.c2, c3: fbScores.c3, c4: fbScores.c4, c5: fbScores.c5 },
+        isOfficialBenchmark: isOfficialNota1000Benchmark(fallbackEssay),
+        isWholeEssayZero: fbScores.total === 0,
+        isTangenciamento: fbScores.c2 === 40 && fbScores.total > 0,
+        isHumanRightsViolationC5: fbScores.c5 === 0 && fbScores.total > 0,
+        caps: {
+          c1Max: fbScores.c1 === 180 ? 200 : Math.ceil(fbScores.c1 / 40) * 40,
+          c2Max: fbScores.c2 === 180 ? 200 : Math.ceil(fbScores.c2 / 40) * 40,
+          c3Max: fbScores.c3 === 180 ? 200 : Math.ceil(fbScores.c3 / 40) * 40,
+          c4Max: fbScores.c4 === 180 ? 200 : Math.ceil(fbScores.c4 / 40) * 40,
+          c5Max: fbScores.c5 === 180 ? 200 : Math.ceil(fbScores.c5 / 40) * 40
+        }
+      });
+      if (fallbackGrade.dualEvaluatorSimulation) {
+        fallbackGrade.dualEvaluatorSimulation = {
+          ...fallbackGrade.dualEvaluatorSimulation,
+          evaluatorA: {
+            ...(fallbackGrade.dualEvaluatorSimulation.evaluatorA || {}),
+            ...fbDual.evalA
+          },
+          evaluatorB: {
+            ...(fallbackGrade.dualEvaluatorSimulation.evaluatorB || {}),
+            ...fbDual.evalB
+          },
+          discrepancyC1: fbDual.discrepancies.c1,
+          discrepancyC2: fbDual.discrepancies.c2,
+          discrepancyC3: fbDual.discrepancies.c3,
+          discrepancyC4: fbDual.discrepancies.c4,
+          discrepancyC5: fbDual.discrepancies.c5,
+          totalDiscrepancy: fbDual.discrepancies.total
+        };
+      }
+    }
+    fallbackGrade.scoreBlocked = false;
+    fallbackGrade.consistencyAuditReport = fallbackReconcile.consistencyAuditReport;
     return res.json(fallbackGrade);
   }
 });
@@ -2216,6 +5110,7 @@ app.post("/api/review-score", async (req, res) => {
     }
 
     const isOfficialBenchmark = isOfficialNota1000Benchmark(essayText);
+    const calibrationAudit = auditEnemThematicZeroAndHumanRights(essayText, theme || "", { isSnippet: false });
     const ai = getGeminiClient();
 
     const reviewerBenchmarkGuidance = isOfficialBenchmark
@@ -2225,30 +5120,29 @@ Sua tarefa é homologar e sustentar as notas 200 em todas as competências (1000
       : `[REDAÇÃO DE ESTUDANTE / CANDIDATO — AUDITORIA CONSERVADORA DO INEP]
 Esta é uma redação inédita de estudante/candidato.
 - Aplique o rigor e a prudência técnica da banca revisora do INEP.
-- Não conceda nota 1000 com facilidade; exija perfeição absoluta e comprovação estrita para manter 200 em cada competência.
-- Se houver qualquer oportunidade de refinamento estilístico, sintático, argumentativo ou de detalhamento, calibre com justiça técnica para faixas realistas (160 ou 180 pontos por competência, resultando em pontuações globais realistas como 920, 940, 960 ou 980).`;
+- Verifique tangenciamento temático (C2=40, C3<=40, C5<=40, sem zerar C1 e C4), situações oficiais de Nota Zero (fuga total ao tema, até 7 linhas, não dissertativo-argumentativo) e desrespeito aos Direitos Humanos na C5 (zera exclusivamente a C5, mantendo C1, C2, C3 e C4 normais).
+- Não classifique argumentos alternativos legítimos como tangenciamento nem medidas administrativas legais como violação de Direitos Humanos.`;
 
     const systemInstruction = `Você é o REVIEWER CHEFE DA BANCA DO INEP (Auditor Sênior da Matriz Oficial do ENEM).
-Sua missão é realizar uma SEGUNDA AVALIAÇÃO TÉCNICA, INDEPENDENTE E CRITERIOSA sobre uma redação que recebeu nota máxima (200) em uma ou mais competências ou nota global elevada (>= 880).
+Sua missão é realizar uma SEGUNDA AVALIAÇÃO TÉCNICA, INDEPENDENTE E CRITERIOSA sobre a redação avaliada.
 
 ${reviewerBenchmarkGuidance}
 
 DIRETRIZES DA BANCA REVISORA:
-1. HOMOLOGAÇÃO DE EXCELÊNCIA E NOTAS 1000:
-   - Se a redação apresentar o padrão de excelência das Cartilhas Oficiais do INEP/MEC (2018 a 2025), CONFIRME E SUSTENTE as notas 200 em cada competência aplicável.
-   - Redações modelo nota 1000 que cumprem a matriz oficial devem ter seus 1000 pontos homologados pela banca.
-   - Não crie falhas artificiais para rebaixar notas de redações excepcionais.
-   - Só reduza a nota de uma competência se houver um desvio ou lacuna objetiva, identificando a citação textual do erro ou carência.
+1. REGRA PRIORITÁRIA — FUGA TOTAL VS. TANGENCIAMENTO E CONSISTÊNCIA GLOBAL:
+   - ANTES de aplicar tangenciamento, verifique o sentido global e se existe relação temática efetiva com a proposta. Se o texto desenvolve assunto efetivamente alheio, sem relação temática suficiente, direta ou contextual (ex: preservação dos oceanos em tema de evasão escolar), é FUGA TOTAL AO TEMA -> NOTA ZERO INTEGRAL (0 em todas as 5 competências), mesmo que tenha boa gramática, estrutura dissertativa, coesão, repertório ou proposta de intervenção. Palavras isoladas em comum não estabelecem relação temática.
+   - DISTINÇÃO OBRIGATÓRIA — TANGENCIAMENTO NÃO É FUGA TOTAL: No tema "Os desafios para combater a insegurança alimentar no Brasil", uma redação que aborda exclusivamente hábitos alimentares inadequados, consumo de produtos industrializados, obesidade, educação nutricional e alimentação equilibrada (sem discutir fome, pobreza ou dificuldade de acesso) pertence ao campo semântico/temático da alimentação e desloca a discussão para a saúde nutricional — isso é TANGENCIAMENTO TEMÁTICO (C2=40, C3<=40, C5<=40; C1 e C4 normais), NÃO Fuga Total! Não considere a ausência isolada de um aspecto (como fome) suficiente para fuga total; examine a relação temática global.
+   - Se a redação apresentar o padrão de excelência das Cartilhas Oficiais do INEP/MEC, CONFIRME E SUSTENTE as notas 200 em cada competência aplicável.
+   - Se houver TANGENCIAMENTO TEMÁTICO (pertinência ao campo semântico/assunto amplo sem desenvolver o recorte específico da proposta), aplique as travas oficiais do INEP: C2 = 40 pts, C3 <= 40 pts, C5 <= 40 pts, avaliando C1 e C4 normalmente (NÃO zere a redação inteira).
+   - Se houver DESRESPEITO AOS DIREITOS HUMANOS na proposta de intervenção (castigos físicos, humilhação pública, discriminação/exclusão social), atribua 0 EXCLUSIVAMENTE à Competência V, mantendo as notas normais de C1, C2, C3 e C4.
 
-2. CRITÉRIOS DE CONFORMIDADE POR COMPETÊNCIA:
-   • C1: Admite-se, excepcionalmente, até 1-2 desvios pontuais leves de escrita ou gramática sem reincidência, desde que a estrutura sintática seja excelente (regra oficial do INEP).
-   • C2: Repertório sociocultural legitimado, pertinente e produtivo articulado à tese e tema integralmente desenvolvido = 200 pts.
-   • C3: Projeto de texto estratégico com progressão clara, relações causais desdobradas e posicionamento autoral = 200 pts.
-   • C4: Diversidade de recursos coesivos inter e intraparágrafos sem repetições viciosas = 200 pts.
-   • C5: Proposta de intervenção completa com os 5 elementos canônicos (Agente, Ação, Meio/Modo, Finalidade e Detalhamento) em conformidade com os Direitos Humanos = 200 pts.
-
-SEU OBJETIVO:
-Analisar as notas propostas pelo 1º corretor à luz das evidências textuais da base oficial. Se a nota for justificada com evidências textuais de excelência, aprove-a com convicção. Se houver desvio comprovado segundo a matriz do INEP, recalibre fundamentando com a citação textual exata.`;
+2. CRITÉRIOS DE CONFORMIDADE POR COMPETÊNCIA E DIRETRIZES GERAIS (ADEQUAÇÃO VS. EXCELÊNCIA):
+   • REGRA FINAL E INDEPENDÊNCIA: A pontuação máxima (200 pts) deve ser sustentada por evidências de excelência na competência avaliada, não apenas pela ausência de erros graves ou pelo cumprimento dos elementos estruturais. Avalie cada competência de maneira independente, preserve o equilíbrio da correção e NÃO invente limitações para reduzir notas nem invente qualidades para sustentar 200 pts. Fundamente toda redução em trechos concretos do texto e use as faixas (120–160, 160–180) como referências proporcionais, nunca como travas obrigatórias.
+   • C1 (Precisão Vocabular e Registro Formal): NÃO atribua 200 pontos apenas pela ausência de erros ortográficos. Se o texto apresentar marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas"), limite a nota da C1 a 160 pontos. Reserve 200 pontos exclusivamente para textos com períodos complexos bem articulados e vocabulário formal preciso (sem penalizar períodos longos bem pontuados). (0 se Fuga Total/Nota Zero global).
+   • C2 (Tema e Repertório Produtivo nos Desenvolvimentos): Nomes de ministérios, leis ou órgãos citados apenas como agentes da Proposta de Intervenção (Conclusão) NÃO contam como repertório sociocultural. Se o aluno trouxer repertório sociocultural legitimado APENAS na introdução (sem usar repertório externo produtivo no D1 nem no D2), limite a nota da C2 a 160 pontos. Para atingir 200 pontos na C2, é obrigatório haver repertório pertinente e produtivo também na argumentação (D1 e/ou D2). (40 pts se tangenciar o tema; 0 se Fuga Total).
+   • C3 (Exposição vs. Argumentação Aprofundada): Manter a estrutura de 4 parágrafos com dois argumentos distintos garante no máximo 160 pontos se os parágrafos de desenvolvimento forem apenas expositivos/superficiais (constatam o problema e suas consequências óbvias sem analisar causas estruturais ou mecanismos sociais). Reserve 200 pontos na C3 apenas para textos que articulem repertório, causa estrutural profunda e consequência crítica nos DOIS parágrafos de desenvolvimento (D1 e D2). Identifique repetição literal de ideia central entre D1 e D2, sem exigir fórmulas fixas. (Máx. 40 pts se tangenciar o tema; 0 se Fuga Total).
+   • C4 (Coesão Textual): Diferencie coesão adequada de coesão excelente — um texto pode apresentar conectivos corretos e relações compreensíveis, mas usar mecanismos previsíveis e estruturas repetitivas. Considere a qualidade e a funcionalidade da articulação textual, sem exigir conectivos raros ou variedade artificial; NÃO avalie por quantidade de conectivos nem atribua 200 automaticamente porque todos os parágrafos têm conectivos. Identifique repetições excessivas, relações previsíveis/artificiais, articulação mecânica e falhas de progressão ou retomada de referentes; NÃO penalize automaticamente "Além disso", "Portanto", "Dessa forma" ou "Nesse sentido" quando empregados adequadamente. Limitações perceptíveis: referência de 120–160 pts conforme gravidade. (0 se Fuga Total).
+   • C5 (Proposta de Intervenção): Audite os 5 elementos canônicos (Agente, Ação, Meio/Modo, Finalidade e Detalhamento) respeitando os Direitos Humanos (0 pts em C5 se violar Direitos Humanos, sem zerar C1-C4; 0 em todas se Fuga Total). Diferencie DETALHAMENTO de MEIO e FINALIDADE: o detalhamento deve acrescentar informação específica que caracterize ou explique melhor um elemento da proposta; NÃO aceite automaticamente como detalhamento um trecho que apenas repete a ação, descreve seu meio de execução ou reformula sua finalidade.`;
 
     const prompt = `AUDITORIA DE 2ª CHAMADA — BANCA REVISORA INEP
 Tema: "${theme || "Tema Oficial ENEM"}"
@@ -2265,7 +5159,7 @@ Notas Propostas pelo 1º Corretor:
 - C4: ${initialGrading.competencies?.c4?.score ?? initialGrading.competencies?.c4?.nota} / 200
 - C5: ${initialGrading.competencies?.c5?.score ?? initialGrading.competencies?.c5?.nota} / 200
 
-Audite com rigor máximo cada uma das 5 competências. Valide se as notas 200 são sustentáveis ou se houve inflação de nota. Retorne o resultado no esquema JSON especificado.`;
+Audite com rigor máximo cada uma das 5 competências. Retorne o resultado no esquema JSON especificado.`;
 
     const response = await generateContentWithRetry(ai, {
       contents: prompt,
@@ -2338,10 +5232,82 @@ Audite com rigor máximo cada uma das 5 competências. Valide se as notas 200 s�
 
     const parsed = JSON.parse(response.text?.trim() || "{}");
     
-    // Normalizar múltiplos de 40
+    // Normalizar múltiplos de 40 e aplicar travas oficiais de calibração (Fuga Total tem prioridade sobre Tangenciamento)
+    const initialFlaggedZero = !isOfficialBenchmark && initialGrading?.totalScore === 0;
+    const reviewerLlmFlaggedFugaTotal = !isOfficialBenchmark && (
+      parsed.finalAuditedTotalScore === 0 ||
+      (Array.isArray(parsed.competencyReviews) && parsed.competencyReviews.some((c: any) => c.competencyNum === 2 && c.reviewedScore === 0))
+    );
+    const isMechanicalZeroReviewer =
+      calibrationAudit.zeroScoreCondition.isZeroScore &&
+      calibrationAudit.zeroScoreCondition.reasonCode !== 'fuga_total_ao_tema';
+    const isReviewerZero = !isOfficialBenchmark && (
+      isMechanicalZeroReviewer ||
+      initialFlaggedZero ||
+      reviewerLlmFlaggedFugaTotal ||
+      (calibrationAudit.zeroScoreCondition.isZeroScore && !initialGrading?.totalScore)
+    );
+    const isReviewerTangenciamento = !isOfficialBenchmark && !isReviewerZero && (
+      calibrationAudit.thematicClassification === 'tangenciamento' ||
+      (Array.isArray(parsed.competencyReviews) && parsed.competencyReviews.some((c: any) => c.competencyNum === 2 && c.reviewedScore === 40)) ||
+      (initialGrading?.competencies?.c2?.score ?? initialGrading?.competencies?.c2?.nota) === 40
+    );
+
+    const reviewerRepertoires = extractRecognizedRepertoiresInEssay(essayText);
+    const reviewerRepDist = analyzeRepertoireDistribution(essayText);
+    const reviewerC1Vague = findC1OralityOrVagueVocabulary(essayText);
+    const reviewerComplexSyntax = hasComplexWellArticulatedSyntax(essayText, 3);
+    const reviewerC3Depth = analyzeC3DevelopmentDepth(essayText);
+    const reviewerMesmos = findAnaphoricMesmoExcerpts(essayText);
+    const reviewerParas = essayText.split(/\n\s*\n/).map((p: string) => p.trim()).filter(Boolean);
+    const reviewerFirstSent = reviewerParas[0]?.split(/(?<=[.!?])\s+/)[0] || reviewerParas[0] || "";
+
     let auditedTotal = 0;
     if (Array.isArray(parsed.competencyReviews)) {
       parsed.competencyReviews.forEach((comp: any) => {
+        if (comp.trecho_evidencia) {
+          const evLoc = locateSnippetInEssay(comp.trecho_evidencia, essayText);
+          if (evLoc.found) {
+            comp.trecho_evidencia = evLoc.wasTruncated || evLoc.exactSpan.length < 12 ? evLoc.fullSentenceContext : evLoc.exactSpan;
+          } else if (comp.competencyNum === 2 && reviewerRepertoires[0]) {
+            comp.trecho_evidencia = reviewerRepertoires[0].fullSentence;
+          } else if (reviewerFirstSent) {
+            comp.trecho_evidencia = reviewerFirstSent;
+          }
+        }
+        if (Array.isArray(comp.evidenceQuotesExamined)) {
+          comp.evidenceQuotesExamined = comp.evidenceQuotesExamined
+            .map((q: string) => {
+              const ql = locateSnippetInEssay(q, essayText);
+              return ql.found ? (ql.wasTruncated ? `[${ql.locationTag}] ${ql.fullSentenceContext}` : `[${ql.locationTag}] ${ql.exactSpan}`) : '';
+            })
+            .filter(Boolean);
+          if (comp.evidenceQuotesExamined.length === 0 && comp.trecho_evidencia) {
+            comp.evidenceQuotesExamined = [comp.trecho_evidencia];
+          }
+        }
+        if (comp.flawIdentified) {
+          comp.flawIdentified = stripGenericC3Cliches(String(comp.flawIdentified), theme || "");
+          if (/(?:o\s+mesmo|os\s+mesmos|a\s+mesma|as\s+mesmas)/i.test(comp.flawIdentified) && reviewerMesmos.length === 0) {
+            comp.flawIdentified = undefined;
+          } else if (/direitos\s+humanos/i.test(comp.flawIdentified) && calibrationAudit.humanRightsAudit.respectsHumanRights && /viol|desrespeit/i.test(comp.flawIdentified)) {
+            comp.flawIdentified = undefined;
+          }
+        }
+        if (comp.reviewerVerdict) {
+          comp.reviewerVerdict = stripGenericC3Cliches(String(comp.reviewerVerdict), theme || "");
+        }
+        if (comp.justificativa_analitica) {
+          comp.justificativa_analitica = stripGenericC3Cliches(String(comp.justificativa_analitica), theme || "");
+        }
+        if (comp.competencyNum === 2 && reviewerRepertoires.length > 0) {
+          const falseAbs = /(aus[êe]ncia\s+de\s+repert[óo]rio|sem\s+repert[óo]rio|n[ãa]o\s+apresenta\s+repert[óo]rio|inexistente)/i;
+          if (falseAbs.test(String(comp.flawIdentified || ""))) {
+            comp.flawIdentified = reviewerRepDist.hasRepertoireOnlyInIntro
+              ? `Repertório identificado apenas na introdução (${reviewerRepertoires[0].matched}, ${reviewerRepertoires[0].locationTag}), sem repertório sociocultural produtivo nos desenvolvimentos (teto de 160 pts).`
+              : `Repertório identificado (${reviewerRepertoires[0].matched}, ${reviewerRepertoires[0].locationTag}) com necessidade de maior contextualização e integração ao raciocínio.`;
+          }
+        }
         if (isOfficialBenchmark) {
           comp.initialScore = 200;
           comp.reviewedScore = 200;
@@ -2350,10 +5316,66 @@ Audite com rigor máximo cada uma das 5 competências. Valide se as notas 200 s�
           comp.isExceptionalLevelSustained = true;
           comp.flawIdentified = undefined;
           auditedTotal += 200;
+        } else if (isReviewerZero) {
+          comp.reviewedScore = 0;
+          comp.scoreReduced = comp.initialScore > 0;
+          comp.scoreMaintained = comp.initialScore === 0;
+          comp.isExceptionalLevelSustained = false;
+          comp.flawIdentified = calibrationAudit.zeroScoreCondition.isZeroScore
+            ? calibrationAudit.zeroScoreCondition.analyticalJustification
+            : (initialGrading?.generalDiagnostic || "Fuga total ao tema proposto / anulação global da redação (0/1000).");
         } else {
-          const normScore = [0, 40, 80, 120, 160, 200].includes(comp.reviewedScore)
+          let normScore = [0, 40, 80, 120, 160, 200].includes(comp.reviewedScore)
             ? comp.reviewedScore
             : Math.round((comp.reviewedScore || 0) / 40) * 40;
+          if (isReviewerTangenciamento) {
+            if (comp.competencyNum === 2) normScore = 40;
+            if (comp.competencyNum === 3) normScore = Math.min(normScore, 40);
+            if (comp.competencyNum === 5) normScore = Math.min(normScore, 40);
+          }
+          if (comp.competencyNum === 5 && !calibrationAudit.humanRightsAudit.respectsHumanRights) {
+            normScore = 0;
+            comp.flawIdentified = calibrationAudit.humanRightsAudit.violationReason;
+          } else if (comp.competencyNum !== 5 && normScore === 0) {
+            normScore = comp.initialScore > 0 ? comp.initialScore : 120;
+          }
+
+          if (!isReviewerTangenciamento) {
+            if (comp.competencyNum === 1 && (reviewerC1Vague.length > 0 || !reviewerComplexSyntax)) {
+              if (normScore > 160) {
+                normScore = 160;
+                comp.flawIdentified = reviewerC1Vague.length > 0
+                  ? `Teto de 160 pts aplicado na C1 por imprecisão vocabular, clichê vago ou marca de oralidade (${reviewerC1Vague[0].problem}).`
+                  : "Teto de 160 pts aplicado na C1: ausência de desvios ortográficos isolada não garante 200 pts sem períodos complexos bem articulados e vocabulário formal preciso.";
+              }
+            } else if (comp.competencyNum === 2 && reviewerParas.length >= 3 && !reviewerRepDist.hasRepertoireInDev) {
+              if (normScore > 160) {
+                normScore = 160;
+                comp.flawIdentified = reviewerRepDist.hasRepertoireOnlyInIntro
+                  ? "Teto de 160 pts aplicado na C2: repertório sociocultural presente apenas na introdução, sem mobilização produtiva em D1 ou D2 (órgãos/leis na conclusão não contam como repertório)."
+                  : "Teto de 160 pts aplicado na C2: ausência de repertório sociocultural produtivo nos parágrafos de desenvolvimento (D1 e/ou D2).";
+              }
+            } else if (comp.competencyNum === 3) {
+              const reviewerAiC3Support = Boolean(
+                comp.isExceptionalLevelSustained &&
+                Array.isArray(comp.evidenceQuotesExamined) &&
+                comp.evidenceQuotesExamined.length > 0 &&
+                reviewerC3Depth.d1WordCount >= 42 &&
+                reviewerC3Depth.d2WordCount >= 42 &&
+                (reviewerC3Depth.d1HasDeepAnalysis || reviewerC3Depth.d2HasDeepAnalysis)
+              );
+              if ((!reviewerC3Depth.bothDevsDeepAndArticulated && !reviewerAiC3Support) || !reviewerRepDist.hasRepertoireInDev) {
+                if (normScore > 160) {
+                  normScore = 160;
+                  comp.flawIdentified = "Teto de 160 pts aplicado na C3: os desenvolvimentos mantêm caráter predominantemente expositivo ou não articulam repertório, causa estrutural profunda e consequência crítica simultaneamente em D1 e D2.";
+                }
+              }
+            }
+          }
+
+          if (normScore === 200 && (comp.competencyNum === 1 || comp.competencyNum === 3 || comp.competencyNum === 5)) {
+            comp.flawIdentified = undefined;
+          }
           comp.reviewedScore = normScore;
           comp.scoreReduced = normScore < comp.initialScore;
           comp.scoreMaintained = normScore === comp.initialScore;
@@ -2361,124 +5383,319 @@ Audite com rigor máximo cada uma das 5 competências. Valide se as notas 200 s�
           auditedTotal += normScore;
         }
       });
-      parsed.finalAuditedTotalScore = isOfficialBenchmark ? 1000 : auditedTotal;
-      parsed.inflationPointsAdjusted = isOfficialBenchmark ? 0 : Math.max(0, (parsed.initialTotalScore || initialGrading.totalScore) - auditedTotal);
+      parsed.finalAuditedTotalScore = isOfficialBenchmark ? 1000 : (isReviewerZero ? 0 : auditedTotal);
+      parsed.inflationPointsAdjusted = isOfficialBenchmark ? 0 : Math.max(0, (parsed.initialTotalScore || initialGrading.totalScore) - parsed.finalAuditedTotalScore);
       parsed.wasInflationDetected = isOfficialBenchmark ? false : parsed.inflationPointsAdjusted > 0;
+      if (parsed.reviewerExecutiveSummary) {
+        parsed.reviewerExecutiveSummary = stripGenericC3Cliches(String(parsed.reviewerExecutiveSummary), theme || "");
+      }
+      if (parsed.cartilhaStandardAdherenceVerdict) {
+        parsed.cartilhaStandardAdherenceVerdict = stripGenericC3Cliches(String(parsed.cartilhaStandardAdherenceVerdict), theme || "");
+      }
     }
 
+    // Validação cruzada e reancoramento factual de C3 e C5 na banca revisora
+    if (Array.isArray(parsed.competencyReviews) && !isOfficialBenchmark && !isReviewerZero && !isReviewerTangenciamento) {
+      const reviewCompsMap: any = {};
+      parsed.competencyReviews.forEach((cr: any) => {
+        if (cr?.competencyNum >= 1 && cr?.competencyNum <= 5) {
+          reviewCompsMap[`c${cr.competencyNum}`] = {
+            score: cr.reviewedScore,
+            trecho_evidencia: cr.trecho_evidencia,
+            justificativa_analitica: cr.justificativa_analitica,
+            diagnostic: cr.flawIdentified,
+            evaluation: cr.reviewerVerdict,
+            evidenceSnippets: cr.evidenceQuotesExamined
+          };
+        }
+      });
+      const revGrounding = groundC3AndC5FeedbackInEssayFacts(
+        {
+          totalScore: parsed.finalAuditedTotalScore,
+          competencies: reviewCompsMap,
+          c5Structure: req.body?.initialGrading?.c5Structure
+        },
+        essayText,
+        theme || ""
+      );
+      const revC3 = parsed.competencyReviews.find((cr: any) => cr?.competencyNum === 3);
+      if (revC3) {
+        if (revGrounding.c3ReanchoredQuote) {
+          revC3.trecho_evidencia = revGrounding.c3ReanchoredQuote;
+          revC3.evidenceQuotesExamined = [revGrounding.c3ReanchoredQuote];
+        }
+        if (revC3.reviewedScore < 200 && revGrounding.c3GroundedSummary) {
+          const curJust = String(revC3.justificativa_analitica || "").trim();
+          if (!curJust.includes("Resumo dos desenvolvimentos") && !curJust.includes("Resumo de D1") && !curJust.includes("Fatos extraídos") && !curJust.includes("D1 (")) {
+            revC3.justificativa_analitica = curJust
+              ? `${curJust} — ${revGrounding.c3GroundedSummary}`
+              : revGrounding.c3GroundedSummary;
+          }
+        }
+      }
+      const revC5 = parsed.competencyReviews.find((cr: any) => cr?.competencyNum === 5);
+      if (revC5 && calibrationAudit.humanRightsAudit.respectsHumanRights) {
+        if (revGrounding.c5ReanchoredQuote) {
+          revC5.trecho_evidencia = revGrounding.c5ReanchoredQuote;
+          revC5.evidenceQuotesExamined = [revGrounding.c5ReanchoredQuote];
+        }
+        if (revC5.reviewedScore < 200 && revGrounding.c5GroundedSummary) {
+          const curJust = String(revC5.justificativa_analitica || "").trim();
+          if (!curJust.includes("Resumo da conclusão") && !curJust.includes("Na conclusão:") && !curJust.includes("Fatos extraídos da conclusão")) {
+            revC5.justificativa_analitica = curJust
+              ? `${curJust} — ${revGrounding.c5GroundedSummary}`
+              : revGrounding.c5GroundedSummary;
+          }
+        }
+      }
+    }
+
+    const reviewerConsistency = auditDiagnosticVsEvidenceConsistency(
+      {
+        totalScore: parsed.finalAuditedTotalScore,
+        reviewerReport: parsed
+      },
+      essayText,
+      theme || ""
+    );
+
+    parsed.consistencyAuditReport = reviewerConsistency;
     return res.json(parsed);
   } catch (error: any) {
     console.log("[Reviewer Engine] Realizando auditoria técnica conservadora INEP local.");
-    // Fallback audit programático para garantir resiliência
     const essay = req.body?.essayText || "";
+    const theme = req.body?.theme || "";
+    const initialGrading = req.body?.initialGrading || {};
     const isOfficialBenchmark = isOfficialNota1000Benchmark(essay);
-    const initialTotal = isOfficialBenchmark ? 1000 : (req.body?.initialGrading?.totalScore || 800);
-    const comps = req.body?.initialGrading?.competencies || {};
-    const c1s = isOfficialBenchmark ? 200 : (comps.c1?.score ?? comps.c1?.nota ?? 160);
-    const c2s = isOfficialBenchmark ? 200 : (comps.c2?.score ?? comps.c2?.nota ?? 160);
-    const c3s = isOfficialBenchmark ? 200 : (comps.c3?.score ?? comps.c3?.nota ?? 160);
-    const c4s = isOfficialBenchmark ? 200 : (comps.c4?.score ?? comps.c4?.nota ?? 160);
-    const c5s = isOfficialBenchmark ? 200 : (comps.c5?.score ?? comps.c5?.nota ?? 160);
+    const calibrationAudit = auditEnemThematicZeroAndHumanRights(essay, theme, { isSnippet: false });
+    const comps = initialGrading?.competencies || {};
+    const initialFlaggedZero = !isOfficialBenchmark && initialGrading?.totalScore === 0;
+    const isMechanicalZeroFallback =
+      calibrationAudit.zeroScoreCondition.isZeroScore &&
+      calibrationAudit.zeroScoreCondition.reasonCode !== 'fuga_total_ao_tema';
+    const isZero = !isOfficialBenchmark && (
+      isMechanicalZeroFallback ||
+      initialFlaggedZero ||
+      (calibrationAudit.zeroScoreCondition.isZeroScore && typeof initialGrading?.totalScore !== 'number')
+    );
+    const isTang = !isOfficialBenchmark && !isZero && (
+      calibrationAudit.thematicClassification === 'tangenciamento' ||
+      (comps.c2?.score ?? comps.c2?.nota) === 40
+    );
+    const isDHViol = !isOfficialBenchmark && !isZero && !calibrationAudit.humanRightsAudit.respectsHumanRights;
 
-    const wordCount = essay.split(/\s+/).filter(Boolean).length;
-    const hasDetailedC5 = isOfficialBenchmark || (/por meio|mediante|com o objetivo|com o intuito|a fim de/i.test(essay) && essay.length > 500);
-    const hasInterConnectives = isOfficialBenchmark || /al[eé]m disso|outrossim|nesse sentido|sob essa [oó]tica|diante disso|portanto|desse modo/i.test(essay);
-    const c1Pass200 = isOfficialBenchmark || wordCount >= 250;
+    const c1s = isOfficialBenchmark ? 200 : isZero ? 0 : (comps.c1?.score ?? comps.c1?.nota ?? 160);
+    const c2s = isOfficialBenchmark ? 200 : isZero ? 0 : isTang ? 40 : (comps.c2?.score ?? comps.c2?.nota ?? 160);
+    const c3s = isOfficialBenchmark ? 200 : isZero ? 0 : isTang ? Math.min(40, comps.c3?.score ?? comps.c3?.nota ?? 40) : (comps.c3?.score ?? comps.c3?.nota ?? 160);
+    const c4s = isOfficialBenchmark ? 200 : isZero ? 0 : (comps.c4?.score ?? comps.c4?.nota ?? 160);
+    const c5s = isOfficialBenchmark ? 200 : (isZero || isDHViol) ? 0 : isTang ? Math.min(40, comps.c5?.score ?? comps.c5?.nota ?? 40) : (comps.c5?.score ?? comps.c5?.nota ?? 160);
+    const initialTotal = isOfficialBenchmark ? 1000 : (initialGrading?.totalScore ?? (c1s + c2s + c3s + c4s + c5s));
 
-    // Avaliação analítica das 5 competências pelo Reviewer
+    const verifiedC1DevsFallback = isOfficialBenchmark ? [] : validateAndDeduplicateC1Deviations(initialGrading?.c1Deviations || [], essay);
+    const fbC1Vague = isOfficialBenchmark ? [] : findC1OralityOrVagueVocabulary(essay);
+    const fbComplexSyntax = isOfficialBenchmark || hasComplexWellArticulatedSyntax(essay, 3);
+    const c1DevCountFallback = verifiedC1DevsFallback.length;
+    const c1Pass200 = isOfficialBenchmark || (c1DevCountFallback <= 1 && fbC1Vague.length === 0 && fbComplexSyntax);
+
+    const fbParas = essay.split(/\n\s*\n/).map((p: string) => p.trim()).filter(Boolean);
+    const fbRepDist = analyzeRepertoireDistribution(essay);
+    const fbC3Depth = analyzeC3DevelopmentDepth(essay);
+    const c2Pass200 = isOfficialBenchmark || (fbParas.length < 3 ? fbRepDist.all.length > 0 : fbRepDist.hasRepertoireInDev);
+    const c3Pass200 = isOfficialBenchmark || (fbC3Depth.bothDevsDeepAndArticulated && fbRepDist.hasRepertoireInDev);
+    const fbConclusaoText = fbParas.length >= 2 && /^(portanto|logo|assim|dessa\s+forma|desse\s+modo|em\s+suma|infere-se|conclui-se)/i.test(fbParas[fbParas.length - 2])
+      ? `${fbParas[fbParas.length - 2]}\n\n${fbParas[fbParas.length - 1]}`
+      : (fbParas[fbParas.length - 1] || essay);
+    const fbConcAudit = auditConclusionInterventions(fbConclusaoText);
+
+    const c5StructFallback = initialGrading?.c5Structure || {};
+    const c5DetTxt = String(c5StructFallback.detailing?.text || "").trim().toLowerCase();
+    const c5ActTxt = String(c5StructFallback.action?.text || "").trim().toLowerCase();
+    const c5ModTxt = String(c5StructFallback.modeMedium?.text || "").trim().toLowerCase();
+    const c5EffTxt = String(c5StructFallback.effect?.text || "").trim().toLowerCase();
+    const c5DetStartsAsModeOrEff = /^(por meio de|mediante|através de|por intermédio de|a fim de|com o objetivo de|com o fito de|com o intuito de|para que|visando)\b/i.test(c5DetTxt);
+    const c5DetOverlaps =
+      isVagueOrAcronymDetailing(c5DetTxt) ||
+      (c5ActTxt.length >= 6 && (c5DetTxt === c5ActTxt || (c5DetTxt.length >= 12 && c5ActTxt.includes(c5DetTxt.slice(0, 18))))) ||
+      (c5ModTxt.length >= 6 && (c5DetTxt === c5ModTxt || (c5DetTxt.length >= 12 && c5ModTxt.includes(c5DetTxt.slice(0, 18))))) ||
+      (c5EffTxt.length >= 6 && (c5DetTxt === c5EffTxt || (c5DetTxt.length >= 12 && c5EffTxt.includes(c5DetTxt.slice(0, 18)))));
+    const fbEmbeddedDetailing =
+      extractDetailingFromTextSpan(String(c5StructFallback.action?.text || "")) ||
+      extractDetailingFromTextSpan(String(c5StructFallback.modeMedium?.text || "")) ||
+      extractDetailingFromTextSpan(String(c5StructFallback.effect?.text || "")) ||
+      extractDetailingFromTextSpan(String(c5StructFallback.agent?.text || ""));
+    const hasDetailedC5 = isOfficialBenchmark || Boolean(
+      (c5StructFallback.detailing?.present && c5DetTxt.length > 8 && !c5DetStartsAsModeOrEff && !c5DetOverlaps) ||
+      fbConcAudit.hasDetailing ||
+      Boolean(fbEmbeddedDetailing.detailingExtracted)
+    );
+    const zeroReasonDetail = calibrationAudit.zeroScoreCondition.isZeroScore
+      ? calibrationAudit.zeroScoreCondition.analyticalJustification
+      : (initialGrading?.generalDiagnostic || "Fuga total ao tema proposto / anulação global da redação (0/1000).");
+
+    const fbFirstSent = fbParas[0]?.split(/(?<=[.!?])\s+/)[0] || essay;
+    const fbMidPara = fbParas[Math.min(1, Math.max(0, fbParas.length - 1))] || essay;
+    const fbMidSent = fbMidPara.split(/(?<=[.!?])\s+/)[0] || fbMidPara;
+    const fbLastSent = fbParas[fbParas.length - 1]?.split(/(?<=[.!?])\s+/)[0] || fbConclusaoText;
+    const fbRepertoires = fbRepDist.all;
+
+    const resolveFallbackQuote = (raw: string | undefined, backup: string) => {
+      const loc = raw ? locateSnippetInEssay(raw, essay) : null;
+      return loc?.found ? (loc.wasTruncated || loc.exactSpan.length < 12 ? loc.fullSentenceContext : loc.exactSpan) : backup;
+    };
+
+    const reviewedC1Fb = isZero ? 0 : (!c1Pass200 && c1s > 160 ? 160 : c1s);
+    const reviewedC2Fb = isZero ? 0 : (isTang ? 40 : (!c2Pass200 && c2s > 160 ? 160 : c2s));
+    const reviewedC3Fb = isZero ? 0 : (isTang ? Math.min(40, c3s) : (!c3Pass200 && c3s > 160 ? 160 : c3s));
+
     const compReviews = [
       {
         competencyNum: 1,
-        competencyName: "C1 - Norma Culta & Sintaxe",
+        competencyName: "C1 - Norma Culta & Precisão Vocabular",
         initialScore: c1s,
-        reviewedScore: c1s === 200 && !c1Pass200 ? 160 : c1s,
-        scoreReduced: c1s === 200 && !c1Pass200,
-        scoreMaintained: !(c1s === 200 && !c1Pass200),
-        isExceptionalLevelSustained: c1s === 200 && c1Pass200,
-        cartilhaCriteriaChecked: "Ausência de desvios recorrentes e controle de complexidade sintática.",
-        evidenceQuotesExamined: [essay.substring(0, 100) || "Trecho examinado"],
-        flawIdentified: c1s === 200 && !c1Pass200 ? "Estrutura sintática com extensão restrita para comprovação inequívoca de nota 200." : undefined,
-        reviewerVerdict: c1s === 200 && !c1Pass200 ? "Calibrado para 160 pts (critério de densidade sintática da Cartilha INEP)." : "Nota validada e sustentada sob a Matriz C1.",
-        trecho_evidencia: essay.substring(0, 120),
-        justificativa_analitica: "Auditoria formal de sintaxe e pontuação conforme o manual do corretor."
+        reviewedScore: reviewedC1Fb,
+        scoreReduced: isZero ? c1s > 0 : reviewedC1Fb < c1s,
+        scoreMaintained: isZero ? c1s === 0 : reviewedC1Fb === c1s,
+        isExceptionalLevelSustained: !isZero && reviewedC1Fb === 200 && c1Pass200,
+        cartilhaCriteriaChecked: "Ausência de marcas de oralidade/clichês vagos, precisão vocabular formal, períodos complexos bem articulados e frequência real de desvios.",
+        evidenceQuotesExamined: [resolveFallbackQuote(fbC1Vague[0]?.snippet || verifiedC1DevsFallback[0]?.snippet || comps.c1?.primaryEvidenceQuote, fbFirstSent)],
+        flawIdentified: isZero ? zeroReasonDetail : (!c1Pass200 && c1s > 160 ? (fbC1Vague.length > 0 ? `Marcas de oralidade, clichês vagos ou imprecisão vocabular (${fbC1Vague[0].problem}) limitam a C1 a 160 pts.` : (!fbComplexSyntax ? "Ausência de períodos complexos bem articulados e vocabulário formal preciso (apenas ausência de erro ortográfico não garante 200 pts)." : `${c1DevCountFallback} desvios reais verificados e localizados na modalidade escrita formal.`)) : undefined),
+        reviewerVerdict: isZero ? "Anulação global (Nota Zero na redação inteira)." : (!c1Pass200 && c1s > 160 ? "Calibrado para 160 pts conforme régua INEP de precisão vocabular, registro formal e articulação sintática complexa." : "Nota validada e sustentada sob a Matriz C1."),
+        trecho_evidencia: resolveFallbackQuote(fbC1Vague[0]?.snippet || verifiedC1DevsFallback[0]?.snippet || comps.c1?.trecho_evidencia, fbFirstSent),
+        justificativa_analitica: isZero ? zeroReasonDetail : "Auditoria de desvios reais localizados, precisão vocabular formal e articulação sintática complexa."
       },
       {
         competencyNum: 2,
-        competencyName: "C2 - Tema e Repertório Produtivo",
+        competencyName: "C2 - Tema e Repertório nos Desenvolvimentos",
         initialScore: c2s,
-        reviewedScore: c2s,
-        scoreReduced: false,
-        scoreMaintained: true,
-        isExceptionalLevelSustained: c2s === 200,
-        cartilhaCriteriaChecked: "Repertório legitimado com pertinência temática e vínculo produtivo.",
-        evidenceQuotesExamined: [comps.c2?.evidenceSnippets?.[0] || "Alusão examinada"],
-        reviewerVerdict: "Repertório validado em conformidade com os critérios de legitimidade e produtividade do INEP.",
-        trecho_evidencia: comps.c2?.primaryEvidenceQuote || comps.c2?.trecho_evidencia || essay.substring(100, 220),
-        justificativa_analitica: "Verificação da articulação entre repertório sociocultural e tese."
+        reviewedScore: reviewedC2Fb,
+        scoreReduced: isZero ? c2s > 0 : reviewedC2Fb < c2s,
+        scoreMaintained: isZero ? c2s === 0 : reviewedC2Fb === c2s,
+        isExceptionalLevelSustained: !isZero && reviewedC2Fb === 200 && c2Pass200,
+        cartilhaCriteriaChecked: "Abordagem do recorte temático específico e presença de repertório sociocultural produtivo nos parágrafos de desenvolvimento (excluindo órgãos/leis citados apenas na conclusão).",
+        evidenceQuotesExamined: [resolveFallbackQuote(fbRepertoires[0]?.fullSentence || comps.c2?.evidenceSnippets?.[0] || calibrationAudit.thematicEvidenceSnippet, fbMidSent)],
+        flawIdentified: isZero ? zeroReasonDetail : (isTang ? calibrationAudit.thematicJustification : (!c2Pass200 && c2s > 160 ? (fbRepDist.hasRepertoireOnlyInIntro ? "Repertório sociocultural mobilizado apenas na introdução; sem repertório externo produtivo em D1 ou D2 (teto de 160 pts)." : "Ausência de repertório sociocultural produtivo nos parágrafos de desenvolvimento (agentes da conclusão não contam como repertório).") : undefined)),
+        reviewerVerdict: isZero ? "Anulação global (Nota Zero por Fuga Total / critério de anulação)." : (isTang ? "Mantida nota 40 por tangenciamento temático." : (!c2Pass200 && c2s > 160 ? "Calibrado para 160 pts: para atingir 200 pts na C2 é obrigatório repertório pertinente e produtivo também na argumentação (D1 e/ou D2)." : "Repertório produtivo nos desenvolvimentos e abordagem temática validados em conformidade com o INEP.")),
+        trecho_evidencia: resolveFallbackQuote(fbRepertoires[0]?.fullSentence || comps.c2?.primaryEvidenceQuote || comps.c2?.trecho_evidencia, fbMidSent),
+        justificativa_analitica: isZero ? zeroReasonDetail : calibrationAudit.thematicJustification
       },
       {
         competencyNum: 3,
-        competencyName: "C3 - Projeto de Texto e Autoria",
+        competencyName: "C3 - Argumentação Aprofundada (D1 + D2)",
         initialScore: c3s,
-        reviewedScore: c3s,
-        scoreReduced: false,
-        scoreMaintained: true,
-        isExceptionalLevelSustained: c3s === 200,
-        cartilhaCriteriaChecked: "Encadeamento lógico e autoria crítica sem falhas de projeto.",
-        evidenceQuotesExamined: [comps.c3?.evidenceSnippets?.[0] || "Tese e argumentos"],
-        reviewerVerdict: "Projeto de texto sustentável com marcas de autoria evidentes.",
-        trecho_evidencia: comps.c3?.primaryEvidenceQuote || comps.c3?.trecho_evidencia || essay.substring(200, 320),
-        justificativa_analitica: "Análise da consistência causal e progressão temática."
+        reviewedScore: reviewedC3Fb,
+        scoreReduced: isZero ? c3s > 0 : reviewedC3Fb < c3s,
+        scoreMaintained: isZero ? c3s === 0 : reviewedC3Fb === c3s,
+        isExceptionalLevelSustained: !isZero && reviewedC3Fb === 200 && c3Pass200,
+        cartilhaCriteriaChecked: "Distinção entre exposição e argumentação aprofundada: articulação de repertório, causa estrutural profunda e consequência crítica em D1 e D2.",
+        evidenceQuotesExamined: [resolveFallbackQuote(comps.c3?.evidenceSnippets?.[0], fbMidSent)],
+        flawIdentified: isZero ? zeroReasonDetail : (!isTang && !c3Pass200 && c3s > 160 ? "Desenvolvimentos mantêm caráter predominantemente expositivo ou não articulam repertório, causa estrutural profunda e consequência crítica nos dois parágrafos (D1 e D2)." : undefined),
+        reviewerVerdict: isZero ? "Anulação global (Nota Zero na redação inteira)." : (isTang ? "Teto de 40 pts aplicado por repercussão oficial de tangenciamento." : (!c3Pass200 && c3s > 160 ? "Calibrado para 160 pts: 200 pts na C3 exigem articulação de repertório, causa estrutural profunda e consequência crítica em ambos os desenvolvimentos (D1 e D2)." : "Projeto de texto aprofundado validado com articulação de repertório, causa estrutural e consequência crítica em D1 e D2.")),
+        trecho_evidencia: resolveFallbackQuote(comps.c3?.primaryEvidenceQuote || comps.c3?.trecho_evidencia, fbMidSent),
+        justificativa_analitica: isZero ? zeroReasonDetail : "Análise de profundidade estrutural (repertório + causa estrutural profunda + consequência crítica em D1 e D2)."
       },
       {
         competencyNum: 4,
         competencyName: "C4 - Coesão Inter e Intraparágrafo",
         initialScore: c4s,
-        reviewedScore: c4s === 200 && !hasInterConnectives ? 160 : c4s,
-        scoreReduced: c4s === 200 && !hasInterConnectives,
-        scoreMaintained: !(c4s === 200 && !hasInterConnectives),
-        isExceptionalLevelSustained: c4s === 200 && hasInterConnectives,
-        cartilhaCriteriaChecked: "Presença de no mínimo 2 operadores interparágrafos e diversidade interna.",
-        evidenceQuotesExamined: [comps.c4?.evidenceSnippets?.[0] || "Conectivos utilizados"],
-        flawIdentified: c4s === 200 && !hasInterConnectives ? "Diversidade coesiva interparágrafos insuficiente para nota 200." : undefined,
-        reviewerVerdict: c4s === 200 && !hasInterConnectives ? "Calibrado para 160 pts (exigência de 2+ operadores interparágrafos da Cartilha)." : "Coesão textual aprovada nos critérios oficiais.",
-        trecho_evidencia: comps.c4?.primaryEvidenceQuote || comps.c4?.trecho_evidencia || essay.substring(300, 420),
-        justificativa_analitica: "Auditoria dos operadores argumentativos e recursos anafóricos."
+        reviewedScore: isZero ? 0 : c4s,
+        scoreReduced: isZero ? c4s > 0 : false,
+        scoreMaintained: isZero ? c4s === 0 : true,
+        isExceptionalLevelSustained: !isZero && c4s === 200,
+        cartilhaCriteriaChecked: "Adequação funcional, progressão entre frases/parágrafos e retomada de referentes sem artificialidade.",
+        evidenceQuotesExamined: [resolveFallbackQuote(comps.c4?.evidenceSnippets?.[0], fbMidSent)],
+        flawIdentified: isZero ? zeroReasonDetail : undefined,
+        reviewerVerdict: isZero ? "Anulação global (Nota Zero na redação inteira)." : "Nota de C4 validada conforme adequação funcional, progressão e retomada referencial (sem penalizar conectivos comuns corretos).",
+        trecho_evidencia: resolveFallbackQuote(comps.c4?.primaryEvidenceQuote || comps.c4?.trecho_evidencia, fbMidSent),
+        justificativa_analitica: isZero ? zeroReasonDetail : "Auditoria funcional de progressão inter/intraparágrafos e retomada de referentes conforme a matriz oficial."
       },
       {
         competencyNum: 5,
         competencyName: "C5 - Proposta de Intervenção",
         initialScore: c5s,
-        reviewedScore: c5s === 200 && !hasDetailedC5 ? 160 : c5s,
-        scoreReduced: c5s === 200 && !hasDetailedC5,
-        scoreMaintained: !(c5s === 200 && !hasDetailedC5),
-        isExceptionalLevelSustained: c5s === 200 && hasDetailedC5,
-        cartilhaCriteriaChecked: "5 elementos completos (Agente, Ação, Meio, Efeito, Detalhamento real).",
-        evidenceQuotesExamined: [comps.c5?.evidenceSnippets?.[0] || "Proposta de intervenção"],
-        flawIdentified: c5s === 200 && !hasDetailedC5 ? "Detalhamento da proposta de intervenção ausente ou genérico." : undefined,
-        reviewerVerdict: c5s === 200 && !hasDetailedC5 ? "Calibrado para 160 pts por fragilidade no elemento de detalhamento." : "Proposta de intervenção com 5 elementos completos e validados.",
-        trecho_evidencia: comps.c5?.primaryEvidenceQuote || comps.c5?.trecho_evidencia || essay.substring(essay.length - 250),
-        justificativa_analitica: "Verificação dos 5 elementos obrigatórios e da conformidade com Direitos Humanos."
+        reviewedScore: (isZero || isDHViol) ? 0 : (c5s === 200 && !hasDetailedC5 ? 160 : c5s),
+        scoreReduced: (isZero || isDHViol) ? c5s > 0 : (c5s === 200 && !hasDetailedC5),
+        scoreMaintained: (isZero || isDHViol) ? c5s === 0 : !(c5s === 200 && !hasDetailedC5),
+        isExceptionalLevelSustained: !isZero && !isDHViol && c5s === 200 && hasDetailedC5,
+        cartilhaCriteriaChecked: "Análise separada de todas as propostas (Agente, Ação, Meio, Finalidade e Detalhamento concreto de público/local/prioridade/condições).",
+        evidenceQuotesExamined: [resolveFallbackQuote(calibrationAudit.humanRightsAudit.violationSnippet || fbConcAudit.proposals[0]?.sentence || comps.c5?.evidenceSnippets?.[0], fbLastSent)],
+        flawIdentified: isZero ? zeroReasonDetail : (isDHViol ? calibrationAudit.humanRightsAudit.violationReason : (c5s === 200 && !hasDetailedC5 ? "Detalhamento concreto ausente ou apenas repete ação, meio de execução ou finalidade." : undefined)),
+        reviewerVerdict: isZero ? "Anulação global (Nota Zero na redação inteira)." : (isDHViol ? "Nota 0 exclusivamente na C5 por desrespeito aos Direitos Humanos (demais competências preservadas)." : (c5s === 200 && !hasDetailedC5 ? "Calibrado para 160 pts porque o detalhamento não acrescenta especificação concreta distinta da ação, do meio ou da finalidade." : "Proposta de intervenção validada.")),
+        trecho_evidencia: resolveFallbackQuote(calibrationAudit.humanRightsAudit.violationSnippet || fbConcAudit.proposals[0]?.sentence || comps.c5?.primaryEvidenceQuote || comps.c5?.trecho_evidencia, fbLastSent),
+        justificativa_analitica: isZero ? zeroReasonDetail : (isDHViol ? calibrationAudit.humanRightsAudit.violationReason : "Verificação separada dos 5 elementos da proposta de intervenção com reconhecimento de detalhamentos embutidos e especificações concretas.")
       }
     ];
 
     const auditedTotalFinal = compReviews.reduce((acc, c) => acc + c.reviewedScore, 0);
     const inflationDiff = Math.max(0, initialTotal - auditedTotalFinal);
 
-    return res.json({
+    const reviewerFallbackPayload: any = {
       triggeredByHighScore: true,
-      triggerReason: "Nota 200 ou nota elevada (>= 900) identificada no 1º corretor. Auditoria de 2ª chamada executada.",
+      triggerReason: "Auditoria de 2ª chamada executada conforme protocolo oficial do INEP.",
       reviewerModel: "Banca Revisora INEP — Auditoria Estrita Anti-Inflação",
       initialTotalScore: initialTotal,
       finalAuditedTotalScore: auditedTotalFinal,
       wasInflationDetected: inflationDiff > 0,
       inflationPointsAdjusted: inflationDiff,
       reviewerExecutiveSummary: inflationDiff > 0
-        ? `A Banca Revisora detectou potencial inflação de ${inflationDiff} pontos nas notas iniciais. As notas foram calibradas para atender aos critérios estritos da Cartilha do Participante do INEP.`
-        : "A Banca Revisora examinou minuciosamente as evidências textuais e confirmou que a nota de excelência é sustentável segundo a Cartilha do INEP.",
+        ? `A Banca Revisora detectou diferença de ${inflationDiff} pontos nas notas iniciais. As notas foram calibradas para atender aos critérios estritos da Cartilha do Participante do INEP.`
+        : "A Banca Revisora examinou minuciosamente as evidências textuais e confirmou que a nota atribuída é sustentável segundo a Cartilha do INEP.",
       cartilhaStandardAdherenceVerdict: "Auditoria concluída com 100% de aderência à Matriz do INEP.",
       competencyReviews: compReviews
-    });
+    };
+
+    if (!isOfficialBenchmark && !isZero && !isTang) {
+      const fbReviewMap: any = {};
+      compReviews.forEach((cr) => {
+        fbReviewMap[`c${cr.competencyNum}`] = {
+          score: cr.reviewedScore,
+          trecho_evidencia: cr.trecho_evidencia,
+          justificativa_analitica: cr.justificativa_analitica,
+          diagnostic: cr.flawIdentified,
+          evaluation: cr.reviewerVerdict,
+          evidenceSnippets: cr.evidenceQuotesExamined
+        };
+      });
+      const fbGrounding = groundC3AndC5FeedbackInEssayFacts(
+        {
+          totalScore: auditedTotalFinal,
+          competencies: fbReviewMap,
+          c5Structure: c5StructFallback
+        },
+        essay,
+        theme
+      );
+      const fbC3 = compReviews.find((cr) => cr.competencyNum === 3);
+      if (fbC3) {
+        if (fbGrounding.c3ReanchoredQuote) {
+          fbC3.trecho_evidencia = fbGrounding.c3ReanchoredQuote;
+          fbC3.evidenceQuotesExamined = [fbGrounding.c3ReanchoredQuote];
+        }
+        if (fbC3.reviewedScore < 200 && fbGrounding.c3GroundedSummary) {
+          fbC3.justificativa_analitica = `${fbC3.justificativa_analitica} — ${fbGrounding.c3GroundedSummary}`;
+        }
+      }
+      const fbC5 = compReviews.find((cr) => cr.competencyNum === 5);
+      if (fbC5 && !isDHViol) {
+        if (fbGrounding.c5ReanchoredQuote) {
+          fbC5.trecho_evidencia = fbGrounding.c5ReanchoredQuote;
+          fbC5.evidenceQuotesExamined = [fbGrounding.c5ReanchoredQuote];
+        }
+        if (fbC5.reviewedScore < 200 && fbGrounding.c5GroundedSummary) {
+          fbC5.justificativa_analitica = `${fbC5.justificativa_analitica} — ${fbGrounding.c5GroundedSummary}`;
+        }
+      }
+    }
+
+    reviewerFallbackPayload.consistencyAuditReport = auditDiagnosticVsEvidenceConsistency(
+      {
+        totalScore: auditedTotalFinal,
+        reviewerReport: reviewerFallbackPayload
+      },
+      essay,
+      theme
+    );
+
+    return res.json(reviewerFallbackPayload);
   }
 });
 
@@ -3619,7 +6836,7 @@ ${analysisContext ? `Resultado Oficial e Diagnóstico Detalhado da Avaliação P
 DIRETRIZES DE RESPOSTA:
 1. Você tem em mãos os dados específicos e exclusivos desta redação e sua correção. Sempre fundamente suas respostas nos trechos reais do texto do aluno e nas notas obtidas.
 2. Quando o usuário pedir melhorias ou reescritas diretas, forneça parágrafos modelos no padrão Nota 1000, preservando a essência argumentativa do aluno e destacando exatamente o que foi aprimorado.
-3. Use formatação Markdown elegante com títulos claros, listas estruturadas e destaques em negrito.
+3. Use formatação Markdown elegante com títulos claros, listas estruturadas, tabelas comparativas (sempre colocando cada linha da tabela em uma nova linha com quebra de linha real) e destaques em negrito. NUNCA use códigos LaTeX como '$\\rightarrow$' ou '\\rightarrow'; use diretamente a seta Unicode '→'.
 4. Ao final da resposta, inclua 2 ou 3 perguntas de continuidade ou próximos passos recomendados, no formato:
 SUGESTÕES_DE_CONTINUIDADE:
 - [Pergunta ou ação prática 1]
@@ -6160,8 +9377,13 @@ function buildFallbackSnippetEvaluation(params: {
   const firstSentence = sentences[0] || cleanText.slice(0, 110);
   const lastSentence = sentences[sentences.length - 1] || firstSentence;
 
-  // Run the main Corretor's evidence engine to extract C1 deviations, C5 5-elements, thematic nuclei, and repertoire analysis
+  // Run the main Corretor's evidence engine and official thematic/zero/human-rights calibration audit
   const baseEvidence = evaluateEssayByEvidence(cleanText, theme);
+  const snippetAudit = auditEnemThematicZeroAndHumanRights(cleanText, theme, { isSnippet: true });
+  const isSnippetZero = snippetAudit.zeroScoreCondition.isZeroScore;
+  const isSnippetTangenciamento = !isSnippetZero && snippetAudit.thematicClassification === 'tangenciamento';
+  const isSnippetDHViolated = !snippetAudit.humanRightsAudit.respectsHumanRights;
+  const specificCutLabel = snippetAudit.themeDecomposition.specificCutWords.join(', ') || theme;
 
   const toStep40 = (n: number) => Math.max(0, Math.min(200, Math.round(n / 40) * 40));
 
@@ -6170,11 +9392,10 @@ function buildFallbackSnippetEvaluation(params: {
   ) || [];
   const uniqueConnectors = Array.from(new Set(connectorMatches.map(c => c.toLowerCase())));
 
-  const repertoireMatches = cleanText.match(
-    /\b(constituição|carta magna|artigo|declaração universal|estatuto|lei\s+n[º°]?|filósofo|sociólogo|historiador|pensador|segundo|conforme|sob a ótica de|na obra|livro|filme|série|ibge|onu|oms|ipea|unesco|bauman|foucault|kant|durkheim|arendt|habermas|bourdieu|freire|darcy ribeiro|gilberto dimenstein|cidadão de papel|vidas secas|graciliano|machado de assis|revolução industrial|iluminismo|brasil colônia|ditadura|eca)\b/gi
-  ) || [];
-  const hasLegitimateRepertoire = repertoireMatches.length > 0;
-  const hasProductiveLink = /\b(analogamente|de maneira análoga|fora da ficção|sob essa ótica|nesse contexto|de modo semelhante|tal conceito|essa realidade|Hodiernamente|na prática|no brasil contemporâneo)\b/i.test(cleanText) || (hasLegitimateRepertoire && sentences.length >= 3);
+  const recognizedSnippetRepertoires = extractRecognizedRepertoiresInEssay(cleanText);
+  const repertoireMatches = recognizedSnippetRepertoires.map(r => r.matched);
+  const hasLegitimateRepertoire = recognizedSnippetRepertoires.length > 0;
+  const hasProductiveLink = /\b(analogamente|de maneira análoga|fora da ficção|sob essa ótica|nesse contexto|de modo semelhante|tal conceito|essa realidade|hodiernamente|na prática|no brasil contemporâneo)\b/i.test(cleanText) || (hasLegitimateRepertoire && sentences.length >= 3);
 
   const criticalMarkers = cleanText.match(
     /\b(negligência|omissão|inoperância|impasse|entrave|obstáculo|lacuna|silenciamento|invisibilidade|marginalização|precarização|vulnerabilidade|descompasso|insuficiência|banalização|estigma|estrutural|perpetua|agrava|compromete|inviabiliza)\b/gi
@@ -6186,29 +9407,51 @@ function buildFallbackSnippetEvaluation(params: {
     .split(/\s+/)
     .filter(w => w.length > 4 && !["sobre", "entre", "para", "como", "pelos", "pelas", "desafios", "caminhos", "impactos", "questão", "brasil", "brasileira", "brasileiro", "sociedade"].includes(w));
   const matchedThemeWords = themeKeywords.filter(kw => cleanText.toLowerCase().includes(kw.slice(0, Math.max(4, kw.length - 2))));
-  const themeCoverageRatio = themeKeywords.length > 0 ? matchedThemeWords.length / themeKeywords.length : 1;
+  const themeCoverageRatio = snippetAudit.thematicClassification === 'abordagem_completa'
+    ? Math.max(0.6, themeKeywords.length > 0 ? matchedThemeWords.length / themeKeywords.length : 1)
+    : (themeKeywords.length > 0 ? matchedThemeWords.length / themeKeywords.length : 1);
 
-  const c1Deviations = (baseEvidence.c1Deviations || []).map((d: any) => ({
-    snippet: d.snippet || "Construção sintática/vocabular",
-    problem: d.problem || "Desvio pontual da norma-padrão formal.",
-    bestForm: d.bestForm || "Reescrever conforme a norma culta prescritiva.",
-    category: d.category || "Norma-Padrão / Sintaxe"
-  }));
+  const c1Deviations = validateAndDeduplicateC1Deviations(
+    (baseEvidence.c1Deviations || []).map((d: any) => ({
+      snippet: d.snippet || "",
+      problem: d.problem || "Desvio pontual da norma-padrão formal.",
+      bestForm: d.bestForm || "Reescrever conforme a norma culta prescritiva.",
+      category: d.category || "Norma-Padrão / Sintaxe"
+    })),
+    cleanText
+  );
 
-  // Calibrate C1 for snippet length
+  const c1OralOrVagueSnippet = findC1OralityOrVagueVocabulary(cleanText);
+  const hasComplexSyntaxSnippet = hasComplexWellArticulatedSyntax(cleanText, sectionType === 'desenvolvimento_2' ? 2 : 1);
+
+  // Calibrate C1 strictly by INEP rigor: absence of typos alone does NOT guarantee 200; orality/vague clichés cap at 160; 200 requires complex well-articulated syntax + formal vocabulary precision
   const targetMinWords = sectionType === 'desenvolvimento_2' ? 90 : 42;
   const targetMinSentences = sectionType === 'desenvolvimento_2' ? 5 : 3;
   let c1EvalA = 160;
   let c1EvalB = 160;
-  if (wordCount < 25) {
+  if (isSnippetZero) {
+    c1EvalA = 0;
+    c1EvalB = 0;
+  } else if (wordCount < 20) {
     c1EvalA = 80;
-    c1EvalB = 80;
-  } else if (c1Deviations.length === 0 && wordCount >= targetMinWords && sentences.length >= targetMinSentences) {
+    c1EvalB = 120;
+  } else if (c1Deviations.length === 0 && c1OralOrVagueSnippet.length === 0 && hasComplexSyntaxSnippet) {
+    c1EvalA = 200;
+    c1EvalB = 200;
+  } else if (c1Deviations.length <= 1 && c1OralOrVagueSnippet.length === 0 && hasComplexSyntaxSnippet) {
     c1EvalA = 160;
     c1EvalB = 200;
-  } else if (c1Deviations.length <= 1 && wordCount >= 35 && sentences.length >= 2) {
-    c1EvalA = 160;
-    c1EvalB = 160;
+  } else if (c1Deviations.length <= 2 || c1OralOrVagueSnippet.length > 0 || !hasComplexSyntaxSnippet) {
+    const c1Pair = calibrateSnippetCompetencyPair({
+      code: 'C1',
+      rawA: 160,
+      rawB: 160,
+      cap: 160,
+      hasTension: c1OralOrVagueSnippet.length > 0 || !hasComplexSyntaxSnippet || c1Deviations.length > 0,
+      isZero: isSnippetZero
+    });
+    c1EvalA = c1Pair.evalA;
+    c1EvalB = c1Pair.evalB;
   } else if (c1Deviations.length >= 3) {
     c1EvalA = 80;
     c1EvalB = 120;
@@ -6217,16 +9460,47 @@ function buildFallbackSnippetEvaluation(params: {
     c1EvalB = 160;
   }
 
-  // Calibrate C4 for snippet
+  // Calibrate C4 for snippet by functional adequacy, referent resumption, syntactic repetition, and sentence progression (never by connector count or mandatory lexical variety)
+  const snippetReferents = (cleanText.match(/\b(esse\s+\w+|essa\s+\w+|tal\s+\w+|isso|cujo|cuja|o qual|a qual|essa realidade|esse cenário)\b/gi) || []).length;
+  const snippetAnaphoricMesmos = findAnaphoricMesmoExcerpts(cleanText);
+  const snippetHasAnaphoricMesmo = snippetAnaphoricMesmos.length > 0;
+  const snippetArticulatedSentences = sentences.slice(1).filter(s =>
+    /^(contudo|todavia|entretanto|no entanto|porém|nesse|nessa|dessa|desse|assim|portanto|logo|além|ademais|outrossim|sob|conforme|segundo|diante|com efeito|tal|isso)/i.test(s.trim()) ||
+    /\b(que|cujo|onde|visto que|já que|a fim de|para que|por meio)\b/i.test(s)
+  ).length;
+  const snippetHasProgression = sentences.length >= targetMinSentences && snippetArticulatedSentences >= Math.max(1, sentences.length - 2);
+  let snippetHasSyntacticRepetition = false;
+  if (paragraphs.length >= 2) {
+    for (let i = 1; i < paragraphs.length; i++) {
+      const p1First = (paragraphs[i - 1].split(/(?<=[.!?])\s+/)[0] || "").toLowerCase().replace(/[^\p{L}\s]/gu, "").split(/\s+/).slice(0, 3).join(" ");
+      const p2First = (paragraphs[i].split(/(?<=[.!?])\s+/)[0] || "").toLowerCase().replace(/[^\p{L}\s]/gu, "").split(/\s+/).slice(0, 3).join(" ");
+      if (p1First.length >= 8 && p1First === p2First) snippetHasSyntacticRepetition = true;
+      const f1: string[] = paragraphs[i - 1].toLowerCase().match(/\b(?:isso\s+(?:ocorre|acontece|se\s+deve)|tal\s+(?:cen[áa]rio|realidade|problema)\s+(?:ocorre|decorre|gera)|nota-se\s+que|percebe-se\s+que|[ée]\s+(?:importante|necess[áa]rio|evidente)\s+(?:destacar|ressaltar)\s+que)\b/gu) || [];
+      const f2: string[] = paragraphs[i].toLowerCase().match(/\b(?:isso\s+(?:ocorre|acontece|se\s+deve)|tal\s+(?:cen[áa]rio|realidade|problema)\s+(?:ocorre|decorre|gera)|nota-se\s+que|percebe-se\s+que|[ée]\s+(?:importante|necess[áa]rio|evidente)\s+(?:destacar|ressaltar)\s+que)\b/gu) || [];
+      if (f2.some(x => f1.includes(x))) snippetHasSyntacticRepetition = true;
+    }
+  }
+
   let c4EvalA = 120;
   let c4EvalB = 120;
-  if (uniqueConnectors.length >= (sectionType === 'desenvolvimento_2' ? 4 : 2) && sentences.length >= targetMinSentences) {
-    c4EvalA = 200;
-    c4EvalB = 200;
-  } else if (uniqueConnectors.length >= 2 && sentences.length >= 2) {
+  if (isSnippetZero) {
+    c4EvalA = 0;
+    c4EvalB = 0;
+  } else if (snippetHasProgression && snippetReferents >= 1 && uniqueConnectors.length >= 2 && !snippetHasAnaphoricMesmo && !snippetHasSyntacticRepetition) {
     c4EvalA = 160;
     c4EvalB = 200;
-  } else if (uniqueConnectors.length === 1 && sentences.length >= 2) {
+  } else if (snippetHasProgression && uniqueConnectors.length >= 1 && !snippetHasAnaphoricMesmo) {
+    const c4Pair = calibrateSnippetCompetencyPair({
+      code: 'C4',
+      rawA: 160,
+      rawB: 160,
+      cap: snippetHasSyntacticRepetition ? 160 : 200,
+      hasTension: snippetHasSyntacticRepetition || !snippetHasProgression || uniqueConnectors.length < 2,
+      isZero: isSnippetZero
+    });
+    c4EvalA = c4Pair.evalA;
+    c4EvalB = c4Pair.evalB;
+  } else if (sentences.length >= 2) {
     c4EvalA = 120;
     c4EvalB = 160;
   } else {
@@ -6241,16 +9515,44 @@ function buildFallbackSnippetEvaluation(params: {
       modeMedium: { present: false, text: "Não identificado", details: "Faltou explicitar o Meio/Modo de execução." },
       effect: { present: false, text: "Não identificado", details: "Faltou explicitar o Efeito/Finalidade social." },
       detailing: { present: false, text: "Não identificado", targetElement: "Geral", details: "Faltou detalhar um dos elementos." },
-      respectsHumanRights: true,
+      respectsHumanRights: !isSnippetDHViolated,
       validElementsCount: 0
     };
+    if (c5Struct.agent?.present && c5Struct.agent.text) {
+      const cleanedAgent = cleanSingleAgentCandidate(c5Struct.agent.text);
+      if (cleanedAgent) c5Struct.agent.text = cleanedAgent;
+    }
+    if (!c5Struct.detailing?.present && !isSnippetZero && !isSnippetDHViolated) {
+      for (const obj of [c5Struct.action, c5Struct.modeMedium, c5Struct.effect, c5Struct.agent]) {
+        if (obj?.present && obj.text) {
+          const detRes = extractDetailingFromTextSpan(obj.text);
+          if (detRes.detailingExtracted) {
+            if (detRes.cleanedCore && detRes.cleanedCore.length >= 6) obj.text = detRes.cleanedCore;
+            c5Struct.detailing = {
+              present: true,
+              text: detRes.detailingExtracted,
+              targetElement: detRes.targetHint,
+              details: "Detalhamento específico extraído do contexto sintático da proposta."
+            };
+            break;
+          }
+        }
+      }
+    }
+    c5Struct.respectsHumanRights = !isSnippetDHViolated;
+    if (isSnippetDHViolated) {
+      c5Struct.humanRightsObservations = snippetAudit.humanRightsAudit.violationReason;
+    }
 
-    const validElements = typeof c5Struct.validElementsCount === 'number'
-      ? c5Struct.validElementsCount
-      : [c5Struct.agent?.present, c5Struct.action?.present, c5Struct.modeMedium?.present, c5Struct.effect?.present, c5Struct.detailing?.present].filter(Boolean).length;
+    const validElements = [c5Struct.agent?.present, c5Struct.action?.present, c5Struct.modeMedium?.present, c5Struct.effect?.present, c5Struct.detailing?.present].filter(Boolean).length;
+    c5Struct.validElementsCount = validElements;
 
-    const c5EvalA = toStep40(validElements * 40);
-    const c5EvalB = toStep40(validElements * 40);
+    let c5EvalA = isSnippetZero || isSnippetDHViolated ? 0 : toStep40(validElements * 40);
+    let c5EvalB = isSnippetZero || isSnippetDHViolated ? 0 : toStep40(validElements * 40);
+    if (!isSnippetZero && !isSnippetDHViolated && isSnippetTangenciamento) {
+      c5EvalA = Math.min(c5EvalA, 40);
+      c5EvalB = Math.min(c5EvalB, 40);
+    }
 
     // Check alignment with Argument Base in C3
     const arg1Words = (argumentBase?.arg1 || "").toLowerCase().split(/\s+/).filter(w => w.length > 5);
@@ -6260,15 +9562,21 @@ function buildFallbackSnippetEvaluation(params: {
 
     let c3EvalA = 120;
     let c3EvalB = 120;
-    if (addressesArg1 && addressesArg2 && sentences.length >= 2 && wordCount >= 45) {
-      c3EvalA = 160;
-      c3EvalB = 200;
+    if (isSnippetZero) {
+      c3EvalA = 0;
+      c3EvalB = 0;
+    } else if (isSnippetTangenciamento) {
+      c3EvalA = 40;
+      c3EvalB = 40;
+    } else if (addressesArg1 && addressesArg2 && sentences.length >= 2 && wordCount >= 45) {
+      c3EvalA = 200;
+      c3EvalB = 160;
     } else if ((addressesArg1 || addressesArg2) && wordCount >= 35) {
       c3EvalA = 160;
-      c3EvalB = 160;
+      c3EvalB = 120;
     } else {
       c3EvalA = 120;
-      c3EvalB = 120;
+      c3EvalB = 80;
     }
 
     const c1ScoreConc = Math.round((c1EvalA + c1EvalB) / 2);
@@ -6282,39 +9590,55 @@ function buildFallbackSnippetEvaluation(params: {
         name: "Domínio da Modalidade Escrita Formal da Língua Portuguesa",
         evaluatorAScore: c1EvalA,
         evaluatorBScore: c1EvalB,
-        evidenceQuote: firstSentence,
-        scoreJustification: c1ScoreConc === 200
-          ? `Nota 200/200 (Consenso Nível 5 INEP) atribuída porque o parágrafo conclusivo apresenta ${sentences.length} períodos sintaticamente subordinados e completos (${wordCount} palavras), sem truncamentos e sem desvios severos da norma-padrão.`
-          : `Nota ${c1ScoreConc}/200 (Avaliador 1: ${c1EvalA} | Avaliador 2: ${c1EvalB}) atribuída pois, embora o texto mantenha o registro formal na frase "${firstSentence.slice(0, 80)}...", foram identificados ${c1Deviations.length} desvio(s) normativo(s)/sintático(s) ou limitação na divisão de períodos (${sentences.length} período(s) de no mínimo 3 recomendados pela Matriz do INEP), impedindo o arredondamento para 200 pontos.`,
-        deductionOrCeilingReason: c1ScoreConc === 200
-          ? "Cumprimento integral do Nível 5 da Matriz INEP (0 descontos na Competência 1)."
-          : c1Deviations.length > 0
-            ? `Desconto de ${200 - c1ScoreConc} pts: presença de ${c1Deviations.length} desvio(s) na norma culta ("${c1Deviations[0].snippet}") e necessidade de maior complexidade sintática.`
-            : `Desconto de ${200 - c1ScoreConc} pts: extensão sintática reduzida (${sentences.length} período(s)), exigindo estruturação em 3 a 4 períodos subordinados para atingir o Nível 5 (200 pts).`,
-        feedback: `Na avaliação sintático-normativa da conclusão, o trecho apresenta ${sentences.length} período(s) e ${wordCount} palavras, com ${c1Deviations.length === 0 ? "ausência de desvios gramaticais severos e boa fluidez sintática" : `${c1Deviations.length} ponto(s) de ajuste na norma-padrão ou construção de períodos`}. Segundo a Cartilha do INEP, o Nível 5 exige períodos bem subordinados e precisão vocabular sem marcas de oralidade.`,
+        evidenceQuote: isSnippetZero ? snippetAudit.zeroScoreCondition.evidenceSnippet : firstSentence,
+        scoreJustification: isSnippetZero
+          ? `Nota 0/200 atribuída por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+          : c1ScoreConc === 200
+          ? `Nota 200/200 (Consenso Nível 5 INEP) atribuída porque o parágrafo conclusivo combina precisão vocabular formal, ausência de marcas de oralidade/clichês vagos e períodos complexos bem articulados (${wordCount} palavras, ${sentences.length} período(s)).`
+          : `Nota ${c1ScoreConc}/200 (Avaliador 1: ${c1EvalA} | Avaliador 2: ${c1EvalB}) atribuída considerando ${c1Deviations.length} ocorrência(s) de norma-padrão/imprecisão vocabular${!hasComplexSyntaxSnippet ? " e menor articulação sintática complexa" : ""} no trecho "${firstSentence}".`,
+        deductionOrCeilingReason: isSnippetZero
+          ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+          : c1ScoreConc === 200
+          ? "Cumprimento integral do Nível 5 da Matriz INEP (vocabulário formal preciso e períodos complexos bem articulados)."
+          : c1OralOrVagueSnippet.length > 0
+          ? `Teto de 160 pts: presença de marca de oralidade, clichê vago ou imprecisão vocabular ("${c1OralOrVagueSnippet[0].snippet}").`
+          : !hasComplexSyntaxSnippet && c1Deviations.length <= 1
+          ? "Teto de 160 pts: ausência de erros ortográficos isolada não garante 200 pts sem períodos complexos bem articulados e vocabulário formal preciso."
+          : `Desconto de ${200 - c1ScoreConc} pts: presença de ${c1Deviations.length} desvio(s) na modalidade escrita formal${c1Deviations[0] ? ` ("${c1Deviations[0].snippet}")` : ""}.`,
+        feedback: `Na avaliação sintático-normativa da conclusão, o trecho apresenta ${sentences.length} período(s) e ${wordCount} palavras, com ${c1Deviations.length === 0 && c1OralOrVagueSnippet.length === 0 && hasComplexSyntaxSnippet ? "precisão vocabular formal, registro culto rigoroso e períodos complexos bem articulados" : c1OralOrVagueSnippet.length > 0 ? `${c1OralOrVagueSnippet.length} expressão(ões) vaga(s) ou marca(s) de oralidade que limitam a C1 a 160 pontos` : `${c1Deviations.length} ponto(s) de ajuste na norma-padrão ou necessidade de períodos complexos melhor articulados`}.`,
         strengths: [
-          sentences.length >= 3 ? "Divisão equilibrada do parágrafo conclusivo em múltiplos períodos sintáticos." : "Emprego de registro impessoal compatível com a dissertação-argumentativa.",
-          c1Deviations.length === 0 ? "Ausência de desvios ortográficos ou de concordância verbal/nominal detectados." : "Preservação da clareza comunicativa na formulação da proposta."
+          c1Deviations.length === 0 ? "Ausência de desvios ortográficos ou de concordância básicos detectados." : "Preservação da clareza comunicativa na formulação da proposta.",
+          "Registro impessoal adequado ao gênero dissertativo-argumentativo."
         ],
         improvements: [
-          sentences.length < 3 ? "Estruture a conclusão em 3 períodos distintos (1º retomada da tese; 2º proposta de intervenção detalhada; 3º desfecho de impacto)." : "Mantenha o rigor na pontuação de apostos explicativos e orações intercaladas usadas no detalhamento.",
+          c1OralOrVagueSnippet.length > 0 ? "Substitua expressões coloquiais/vagas (como 'no dia a dia', 'por causa de', 'tomar medidas', 'acaba gerando', 'coisas') por vocabulário formal preciso." : (c1Deviations.length === 0 && !hasComplexSyntaxSnippet ? "Estruture períodos compostos subordinados bem articulados e utilize léxico formal preciso para alcançar 200 pontos." : "Corrija os desvios pontuais da norma-padrão listados para consolidar o Nível 5."),
           ...c1Deviations.slice(0, 2).map((d: any) => `Ajustar "${d.snippet}": ${d.problem} -> ${d.bestForm}`)
         ],
-        howToReach200: "Construa entre 3 e 4 períodos sintaticamente completos, utilizando travessões ou vírgulas duplas para isolar o detalhamento da proposta sem truncar as orações."
+        howToReach200: "Elimine marcas de oralidade e imprecisões vocabulares, mantenha desvios gramaticais próximos de zero e articule períodos complexos bem estruturados com vocabulário formal preciso."
       },
       {
         code: "C3",
         name: "Projeto de Texto, Fechamento e Retomada da Base de Argumentos",
         evaluatorAScore: c3EvalA,
         evaluatorBScore: c3EvalB,
-        evidenceQuote: lastSentence,
-        scoreJustification: c3ScoreConc === 200
+        evidenceQuote: isSnippetTangenciamento ? snippetAudit.thematicEvidenceSnippet : lastSentence,
+        scoreJustification: isSnippetZero
+          ? `Nota 0/200 por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+          : isSnippetTangenciamento
+          ? `Nota 40/200 (Nível 1 INEP — Trava Oficial de Tangenciamento) atribuída porque o trecho "${snippetAudit.thematicEvidenceSnippet}" aborda apenas o assunto geral, sem relacionar a conclusão ao recorte temático específico da proposta ("${specificCutLabel}"). Diferenciação: o tangenciamento limita C3 a 40 pts, mas não zera o trecho inteiro.`
+          : c3ScoreConc === 200
           ? `Nota 200/200 (Nível 5 INEP) atribuída porque o fechamento retoma explicitamente os dois eixos da Base de Argumentos (Argumento 1 e Argumento 2) e articula a proposta de intervenção como solução direta para ambos os problemas.`
-          : `Nota ${c3ScoreConc}/200 (Avaliador 1: ${c3EvalA} | Avaliador 2: ${c3EvalB}) atribuída porque o trecho "${lastSentence.slice(0, 80)}..." ${addressesArg1 && addressesArg2 ? "retoma os dois eixos da base, mas carece de um período final de fechamento crítico mais denso" : addressesArg1 || addressesArg2 ? "endereça apenas um dos argumentos da Base de Argumentos fornecida, deixando o segundo eixo sem enfrentamento explícito" : "apresenta intervenção genérica sem vínculo lexical direto com o Argumento 1 e o Argumento 2 da Base"}.`,
-        deductionOrCeilingReason: c3ScoreConc === 200
+          : `Nota ${c3ScoreConc}/200 (Avaliador 1: ${c3EvalA} | Avaliador 2: ${c3EvalB}) atribuída porque o trecho "${lastSentence}" ${addressesArg1 && addressesArg2 ? "retoma os dois eixos da base, mas carece de maior aprofundamento analítico na relação resolutiva" : addressesArg1 || addressesArg2 ? "endereça apenas um dos argumentos da Base de Argumentos fornecida, deixando o segundo eixo sem enfrentamento explícito" : "apresenta intervenção genérica sem vínculo direto com o Argumento 1 e o Argumento 2 da Base"}.`,
+        deductionOrCeilingReason: isSnippetZero
+          ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+          : isSnippetTangenciamento
+          ? `Trava oficial de 40 pts em C3 por tangenciamento temático (${snippetAudit.thematicJustification}).`
+          : c3ScoreConc === 200
           ? "Cumprimento integral do Nível 5 da Matriz INEP (retomada orgânica dos dois argumentos-base)."
           : `Desconto de ${200 - c3ScoreConc} pts: ${!(addressesArg1 && addressesArg2) ? "ausência de enfrentamento explícito e simultâneo dos dois problemas da Base de Argumentos (A1 e A2) na conclusão" : "necessidade de maior aprofundamento no desfecho crítico para consolidar o projeto de texto"}.`,
-        feedback: `Na Competência 3 aplicada à conclusão, a banca audita se a intervenção enfrenta diretamente os dois problemas do projeto de texto (Argumento 1 e Argumento 2 da Base). ${addressesArg1 && addressesArg2 ? "Seu parágrafo retoma de maneira orgânica tanto o eixo institucional/estatal quanto o eixo sociocultural da base argumentativa." : addressesArg1 || addressesArg2 ? "Sua conclusão contempla parcialmente a base de argumentos, resolvendo um dos eixos mas deixando o segundo argumento em segundo plano." : "A intervenção foi formulada de modo genérico, com baixo vínculo lexical com os dois argumentos-base fornecidos."}`,
+        feedback: isSnippetTangenciamento
+          ? `TANGENCIAMENTO TEMÁTICO DETECTADO NO FECHAMENTO: ${snippetAudit.thematicJustification}`
+          : `Na Competência 3 aplicada à conclusão, a banca audita se a intervenção enfrenta diretamente os dois problemas do projeto de texto (Argumento 1 e Argumento 2 da Base). ${addressesArg1 && addressesArg2 ? "Seu parágrafo retoma de maneira orgânica tanto o eixo institucional/estatal quanto o eixo sociocultural da base argumentativa." : addressesArg1 || addressesArg2 ? "Sua conclusão contempla parcialmente a base de argumentos, resolvendo um dos eixos mas deixando o segundo argumento em segundo plano." : "A intervenção foi formulada de modo genérico, com baixo vínculo lexical com os dois argumentos-base fornecidos."}`,
         strengths: [
           addressesArg1 ? "Articulação coerente com o Argumento 1 da base de apoio." : "Intenção resolutiva voltada ao tema central.",
           addressesArg2 ? "Consideração das raízes socioculturais/educacionais previstas no Argumento 2." : "Encerramento alinhado à defesa dos direitos de cidadania."
@@ -6331,31 +9655,51 @@ function buildFallbackSnippetEvaluation(params: {
         evaluatorAScore: c4EvalA,
         evaluatorBScore: c4EvalB,
         evidenceQuote: uniqueConnectors.length > 0 ? `Operadores identificados: "${uniqueConnectors.join('", "')}"` : firstSentence,
-        scoreJustification: c4ScoreConc === 200
-          ? `Nota 200/200 (Nível 5 INEP) confirmada pela presença de operador argumentativo conclusivo interparágrafo na abertura e diversidade de nexos coesivos intraparágrafos (${uniqueConnectors.join(", ")}) sem repetições.`
-          : `Nota ${c4ScoreConc}/200 (Avaliador 1: ${c4EvalA} | Avaliador 2: ${c4EvalB}) atribuída em razão da presença de ${uniqueConnectors.length} operador(es) coesivo(s) distinto(s) (${uniqueConnectors.length > 0 ? uniqueConnectors.join(", ") : "nenhum operador canônico detectado"}); para 200 pontos na C4, o INEP exige conectivo conclusivo interparágrafo no início do parágrafo aliado a conectivos intraparágrafos variados em todos os períodos.`,
-        deductionOrCeilingReason: c4ScoreConc === 200
-          ? "Cumprimento integral do Nível 5 da Matriz INEP (coesão inter e intraparágrafo expressiva)."
-          : `Desconto de ${200 - c4ScoreConc} pts: ${uniqueConnectors.length < 2 ? "repertório restrito de operadores argumentativos intraparágrafos para encadear os períodos da proposta" : "necessidade de maior variedade de elementos anafóricos e conectivos entre os períodos conclusivos"}.`,
-        feedback: `Na Competência 4, o parágrafo conclusivo deve obrigatoriamente iniciar com um operador argumentativo conclusivo interparágrafo e encadear os 5 elementos da proposta com nexos intraparágrafos variados. Foram identificados ${uniqueConnectors.length} operador(es) coesivo(s) distinto(s) no seu trecho.`,
+        scoreJustification: isSnippetZero
+          ? `Nota 0/200 por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}).`
+          : c4ScoreConc === 200
+          ? `Nota 200/200 (Nível 5 INEP) confirmada pela adequação funcional, progressão contínua entre os períodos e retomada precisa de referentes, sem artificialidade.`
+          : `Nota ${c4ScoreConc}/200 (Avaliador 1: ${c4EvalA} | Avaliador 2: ${c4EvalB}) atribuída considerando a adequação semântica, progressão entre frases e retomada referencial (${uniqueConnectors.length > 0 ? uniqueConnectors.join(", ") : "articulação básica"}); conectivos comuns como "Portanto", "Dessa forma" e "Além disso" não são penalizados quando corretos.`,
+        deductionOrCeilingReason: isSnippetZero
+          ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+          : c4ScoreConc === 200
+          ? "Cumprimento integral do Nível 5 da Matriz INEP (coesão funcional precisa e progressão fluida)."
+          : `Desconto de ${200 - c4ScoreConc} pts: ${snippetHasAnaphoricMesmo ? "uso anafórico inadequado de 'o mesmo'" : "limitação na variedade funcional, progressão entre períodos ou retomada de referentes"}.`,
+        feedback: `Na Competência 4 aplicada à conclusão, avalia-se a adequação funcional, a progressão entre os períodos e a retomada de referentes sem relações artificiais (não pela contagem bruta de conectivos e sem penalizar expressões como 'Portanto', 'Dessa forma', 'Nesse sentido' ou 'Além disso' quando corretas).`,
         strengths: [
-          uniqueConnectors.length >= 1 ? `Uso de conectivo articulador (${uniqueConnectors.slice(0, 3).join(", ")}) para marcar a progressão lógica.` : "Encadeamento sequencial compreensível das ideias conclusivas."
+          uniqueConnectors.length >= 1 ? `Uso adequado de articulador (${uniqueConnectors.slice(0, 3).join(", ")}) garantindo continuidade lógica.` : "Encadeamento sequencial compreensível das ideias conclusivas."
         ],
         improvements: [
-          !/^(portanto|diante desse cenário|infere-se|dessa forma|desse modo|em suma|por conseguinte|logo)/i.test(cleanText)
-            ? "Inicie o parágrafo obrigatoriamente com um conectivo conclusivo interparágrafo (ex.: 'Portanto,', 'Diante desse cenário,', 'Infere-se, portanto, que')."
-            : "Utilize conectivos intraparágrafos como 'Para tanto,', 'Ademais,' e 'Dessa maneira,' para ligar os períodos internos da conclusão."
+          snippetHasAnaphoricMesmo
+            ? "Substitua o uso anafórico de 'o mesmo' por pronome ou retomada lexical precisa."
+            : !snippetHasProgression
+              ? "Aprimore a progressão lógica entre os períodos internos da conclusão e a retomada explícita de referentes."
+              : "Mantenha a variedade funcional e precisão dos elos coesivos entre a retomada da tese e os elementos da proposta."
         ],
-        howToReach200: "Abra o 1º período com 'Portanto,' ou 'Infere-se, portanto, que', inicie o 2º período com 'Para tanto, cabe ao...' e feche o 3º período com 'Dessa forma, será possível...'."
+        howToReach200: "Articule os períodos da conclusão com precisão funcional e progressão fluida, retomando claramente os referentes da tese e evitando repetições estruturais ou conexões artificiais."
       },
       {
         code: "C5",
         name: "Proposta de Intervenção e Direitos Humanos (Auditoria dos 5 Elementos)",
         evaluatorAScore: c5EvalA,
         evaluatorBScore: c5EvalB,
-        evidenceQuote: c5Struct.action?.present ? `${c5Struct.agent?.text || ""} — ${c5Struct.action?.text || ""}`.trim() : firstSentence,
-        scoreJustification: `Nota ${c5ScoreConc}/200 (Avaliador 1: ${c5EvalA} | Avaliador 2: ${c5EvalB}) determinada pela regra matemática estrita do INEP (40 pontos por elemento válido): foram comprovados ${validElements} de 5 elementos obrigatórios no texto [Agente: ${c5Struct.agent?.present ? "SIM (+40)" : "NÃO (0)"} | Ação: ${c5Struct.action?.present ? "SIM (+40)" : "NÃO (0)"} | Meio/Modo: ${c5Struct.modeMedium?.present ? "SIM (+40)" : "NÃO (0)"} | Efeito: ${c5Struct.effect?.present ? "SIM (+40)" : "NÃO (0)"} | Detalhamento: ${c5Struct.detailing?.present ? "SIM (+40)" : "NÃO (0)"}].`,
-        deductionOrCeilingReason: c5ScoreConc === 200
+        evidenceQuote: isSnippetDHViolated
+          ? snippetAudit.humanRightsAudit.violationSnippet
+          : (c5Struct.action?.present ? `${c5Struct.agent?.text || ""} — ${c5Struct.action?.text || ""}`.trim() : firstSentence),
+        scoreJustification: isSnippetZero
+          ? `Nota 0/200 por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+          : isSnippetDHViolated
+          ? `Nota 0/200 (Nível 0 INEP — Desrespeito aos Direitos Humanos) atribuída com base no trecho específico: "${snippetAudit.humanRightsAudit.violationSnippet}". Explicação: ${snippetAudit.humanRightsAudit.violationReason} REGRA FUNDAMENTAL DO INEP: O desrespeito aos Direitos Humanos zera EXCLUSIVAMENTE a Competência V (0/200), mas NÃO zera automaticamente as demais competências (C1=${c1ScoreConc}, C3=${c3ScoreConc}, C4=${c4ScoreConc}), que continuam avaliadas normalmente.`
+          : isSnippetTangenciamento
+          ? `Nota ${c5ScoreConc}/200 (Teto Nível 1 de 40 pts por Tangenciamento Temático) atribuída porque a proposta no trecho "${snippetAudit.thematicEvidenceSnippet}" não está articulada ao recorte específico do tema ("${specificCutLabel}").`
+          : `Nota ${c5ScoreConc}/200 (Avaliador 1: ${c5EvalA} | Avaliador 2: ${c5EvalB}) determinada pela regra matemática estrita do INEP (40 pontos por elemento válido): foram comprovados ${validElements} de 5 elementos obrigatórios no texto [Agente: ${c5Struct.agent?.present ? "SIM (+40)" : "NÃO (0)"} | Ação: ${c5Struct.action?.present ? "SIM (+40)" : "NÃO (0)"} | Meio/Modo: ${c5Struct.modeMedium?.present ? "SIM (+40)" : "NÃO (0)"} | Efeito: ${c5Struct.effect?.present ? "SIM (+40)" : "NÃO (0)"} | Detalhamento: ${c5Struct.detailing?.present ? "SIM (+40)" : "NÃO (0)"}], em respeito aos Direitos Humanos.`,
+        deductionOrCeilingReason: isSnippetZero
+          ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+          : isSnippetDHViolated
+          ? `Nota ZERO (0 pts) na Competência V por desrespeito aos Direitos Humanos (${snippetAudit.humanRightsAudit.violationReason}). As competências C1, C3 e C4 NÃO são zeradas.`
+          : isSnippetTangenciamento
+          ? `Trava oficial de 40 pts na C5 decorrente de tangenciamento temático.`
+          : c5ScoreConc === 200
           ? "Cumprimento integral do Nível 5 da Matriz INEP (5 de 5 elementos válidos homologados = 200 pts)."
           : `Desconto matemático de ${200 - c5ScoreConc} pts (${5 - validElements} elemento(s) ausente(s) x 40 pts): faltou explicitar ${[
               !c5Struct.agent?.present ? "Agente" : "",
@@ -6364,19 +9708,24 @@ function buildFallbackSnippetEvaluation(params: {
               !c5Struct.effect?.present ? "Efeito" : "",
               !c5Struct.detailing?.present ? "Detalhamento" : ""
             ].filter(Boolean).join(", ")}.`,
-        feedback: `Pela regra matemática da Matriz Oficial do INEP (40 pontos por elemento válido), sua conclusão apresentou ${validElements} de 5 elementos obrigatórios (${validElements * 40}/200 pts): Agente (${c5Struct.agent?.present ? "Presente" : "Ausente"}), Ação (${c5Struct.action?.present ? "Presente" : "Ausente"}), Meio/Modo (${c5Struct.modeMedium?.present ? "Presente" : "Ausente"}), Efeito (${c5Struct.effect?.present ? "Presente" : "Ausente"}) e Detalhamento (${c5Struct.detailing?.present ? "Presente" : "Ausente"}).`,
-        strengths: [
-          c5Struct.agent?.present ? `Agente social/institucional válido: "${c5Struct.agent.text}".` : "Respeito integral aos Direitos Humanos.",
-          c5Struct.action?.present ? `Ação interventiva concreta identificada: "${c5Struct.action.text}".` : "Proposta alinhada ao eixo temático."
-        ],
+        feedback: isSnippetDHViolated
+          ? `[DESRESPEITO AOS DIREITOS HUMANOS DETECTADO NA C5] Trecho: "${snippetAudit.humanRightsAudit.violationSnippet}". ${snippetAudit.humanRightsAudit.violationReason} Conforme a Cartilha do Participante, atribui-se nota 0 à Competência V, mantendo a pontuação normal das demais competências.`
+          : `Pela regra matemática da Matriz Oficial do INEP (40 pontos por elemento válido), sua conclusão apresentou ${validElements} de 5 elementos obrigatórios (${validElements * 40}/200 pts): Agente (${c5Struct.agent?.present ? "Presente" : "Ausente"}), Ação (${c5Struct.action?.present ? "Presente" : "Ausente"}), Meio/Modo (${c5Struct.modeMedium?.present ? "Presente" : "Ausente"}), Efeito (${c5Struct.effect?.present ? "Presente" : "Ausente"}) e Detalhamento (${c5Struct.detailing?.present ? "Presente" : "Ausente"}).`,
+        strengths: isSnippetDHViolated
+          ? ["Demais competências (C1, C3 e C4) avaliadas normalmente conforme regra de isolamento da C5 do INEP."]
+          : [
+              c5Struct.agent?.present ? `Agente social/institucional válido: "${c5Struct.agent.text}".` : "Respeito integral aos Direitos Humanos.",
+              c5Struct.action?.present ? `Ação interventiva concreta identificada: "${c5Struct.action.text}".` : "Proposta alinhada ao eixo temático."
+            ],
         improvements: [
+          isSnippetDHViolated ? `Substitua imediatamente o trecho "${snippetAudit.humanRightsAudit.violationSnippet}" por medidas institucionais, pedagógicas ou legais compatíveis com a dignidade humana e a Constituição Federal.` : "",
           !c5Struct.agent?.present ? "Explicite um Agente institucional concreto (ex.: Ministério da Educação, Poder Executivo Federal, Secretarias Estaduais)." : "",
           !c5Struct.action?.present ? "Explicite uma Ação prática introduzida por verbo de comando (ex.: deve implementar, cabe criar, urge ampliar)." : "",
           !c5Struct.modeMedium?.present ? "Explicite o Meio/Modo de execução introduzido por 'por meio de' ou 'mediante'." : "",
           !c5Struct.effect?.present ? "Explicite o Efeito/Finalidade social introduzido por 'a fim de' ou 'com o fito de'." : "",
-          !c5Struct.detailing?.present ? "Adicione um Detalhamento explícito (aposto entre travessões, exemplificação com 'a exemplo de' ou justificativa de um dos elementos)." : ""
+          !c5Struct.detailing?.present ? "Adicione um Detalhamento específico que caracterize ou explique melhor um elemento (evite apenas repetir a ação, descrever o meio ou reformular a finalidade)." : ""
         ].filter(Boolean),
-        howToReach200: "Garanta os 5 elementos canônicos no mesmo bloco interventivo: Quem fará (Agente + aposto detalhador entre travessões) + O que fará (Ação prática) + Como fará ('por meio de' + Meio detalhado) + Para quê ('a fim de' + Efeito resolutivo)."
+        howToReach200: "Garanta os 5 elementos distintos respeitando os Direitos Humanos: Agente + Ação + Meio/Modo + Finalidade + Detalhamento específico que acrescente informação nova sobre um desses elementos (sem confundir com o meio nem com a finalidade)."
       }
     ];
 
@@ -6403,100 +9752,155 @@ function buildFallbackSnippetEvaluation(params: {
         evaluatorATotalAverage: evalAAvg,
         evaluatorBTotalAverage: evalBAvg,
         finalAverage: averageScore,
-        status: Math.abs(evalAAvg - evalBAvg) <= 40 ? "Consenso Técnico Homologado (INEP)" : "Média Calibrada entre Duplo Avaliador",
-        notes: `Avaliador 1 (foco Normativo/Coesivo C1+C4) atribuiu média ${evalAAvg}/200. Avaliador 2 (foco Projeto de Texto e Matriz C3+C5) atribuiu média ${evalBAvg}/200, consolidando ${averageScore}/200 pontos.`
+        status: isSnippetZero
+          ? `NOTA ZERO OFICIAL (${snippetAudit.zeroScoreCondition.officialReasonTitle})`
+          : isSnippetDHViolated
+            ? "C5 ZERADA POR DESRESPEITO AOS DIREITOS HUMANOS (Demais Competências Mantidas)"
+            : isSnippetTangenciamento
+              ? "TANGENCIAMENTO TEMÁTICO DETECTADO (Travas INEP aplicadas)"
+              : Math.abs(evalAAvg - evalBAvg) <= 40 ? "Consenso Técnico Homologado (INEP)" : "Média Calibrada entre Duplo Avaliador",
+        notes: isSnippetZero
+          ? `Anulação global (0/200) por ${snippetAudit.zeroScoreCondition.officialReasonTitle}: ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+          : `Avaliador 1 (foco Normativo/Coesivo C1+C4) atribuiu média ${evalAAvg}/200. Avaliador 2 (foco Projeto de Texto e Matriz C3+C5) atribuiu média ${evalBAvg}/200, consolidando ${averageScore}/200 pontos.`
       },
       c5Structure: c5Struct,
       sectionChecklist: [
         {
           label: "Conectivo Conclusivo Interparágrafo + Retomada da Tese",
-          present: uniqueConnectors.length > 0 && (addressesArg1 || addressesArg2),
-          detail: uniqueConnectors.length > 0 ? `Operador identificado (${uniqueConnectors[0]}) articulando o fechamento.` : "Inicie com 'Portanto,' ou 'Infere-se, portanto, que' retomando os dois eixos da base.",
+          present: !isSnippetZero && uniqueConnectors.length > 0 && (addressesArg1 || addressesArg2) && !isSnippetTangenciamento,
+          detail: isSnippetZero ? `${snippetAudit.zeroScoreCondition.officialReasonTitle}: ${snippetAudit.zeroScoreCondition.analyticalJustification}` : (isSnippetTangenciamento ? `Tangenciamento temático identificado: conecte o fechamento ao recorte "${specificCutLabel}".` : (uniqueConnectors.length > 0 ? `Operador identificado (${uniqueConnectors[0]}) articulando o fechamento.` : "Inicie com 'Portanto,' ou 'Infere-se, portanto, que' retomando os dois eixos da base.")),
           evidenceQuote: firstSentence
         },
         {
           label: "1. Agente Interventor (Quem executa?)",
-          present: Boolean(c5Struct.agent?.present),
+          present: !isSnippetZero && Boolean(c5Struct.agent?.present),
           detail: c5Struct.agent?.details || (c5Struct.agent?.present ? "Agente válido identificado." : "Especifique um órgão estatal ou instituição social definida."),
           evidenceQuote: c5Struct.agent?.text || "Ausente no trecho"
         },
         {
           label: "2. Ação Interventiva (O que será feito?)",
-          present: Boolean(c5Struct.action?.present),
-          detail: c5Struct.action?.details || (c5Struct.action?.present ? "Ação prática concreta identificada." : "Explicite uma ação transformadora concreta (não apenas 'conscientizar')."),
-          evidenceQuote: c5Struct.action?.text || "Ausente no trecho"
+          present: !isSnippetZero && Boolean(c5Struct.action?.present) && !isSnippetDHViolated,
+          detail: isSnippetDHViolated ? `VIOLAÇÃO AOS DIREITOS HUMANOS: "${snippetAudit.humanRightsAudit.violationSnippet}".` : (c5Struct.action?.details || (c5Struct.action?.present ? "Ação prática concreta identificada." : "Explicite uma ação transformadora concreta (não apenas 'conscientizar').")),
+          evidenceQuote: isSnippetDHViolated ? snippetAudit.humanRightsAudit.violationSnippet : (c5Struct.action?.text || "Ausente no trecho")
         },
         {
           label: "3. Meio ou Modo de Execução (Como será feito?)",
-          present: Boolean(c5Struct.modeMedium?.present),
+          present: !isSnippetZero && Boolean(c5Struct.modeMedium?.present),
           detail: c5Struct.modeMedium?.details || (c5Struct.modeMedium?.present ? "Meio de execução identificado." : "Use 'por meio de' ou 'mediante' especificando recursos ou instrumentos."),
           evidenceQuote: c5Struct.modeMedium?.text || "Ausente no trecho"
         },
         {
           label: "4. Efeito / Finalidade Social (Para que será feito?)",
-          present: Boolean(c5Struct.effect?.present),
+          present: !isSnippetZero && Boolean(c5Struct.effect?.present),
           detail: c5Struct.effect?.details || (c5Struct.effect?.present ? "Finalidade social identificada." : "Use 'a fim de' ou 'com o intuito de' mostrando o impacto esperado."),
           evidenceQuote: c5Struct.effect?.text || "Ausente no trecho"
         },
         {
           label: "5. Detalhamento (Explicação, Justificativa ou Exemplificação)",
-          present: Boolean(c5Struct.detailing?.present),
+          present: !isSnippetZero && Boolean(c5Struct.detailing?.present),
           detail: c5Struct.detailing?.details || (c5Struct.detailing?.present ? "Detalhamento validado pela Matriz." : "Acrescente um aposto explicativo entre travessões ou exemplificação a um dos elementos."),
           evidenceQuote: c5Struct.detailing?.text || "Ausente no trecho"
         }
       ],
       c1Deviations,
-      strengths: [
-        validElements >= 4 ? `Domínio consistente da Competência 5 com ${validElements} de 5 elementos validados.` : "Proposta respeita integralmente os Direitos Humanos.",
-        addressesArg1 || addressesArg2 ? "Diálogo temático coerente com a Base de Argumentos proposta." : "Registro formal mantido ao longo do parágrafo."
-      ],
+      strengths: isSnippetZero
+        ? ["Nenhuma pontuação atribuída em razão de condição oficial de anulação integral (Nota Zero)."]
+        : [
+            !isSnippetDHViolated && validElements >= 4 ? `Domínio consistente da Competência 5 com ${validElements} de 5 elementos validados.` : "Estrutura avaliada segundo os critérios oficiais do INEP.",
+            addressesArg1 || addressesArg2 ? "Diálogo temático coerente com a Base de Argumentos proposta." : "Registro formal mantido ao longo do parágrafo."
+          ],
       improvements: [
-        validElements < 5 ? `Complete os ${5 - validElements} elemento(s) faltante(s) da Competência 5 para atingir 200 pontos.` : "Refine o paralelismo sintático entre o detalhamento do Agente e o detalhamento do Meio.",
-        !(addressesArg1 && addressesArg2) ? "Garanta que a intervenção responda explicitamente tanto ao Argumento 1 quanto ao Argumento 2 da Base." : "Encerre com um período curto que sintetize a consolidação da cidadania."
-      ],
-      generalFeedback: `Diagnóstico Oficial do Trecho (Conclusão): Média ${averageScore}/200 nas 4 competências ativas (C1: ${activeCompetencies[0].score}, C3: ${activeCompetencies[1].score}, C4: ${activeCompetencies[2].score}, C5: ${activeCompetencies[3].score}). Na auditoria da Competência 5, foram homologados ${validElements} dos 5 elementos obrigatórios do INEP.`,
-      modelRewrite: `Portanto, medidas urgentes são indispensáveis para superar os entraves relativos a "${theme}". Para tanto, cabe ao Poder Executivo Federal — instância máxima de administração pública e garantia de direitos —, em ação integrada com os ministérios competentes, instituir um Plano Nacional de Enfrentamento e Educação Cidadã, por meio do direcionamento de verbas orçamentárias para fiscalização rigorosa e da veiculação de campanhas formativas nas escolas e mídias de massa, a exemplo de oficinas pedagógicas e debates comunitários, a fim de reverter tanto ${argumentBase?.arg1 ? argumentBase.arg1.toLowerCase().replace(/\.$/, '') : 'a lacuna institucional'} quanto ${argumentBase?.arg2 ? argumentBase.arg2.toLowerCase().replace(/\.$/, '') : 'a invisibilidade sociocultural'}. Dessa forma, o Brasil avançará na efetivação plena da dignidade humana.`,
-      rewriteExplanation: "A reescrita Nível 5 (200 pts) estrutura o parágrafo em 3 períodos articulados ('Portanto,' -> 'Para tanto, cabe ao...' -> 'Dessa forma,'), contempla os 5 elementos canônicos da C5 (Agente com detalhamento entre travessões + Ação + Meio com detalhamento exemplificativo + Efeito) e retoma explicitamente os Argumentos 1 e 2 da base."
+        isSnippetZero ? `Atenda efetivamente ao tema proposto ("${theme}"), evitando fuga total ao tema ou situações de anulação.` : "",
+        !isSnippetZero && isSnippetDHViolated ? `Elimine a violação aos Direitos Humanos no trecho "${snippetAudit.humanRightsAudit.violationSnippet}" (que zerou isoladamente a C5).` : "",
+        !isSnippetZero && validElements < 5 ? `Complete os ${5 - validElements} elemento(s) faltante(s) da Competência 5 para atingir 200 pontos.` : "",
+        !isSnippetZero && c3ScoreConc < 200 && !(addressesArg1 && addressesArg2) ? "Garanta que a intervenção responda explicitamente aos dois eixos centrais da argumentação." : "",
+        !isSnippetZero && validElements === 5 && c3ScoreConc === 200 ? "Ajuste fino: mantenha os 5 elementos da C5 articulados e revise pontuação final." : ""
+      ].filter(Boolean),
+      generalFeedback: isSnippetZero
+        ? `Diagnóstico Oficial do Trecho (Conclusão): Enquadrado em situação de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+        : isSnippetDHViolated
+        ? `Diagnóstico Oficial do Trecho (Conclusão): Desrespeito aos Direitos Humanos identificado no trecho "${snippetAudit.humanRightsAudit.violationSnippet}" (${snippetAudit.humanRightsAudit.violationReason}). Conforme a Regra Fundamental do INEP, a Competência 5 recebeu ZERO (0/200), mas as demais competências ativas foram avaliadas normalmente (C1: ${activeCompetencies[0].score}, C3: ${activeCompetencies[1].score}, C4: ${activeCompetencies[2].score}), resultando em média ${averageScore}/200.`
+        : `Diagnóstico Oficial do Trecho (Conclusão): Média ${averageScore}/200 nas 4 competências ativas (C1: ${activeCompetencies[0].score}, C3: ${activeCompetencies[1].score}, C4: ${activeCompetencies[2].score}, C5: ${activeCompetencies[3].score}). Na auditoria da Competência 5, foram homologados ${validElements} dos 5 elementos obrigatórios do INEP.`,
+      modelRewrite: `Portanto, medidas urgentes são indispensáveis para superar os entraves relativos a "${theme}". Para tanto, cabe ao Poder Executivo Federal — instância máxima de administração pública e garantia de direitos —, em ação integrada com os ministérios competentes, instituir um Plano Nacional de Enfrentamento e Educação Cidadã, por meio do direamento de verbas orçamentárias para fiscalização rigorosa e da veiculação de campanhas formativas nas escolas e mídias de massa, a exemplo de oficinas pedagógicas e debates comunitários, a fim de reverter tanto ${argumentBase?.arg1 ? argumentBase.arg1.toLowerCase().replace(/\.$/, '') : 'a lacuna institucional'} quanto ${argumentBase?.arg2 ? argumentBase.arg2.toLowerCase().replace(/\.$/, '') : 'a invisibilidade sociocultural'}. Dessa forma, o Brasil avançará na efetivação plena da dignidade humana.`,
+      rewriteExplanation: "A reescrita Nível 5 (200 pts) estrutura o parágrafo em 3 períodos articulados ('Portanto,' -> 'Para tanto, cabe ao...' -> 'Dessa forma,'), contempla os 5 elementos canônicos da C5 (Agente com detalhamento entre travessões + Ação + Meio com detalhamento exemplificativo + Efeito) respeitando integralmente os Direitos Humanos e retoma explicitamente os Argumentos 1 e 2 da base."
     };
   }
 
   // Evaluation for Introducao, Desenvolvimento 1, or Desenvolvimento 2 (Active: C1, C2, C3, C4)
   let c2EvalA = 120;
   let c2EvalB = 120;
-  if (hasLegitimateRepertoire && hasProductiveLink && themeCoverageRatio >= 0.5 && wordCount >= targetMinWords) {
+  if (isSnippetZero) {
+    c2EvalA = 0;
+    c2EvalB = 0;
+  } else if (isSnippetTangenciamento) {
+    c2EvalA = 40;
+    c2EvalB = 40;
+  } else if (hasLegitimateRepertoire && hasProductiveLink && themeCoverageRatio >= 0.5 && wordCount >= targetMinWords) {
     c2EvalA = 200;
     c2EvalB = 200;
   } else if (hasLegitimateRepertoire && wordCount >= 35) {
+    // Repertório pertinente, mas pouco explorado ou apenas mencionado: Avaliador 2 (Temático/Estrutural) mais rigoroso que Avaliador 1
+    c2EvalA = hasProductiveLink ? 200 : 160;
+    c2EvalB = hasProductiveLink ? 160 : 120;
+  } else if (themeCoverageRatio >= 0.4 && wordCount >= 38) {
+    // Domínio consistente do tema sem repertório externo: teto de 160 pts, B (Temático) mais exigente
     c2EvalA = 160;
-    c2EvalB = hasProductiveLink ? 200 : 160;
-  } else if (themeCoverageRatio >= 0.4 && wordCount >= 35) {
-    c2EvalA = 120;
-    c2EvalB = 160;
-  } else {
-    c2EvalA = 80;
     c2EvalB = 120;
+  } else {
+    c2EvalA = 120;
+    c2EvalB = 80;
   }
 
   let c3EvalA = 120;
   let c3EvalB = 120;
   const hasTwoParagraphsForD2 = sectionType !== 'desenvolvimento_2' || paragraphs.length >= 2;
-  if (criticalMarkers.length >= 2 && sentences.length >= targetMinSentences && wordCount >= targetMinWords && hasTwoParagraphsForD2) {
+  let d1d2SnippetRepetition = false;
+  if (sectionType === 'desenvolvimento_2' && paragraphs.length >= 2) {
+    d1d2SnippetRepetition = detectLiteralD1D2CentralRepetition(paragraphs[0], paragraphs[1], snippetAudit.themeDecomposition?.specificCutWords || []);
+  }
+  const snippetCauseRegex = /\b(porque|visto que|j[áa] que|uma vez que|haja vista|posto que|na medida em que|em decorr[êe]ncia|em raz[ãa]o d[aeo]|em virtude d[aeo]|por conta d[aeo]|por falta de|motivad[oa]s?\s+por|decorre|origina|adv[ée]m|prov[ée]m|enraizado|estrutural|estruturante|hist[óo]ric[oa](?:mente)?|socioecon[ôo]mic[oa]|mecanismo|l[óo]gica|cultura|sistema|modelo|omiss[ãa]o|neglig[êe]ncia|falha|lacuna|desigualdade|precariza[çc][ãa]o|mercantiliza[çc][ãa]o|monetiza[çc][ãa]o|invisibilidade|heran[çc]a|concentra[çc][ãa]o|segrega[çc][ãa]o|subfinanciamento|escravocrata|patriarca(?:l|do)|etnocentrismo|eurocentrismo|capitalismo|individualismo|estigma(?:tiza[çc][ãa]o)?|burocracia|desarticula[çc][ãa]o|sucateamento|escassez|car[êe]ncia|falta\s+de|aus[êe]ncia\s+de|priva[çc][ãa]o\s+de|desconhecimento|aliena[çc][ãa]o|menoridade|filtragem|rastreamento|direcionamento|desregulada|racismo\s+(?:estrutural|institucional)|divis[ãa]o\s+sexual|domina[çc][ãa]o|simbiose|ao\s+(?:navegar|privar|impedir|reproduzir)|sem\s+(?:mecanismos?|fiscaliza[çc][ãa]o|certid[ãa]o|espa[çc]os?|editais?|representantes?|a\s+certid[ãa]o)|exigindo|quando\s+(?:o\s+estado|as\s+plataformas|sobre\s+ela))\b/giu;
+  const snippetConsequenceRegex = /\b(consequentemente|por conseguinte|desse modo|dessa forma|sob essa [óo]tica|sob esse prisma|nesse vi[ée]s|nessa l[óo]gica|prova disso|resultando|resulta|acarreta|desencadeia|perpetua|agrava|compromete|inviabiliza|aprofunda|intensifica|fomenta|marginaliza|exclui|exclu[íi]d[oa]|viola|violando|impede|impedid[oa]|impedindo|gera|gerando|culmina|naturaliza|fragiliza|prejudica|dificulta|acentua|refor[çc]a|corrobora|cerceando|cerceia|priva|privando|relega|relegando|condena|limitando|limita|restringe|reduz|reduzindo|impulsiona|corrói|alimenta|estimula|subordina|desampara|contraria|atenta\s+contra|reverbera|produz\s+perigos|erguendo\s+barreiras|atua\s+como\s+(?:uma\s+)?barreira|condiciona|submetid[oa]s|opera\s+como|deixa\s+[\p{L}\s]{1,25}\s+sem|faz\s+com\s+que|de\s+modo\s+que|tornando|torna-se\s+ref[ée]m|tornam-se|mantendo|silencia|oprime|aprisiona|confina|confinando|exp[õo]e|desonera|em\s+desacordo\s+com|para\s+que\s+o\s+cidad[ãa]o)\b/giu;
+  const inspectSnippetParaDepth = (para: string) => {
+    const wc = para.split(/\s+/).filter(Boolean).length;
+    const sc = para.split(/(?<=[.!?])\s+/).filter(Boolean).length;
+    return (para.match(snippetCauseRegex) || []).length >= 1 && (para.match(snippetConsequenceRegex) || []).length >= 1 && wc >= 42 && sc >= 2;
+  };
+  const snippetCausalCount = (cleanText.match(snippetCauseRegex) || []).length + (cleanText.match(snippetConsequenceRegex) || []).length;
+  const hasDeepStructuralDev = sectionType === 'desenvolvimento_2'
+    ? (paragraphs.length >= 2 && inspectSnippetParaDepth(paragraphs[0]) && inspectSnippetParaDepth(paragraphs[1]) && hasLegitimateRepertoire)
+    : sectionType === 'desenvolvimento_1'
+      ? (inspectSnippetParaDepth(paragraphs[0] || cleanText) && hasLegitimateRepertoire)
+      : (snippetCausalCount >= 1 && sentences.length >= targetMinSentences && wordCount >= targetMinWords);
+  // Autoria organizacional: seleção, organização, interpretação e articulação causal estrutural + repertório
+  const hasOrganizationalAuthorship = !d1d2SnippetRepetition && hasDeepStructuralDev && sentences.length >= targetMinSentences && wordCount >= targetMinWords;
+
+  if (isSnippetZero) {
+    c3EvalA = 0;
+    c3EvalB = 0;
+  } else if (isSnippetTangenciamento) {
+    c3EvalA = 40;
+    c3EvalB = 40;
+  } else if (d1d2SnippetRepetition) {
     c3EvalA = 160;
-    c3EvalB = 200;
-  } else if ((criticalMarkers.length >= 1 || sentences.length >= 3) && wordCount >= 38 && hasTwoParagraphsForD2) {
-    c3EvalA = 160;
+    c3EvalB = 120;
+  } else if (hasOrganizationalAuthorship && hasDeepStructuralDev && hasTwoParagraphsForD2 && (sectionType === 'introducao' || (hasLegitimateRepertoire && hasProductiveLink))) {
+    c3EvalA = 200;
     c3EvalB = 160;
+  } else if ((criticalMarkers.length >= 1 || snippetCausalCount >= 1) && wordCount >= 38 && hasTwoParagraphsForD2) {
+    // Expositivo / parcial sem causa estrutural profunda + consequência crítica + repertório nos desenvolvimentos: máximo 160 pts
+    c3EvalA = 160;
+    c3EvalB = 120;
   } else if (wordCount >= 28) {
     c3EvalA = 120;
-    c3EvalB = 120;
+    c3EvalB = 80;
   } else {
     c3EvalA = 80;
     c3EvalB = 80;
   }
 
-  const repertoireQuote = hasLegitimateRepertoire
-    ? sentences.find(s => new RegExp(repertoireMatches[0], "i").test(s)) || firstSentence
-    : firstSentence;
+  const repertoireQuote = isSnippetTangenciamento
+    ? snippetAudit.thematicEvidenceSnippet
+    : recognizedSnippetRepertoires[0]?.fullSentence || firstSentence;
 
   const c1ScoreNonConc = Math.round((c1EvalA + c1EvalB) / 2);
   const c2ScoreNonConc = Math.round((c2EvalA + c2EvalB) / 2);
@@ -6509,25 +9913,31 @@ function buildFallbackSnippetEvaluation(params: {
       name: "Domínio da Modalidade Escrita Formal da Língua Portuguesa",
       evaluatorAScore: c1EvalA,
       evaluatorBScore: c1EvalB,
-      evidenceQuote: firstSentence,
-      scoreJustification: c1ScoreNonConc === 200
-        ? `Nota 200/200 (Nível 5 INEP) atribuída porque o trecho apresenta ${sentences.length} períodos bem articulados (${wordCount} palavras) e domínio da norma-padrão formal sem desvios gramaticais reincidentes.`
-        : `Nota ${c1ScoreNonConc}/200 (Avaliador 1: ${c1EvalA} | Avaliador 2: ${c1EvalB}) atribuída porque o parágrafo possui ${wordCount} palavras em ${sentences.length} período(s) (mínimo ideal: ${targetMinSentences} períodos) e ${c1Deviations.length === 0 ? "estrutura sintática regular que ainda comporta maior subordinação crítica para atingir o Nível 5 unânime" : `${c1Deviations.length} ocorrência(s) normativa(s)/sintática(s) auditada(s) no texto`}.`,
-      deductionOrCeilingReason: c1ScoreNonConc === 200
-        ? "Cumprimento integral do Nível 5 da Matriz INEP (0 descontos na Competência 1)."
-        : c1Deviations.length > 0
-          ? `Desconto de ${200 - c1ScoreNonConc} pts: identificação de ${c1Deviations.length} desvio(s) da norma culta (ex.: "${c1Deviations[0].snippet}").`
-          : `Desconto de ${200 - c1ScoreNonConc} pts: necessidade de ampliar a complexidade sintática com períodos subordinados e inversões formais (${sentences.length}/${targetMinSentences} períodos).`,
-      feedback: `O trecho contém ${wordCount} palavras distribuídas em ${sentences.length} período(s). ${c1Deviations.length === 0 ? "Observa-se construção sintática fluida, vocabulário formal e ausência de desvios gramaticais severos." : `Foram detectados ${c1Deviations.length} ponto(s) de atenção normativa/sintática na escrita do parágrafo.`}`,
+      evidenceQuote: isSnippetZero ? snippetAudit.zeroScoreCondition.evidenceSnippet : firstSentence,
+      scoreJustification: isSnippetZero
+        ? `Nota 0/200 por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+        : c1ScoreNonConc === 200
+        ? `Nota 200/200 (Nível 5 INEP) atribuída porque o trecho une períodos complexos bem articulados, vocabulário formal preciso e ausência de marcas de oralidade ou clichês vagos (${wordCount} palavras, ${sentences.length} período(s)).`
+        : `Nota ${c1ScoreNonConc}/200 (Avaliador 1: ${c1EvalA} | Avaliador 2: ${c1EvalB}) atribuída considerando ${c1Deviations.length} ocorrência(s) normativa(s)/vocabular(es)${!hasComplexSyntaxSnippet ? " e menor complexidade sintática na articulação dos períodos" : ""} auditada(s) no texto.`,
+      deductionOrCeilingReason: isSnippetZero
+        ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+        : c1ScoreNonConc === 200
+        ? "Cumprimento integral do Nível 5 da Matriz INEP (períodos complexos bem articulados e vocabulário formal preciso)."
+        : c1OralOrVagueSnippet.length > 0
+        ? `Teto de 160 pts: marcas de oralidade, clichês vagos ou imprecisão vocabular identificados ("${c1OralOrVagueSnippet[0].snippet}").`
+        : !hasComplexSyntaxSnippet && c1Deviations.length <= 1
+        ? "Teto de 160 pts: ausência isolada de erros ortográficos não garante 200 pts sem períodos complexos bem articulados e vocabulário formal preciso."
+        : `Desconto de ${200 - c1ScoreNonConc} pts: identificação de ${c1Deviations.length} desvio(s) da norma culta${c1Deviations[0] ? ` (ex.: "${c1Deviations[0].snippet}")` : ""}.`,
+      feedback: `O trecho contém ${wordCount} palavras distribuídas em ${sentences.length} período(s). ${c1Deviations.length === 0 && c1OralOrVagueSnippet.length === 0 && hasComplexSyntaxSnippet ? "Observa-se domínio pleno da norma formal, períodos complexos bem articulados e vocabulário formal preciso." : c1OralOrVagueSnippet.length > 0 ? `Foram identificadas ${c1OralOrVagueSnippet.length} expressão(ões) vaga(s) ou marca(s) de oralidade que limitam a C1 a 160 pontos.` : `Foram detectados ${c1Deviations.length} ponto(s) de atenção normativa ou margem para articular períodos mais complexos com vocabulário formal preciso.`}`,
       strengths: [
-        c1Deviations.length === 0 ? "Correção gramatical e respeito às convenções da escrita formal." : "Clareza na exposição sintática das ideias principais.",
-        sentences.length >= targetMinSentences ? "Boa segmentação dos períodos por meio de pontuação adequada." : "Emprego de registro impessoal e objetivo."
+        c1Deviations.length === 0 && c1OralOrVagueSnippet.length === 0 ? "Correção gramatical e respeito às convenções da escrita formal." : "Clareza na exposição sintática das ideias principais.",
+        "Registro impessoal adequado ao texto dissertativo-argumentativo."
       ],
       improvements: [
-        sentences.length < targetMinSentences ? `Amplie a articulação sintática dividindo o trecho em pelo menos ${targetMinSentences} períodos completos.` : "Aprimore a precisão lexical evitando repetições de vocábulos em períodos adjacentes.",
+        c1OralOrVagueSnippet.length > 0 ? "Substitua marcas de oralidade e clichês vagos (ex.: 'no dia a dia', 'por causa de', 'tomar medidas', 'acaba gerando', 'coisas') por vocabulário formal preciso." : (c1Deviations.length === 0 && !hasComplexSyntaxSnippet ? "Desenvolva períodos complexos bem articulados com precisão vocabular formal para alcançar 200 pontos." : "Revise os desvios pontuais da norma-padrão identificados para atingir 200 pontos."),
         ...c1Deviations.slice(0, 2).map((d: any) => `Ajustar "${d.snippet}": ${d.problem} -> ${d.bestForm}`)
       ],
-      howToReach200: "Mantenha períodos de extensão equilibrada (entre 2 e 3 linhas por período), utilize subordinação crítica ('haja vista que', 'embora') e elimine qualquer marca coloquial."
+      howToReach200: "Evite marcas de oralidade e imprecisão vocabular, elimine desvios normativos e articule períodos complexos com vocabulário formal preciso."
     },
     {
       code: "C2",
@@ -6537,31 +9947,42 @@ function buildFallbackSnippetEvaluation(params: {
       evaluatorAScore: c2EvalA,
       evaluatorBScore: c2EvalB,
       evidenceQuote: repertoireQuote,
-      scoreJustification: c2ScoreNonConc === 200
-        ? `Nota 200/200 (Nível 5 INEP) atribuída pela presença comprovada de repertório sociocultural legitimado (${repertoireMatches.slice(0, 2).join(", ")}) no trecho "${repertoireQuote.slice(0, 80)}...", somada ao uso produtivo articulado diretamente aos núcleos da frase-tema.`
+      scoreJustification: isSnippetZero
+        ? `Nota 0/200 por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+        : isSnippetTangenciamento
+        ? `Nota 40/200 (Nível 1 INEP — Tangenciamento Temático) atribuída com base no trecho: "${snippetAudit.thematicEvidenceSnippet}". Fundamentação: ${snippetAudit.thematicJustification} Diferenciação oficial: O tangenciamento penaliza a Competência II no Nível 1 (40 pts), mas NÃO zera o texto inteiro (diferente da fuga total ao tema).`
+        : c2ScoreNonConc === 200
+        ? `Nota 200/200 (Nível 5 INEP) atribuída pela compreensão consistente do recorte temático somada a repertório sociocultural (${repertoireMatches.slice(0, 2).join(", ")}) contextualizado, explicado e integrado produtivamente ao ponto de vista.`
         : hasLegitimateRepertoire
-          ? `Nota ${c2ScoreNonConc}/200 (Avaliador 1: ${c2EvalA} | Avaliador 2: ${c2EvalB}) atribuída porque o texto mobiliza repertório legitimado (${repertoireMatches.slice(0, 2).join(", ")}), porém ${!hasProductiveLink ? "carece de vínculo produtivo explícito (ponte comparativa entre o repertório e a realidade do tema), ficando retido no Nível 4 (160 pts) da Matriz do INEP" : "aborda apenas parcialmente os núcleos semânticos da frase-tema"}.`
-          : `Nota ${c2ScoreNonConc}/200 (Avaliador 1: ${c2EvalA} | Avaliador 2: ${c2EvalB}) atribuída porque o parágrafo discute o tema sem mobilizar repertório sociocultural externo legitimado pelas Áreas do Conhecimento (filosofia, sociologia, história, literatura, CF/88 ou estatísticas oficiais), o que trava a nota no Nível 3 (120 pts) segundo a Cartilha do INEP.`,
-      deductionOrCeilingReason: c2ScoreNonConc === 200
-        ? "Cumprimento integral do Nível 5 da Matriz INEP (repertório legitimado, pertinente e produtivo)."
+          ? `Nota ${c2ScoreNonConc}/200 (Avaliador 1: ${c2EvalA} | Avaliador 2: ${c2EvalB}) atribuída porque o texto desenvolve o tema e menciona repertório pertinente (${repertoireMatches.slice(0, 2).join(", ")}), porém com exploração parcial/pouco integrada ao raciocínio (faixa intermediária de 160–180 pts).`
+          : `Nota ${c2ScoreNonConc}/200 (Avaliador 1: ${c2EvalA} | Avaliador 2: ${c2EvalB}) atribuída pelo domínio consistente do tema e desenvolvimento adequado sem repertório externo (faixa de referência até 160 pts, sem penalizar ausência de citação em cada parágrafo nem confundir com tangenciamento).`,
+      deductionOrCeilingReason: isSnippetZero
+        ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+        : isSnippetTangenciamento
+        ? `Trava oficial de Nível 1 (40 pts) por tangenciamento temático: abordou o assunto geral sem desenvolver o recorte específico ("${specificCutLabel}").`
+        : c2ScoreNonConc === 200
+        ? "Cumprimento integral do Nível 5 da Matriz INEP (domínio do tema e repertório contextualizado, explicado e produtivo)."
         : !hasLegitimateRepertoire
-          ? `Desconto de ${200 - c2ScoreNonConc} pts: ausência de repertório sociocultural externo legitimado (teto de 120 pts no Nível 3 do INEP para argumentação restrita ao senso comum/textos motivadores).`
-          : `Desconto de ${200 - c2ScoreNonConc} pts: falta de articulação produtiva explícita entre o repertório citado e os núcleos da frase-tema.`,
-      feedback: hasLegitimateRepertoire
-        ? `Repertório sociocultural legitimado identificado (${repertoireMatches.slice(0, 3).join(", ")}) e ${hasProductiveLink ? "articulado de modo produtivo à discussão temática." : "presente no parágrafo, mas necessitando de conexão interpretativa mais explícita com os núcleos da frase-tema."}`
-        : `O trecho aborda o assunto, mas não mobiliza um repertório sociocultural externo legitimado (filosofia, sociologia, Constituição, literatura ou dados oficiais), o que limita a nota da Competência 2 ao teto de 120 pontos segundo a Matriz do INEP.`,
+          ? `Nota de referência até 160 pts: texto demonstra domínio consistente do tema sem repertório externo (faixa 180–200 reservada a repertório produtivo).`
+          : `Desconto de ${200 - c2ScoreNonConc} pts: referência pertinente apenas mencionada ou pouco explorada, exigindo maior explicação e integração ao ponto de vista.`,
+      feedback: isSnippetTangenciamento
+        ? `[TANGENCIAMENTO TEMÁTICO IDENTIFICADO] Trecho: "${snippetAudit.thematicEvidenceSnippet}". ${snippetAudit.thematicJustification}`
+        : hasLegitimateRepertoire
+        ? `Repertório sociocultural identificado (${repertoireMatches.slice(0, 3).join(", ")}) e ${hasProductiveLink ? "contextualizado e integrado ao raciocínio argumentativo." : "mencionado no trecho, mas com necessidade de explicação mais explícita de como sustenta o ponto de vista."}`
+        : `O trecho demonstra domínio consistente do tema proposto sem mobilizar repertório sociocultural externo neste parágrafo (faixa de referência até 160 pts; no conjunto da redação não se exige uma citação em cada parágrafo).`,
       strengths: [
-        hasLegitimateRepertoire ? `Mobilização de referência externa legitimada (${repertoireMatches.slice(0, 2).join(", ")}).` : "Abordagem direta do eixo temático sem tangenciamento.",
-        themeCoverageRatio >= 0.5 ? "Presença explícita dos núcleos semânticos da frase-tema." : "Pertinência temática mantida no recorte."
+        isSnippetTangenciamento ? "Presença de elementos ligados ao assunto amplo, exigindo redirecionamento para o recorte específico." : (hasLegitimateRepertoire ? `Mobilização de referência pertinente (${repertoireMatches.slice(0, 2).join(", ")}).` : "Domínio consistente do recorte temático sem tangenciamento."),
+        !isSnippetTangenciamento && themeCoverageRatio >= 0.5 ? "Desenvolvimento adequado dos núcleos semânticos da frase-tema." : "Estrutura dissertativa preservada."
       ],
       improvements: [
-        !hasLegitimateRepertoire ? "Insira obrigatoriamente um repertório sociocultural legitimado (ex.: Constituição de 1988, Zygmunt Bauman, Gilberto Dimenstein, IBGE)." : "",
-        hasLegitimateRepertoire && !hasProductiveLink ? "Use expressões de ponte ('De maneira análoga,', 'Fora da ficção,', 'Sob essa ótica,') para provar a relação entre o repertório e o problema atual." : "",
-        themeCoverageRatio < 0.5 ? `Inclua todas as palavras-chave da frase-tema ("${theme}") no parágrafo.` : ""
+        isSnippetTangenciamento ? `Conecte explicitamente seus argumentos ao recorte específico exigido: "${specificCutLabel}".` : "",
+        !hasLegitimateRepertoire ? "Para alcançar a faixa de 180–200 pts na C2, integre no conjunto do texto uma referência sociocultural contextualizada e explicada em favor da tese." : "",
+        hasLegitimateRepertoire && !hasProductiveLink ? "Explique o porquê da referência citada e integre-a diretamente ao seu ponto de vista, evitando que fique apenas mencionada." : "",
+        themeCoverageRatio < 0.5 ? `Explore mais explicitamente os núcleos temáticos ("${theme}") no parágrafo.` : ""
       ].filter(Boolean),
       howToReach200: sectionType === 'introducao'
-        ? "Inicie o 1º período com um repertório legitimado e, no 2º período, contraste-o ou conecte-o diretamente com todos os núcleos da frase-tema."
-        : "Apresente o repertório legitimado no 2º período e dedique o 3º período a explicar exatamente como esse conceito comprova o seu argumento."
+        ? "Contextualize uma referência pertinente no início e explique claramente como ela se relaciona ao problema e ao ponto de vista defendido."
+        : "Quando utilizar uma referência no desenvolvimento, contextualize-a e explique sua conexão direta com o argumento, sem obrigação de repetir citações em todos os parágrafos."
     },
     {
       code: "C3",
@@ -6572,55 +9993,68 @@ function buildFallbackSnippetEvaluation(params: {
           : "Estrutura Argumentativa (Tópico Frasal, Causa/Consequência e Autoria)",
       evaluatorAScore: c3EvalA,
       evaluatorBScore: c3EvalB,
-      evidenceQuote: lastSentence,
-      scoreJustification: c3ScoreNonConc === 200
-        ? `Nota 200/200 (Nível 5 INEP) atribuída pela presença de projeto de texto estratégico sem lacunas, juízo crítico autoral (${criticalMarkers.slice(0, 3).join(", ")}) e desdobramento completo de causa e consequência.`
-        : `Nota ${c3ScoreNonConc}/200 (Avaliador 1: ${c3EvalA} | Avaliador 2: ${c3EvalB}) atribuída porque no trecho "${lastSentence.slice(0, 80)}..." ${criticalMarkers.length >= 1 ? "há marcas iniciais de posicionamento crítico, mas faltou desdobrar de forma exaustiva o nexo de causa e efeito ou explicitar separadamente os dois argumentos da base" : "predomina tom expositivo/descritivo sem modalizadores críticos contundentes e sem explicação analítica de por que o problema persiste no Brasil"}.`,
-      deductionOrCeilingReason: c3ScoreNonConc === 200
-        ? "Cumprimento integral do Nível 5 da Matriz INEP (projeto estratégico e autoria crítica consolidada)."
-        : `Desconto de ${200 - c3ScoreNonConc} pts: ${sectionType === 'introducao' ? "tese final sem divisão bipartida explícita (A1 + A2) ou baixo teor de modalização crítica" : "lacuna no desdobramento analítico da cadeia de causa e consequência (texto parcialmente expositivo)"}.`,
-      feedback: sectionType === 'introducao'
-        ? `Na introdução, a Competência 3 avalia o planejamento estratégico e a explicitação da tese (Argumento 1 + Argumento 2). ${sentences.length >= 3 && criticalMarkers.length >= 1 ? "Seu parágrafo constrói a transição entre contextualização, problematização e tese crítica." : "A tese precisa apresentar de forma mais incisiva e separada as duas causas (A1 e A2) que guiariam os desenvolvimentos."}`
-        : `No desenvolvimento, a Competência 3 exige tópico frasal claro, fundamentação e aprofundamento crítico de causa e consequência. ${criticalMarkers.length >= 2 ? `Seu texto demonstra marcas consistentes de juízo crítico (${criticalMarkers.slice(0, 3).join(", ")}).` : "O parágrafo permanece majoritariamente expositivo; faltou explicar por que o problema ocorre e qual o seu impacto social."}`,
+      evidenceQuote: isSnippetTangenciamento ? snippetAudit.thematicEvidenceSnippet : lastSentence,
+      scoreJustification: isSnippetZero
+        ? `Nota 0/200 por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+        : isSnippetTangenciamento
+        ? `Nota 40/200 (Teto Nível 1 INEP por Repercussão de Tangenciamento) atribuída porque a argumentação no trecho "${snippetAudit.thematicEvidenceSnippet}" concentrou-se em problema periférico/correlato sem defender tese sobre o recorte específico ("${specificCutLabel}").`
+        : c3ScoreNonConc === 200
+        ? `Nota 200/200 (Nível 5 INEP) atribuída porque o texto articula repertório, causa estrutural profunda e consequência crítica com progressão lógica consistente.`
+        : `Nota ${c3ScoreNonConc}/200 (Avaliador 1: ${c3EvalA} | Avaliador 2: ${c3EvalB}) atribuída considerando o trecho "${lastSentence}": ${hasDeepStructuralDev ? "há encadeamento lógico e articulação autoral, com margem para aprofundar a relação entre repertório e análise estrutural" : "o desenvolvimento mantém caráter predominantemente expositivo ou superficial, sem articular repertório, causa estrutural profunda e consequência crítica nos parágrafos argumentativos"}.`,
+      deductionOrCeilingReason: isSnippetZero
+        ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+        : isSnippetTangenciamento
+        ? `Trava oficial de 40 pts na Competência III decorrente de tangenciamento temático.`
+        : c3ScoreNonConc === 200
+        ? "Cumprimento integral do Nível 5 da Matriz INEP (articulação de repertório, causa estrutural profunda e consequência crítica)."
+        : `Teto/Desconto de ${200 - c3ScoreNonConc} pts: ${sectionType === 'introducao' ? "tese final ampla ou encaminhamento argumentativo pouco especificado" : (d1d2SnippetRepetition ? "retomada ou sobreposição de ideias entre os parágrafos argumentativos" : "argumentação predominantemente expositiva: para superar 160 pts é necessário articular repertório, causa estrutural profunda e consequência crítica no desenvolvimento")}.`,
+      feedback: isSnippetTangenciamento
+        ? `Como o parágrafo tangenciou o recorte específico da proposta, a Competência 3 sofre a repercussão oficial da Matriz do INEP (teto de 40 pontos), pois o desenvolvimento argumentativo defende um eixo paralelo ao solicitado.`
+        : sectionType === 'introducao'
+        ? `Na introdução, a Competência 3 avalia o planejamento do projeto de texto, a organização da interpretação e a clareza da tese. ${sentences.length >= 3 && hasDeepStructuralDev ? "Seu parágrafo articula de forma consistente contextualização, problematização e encaminhamento da tese." : "A tese pode explicitar com maior clareza e profundidade os eixos argumentativos que orientarão o desenvolvimento."}`
+        : `No desenvolvimento, a Competência 3 diferencia exposição de argumentação aprofundada: constatar o problema e suas consequências óbvias garante no máximo 160 pts. ${hasDeepStructuralDev ? "Seu texto articula repertório, causa estrutural profunda e consequência crítica." : "Para atingir 200 pts, articule repertório, causa estrutural profunda e consequência crítica em cada parágrafo de desenvolvimento."}`,
       strengths: [
-        criticalMarkers.length >= 1 ? `Presença de vocabulário analítico e marcas de autoria (${criticalMarkers.slice(0, 3).join(", ")}).` : "Posicionamento coerente diante da problemática proposta.",
-        sentences.length >= 3 ? "Progressão lógica entre início, meio e fechamento do parágrafo." : "Foco mantido no recorte argumentativo."
+        hasDeepStructuralDev ? "Organização, seleção e articulação coerente dos argumentos com profundidade estrutural." : "Posicionamento coerente diante da problemática proposta.",
+        sentences.length >= 3 ? "Progressão lógica entre início, meio e fechamento do parágrafo." : "Foco mantido na estrutura dissertativa."
       ],
       improvements: [
+        isSnippetTangenciamento ? `Direcione a relação de causa e consequência especificamente para explicar por que ocorre "${specificCutLabel}".` : "",
         sectionType === 'introducao'
-          ? "Explicite no último período os dois encaminhamentos argumentativos (ex.: 'seja pela negligência estatal, seja pela invisibilidade social')."
-          : "Desdobre o 3º período explicando a relação de causa e efeito (por que a falha apontada impede a cidadania plena) antes de fechar o parágrafo.",
+          ? "Explicite no último período os encaminhamentos argumentativos que organizam a interpretação do problema."
+          : "Articule repertório pertinente, causa estrutural profunda (mecanismos sociais/históricos/institucionais) e consequência crítica antes de fechar o parágrafo.",
         sectionType === 'desenvolvimento_2' && paragraphs.length < 2
           ? "Preencha separadamente os dois parágrafos (D1 e D2) para garantir a progressão argumentativa exigida nesta modalidade."
           : ""
       ].filter(Boolean),
       howToReach200: sectionType === 'introducao'
-        ? "Feche a introdução com uma tese bipartida cristalina alinhada à Base de Argumentos, utilizando modalizadores críticos ('grave entrave', 'negligência histórica')."
-        : "Siga a arquitetura de 4 períodos: 1. Tópico frasal crítico; 2. Repertório legitimado; 3. Desdobramento analítico comparando o repertório à realidade brasileira; 4. Fechamento reafirmando a tese."
+        ? "Feche a introdução com uma tese clara e articulada ao recorte específico da proposta, demonstrando domínio dos eixos que serão desenvolvidos."
+        : "Articule repertório produtivo, causa estrutural profunda e consequência crítica nos dois parágrafos de desenvolvimento (D1 e D2), evitando limitar-se à constatação expositiva do problema."
     },
     {
       code: "C4",
-      name: "Mecanismos Coesivos Intra e Interparágrafos",
+      name: "Mecanismos Coesivos Funcionais, Progressão & Retomada",
       evaluatorAScore: c4EvalA,
       evaluatorBScore: c4EvalB,
-      evidenceQuote: uniqueConnectors.length > 0 ? `Operadores identificados: "${uniqueConnectors.join('", "')}"` : firstSentence,
-      scoreJustification: c4ScoreNonConc === 200
-        ? `Nota 200/200 (Nível 5 INEP) confirmada pelo emprego diversificado de operadores argumentativos (${uniqueConnectors.join(", ")}) articulando todos os períodos do trecho sem repetições viciosas.`
-        : `Nota ${c4ScoreNonConc}/200 (Avaliador 1: ${c4EvalA} | Avaliador 2: ${c4EvalB}) atribuída pois foram identificados ${uniqueConnectors.length} operador(es) coesivo(s) expresso(s) (${uniqueConnectors.length > 0 ? uniqueConnectors.join(", ") : "nenhum conectivo canônico"}) para ${sentences.length} período(s). O Nível 5 da Matriz INEP exige conectivo em cada transição de período mais operador interparágrafo na abertura dos desenvolvimentos.`,
-      deductionOrCeilingReason: c4ScoreNonConc === 200
-        ? "Cumprimento integral do Nível 5 da Matriz INEP (coesão inter e intraparágrafo exemplar)."
-        : `Desconto de ${200 - c4ScoreNonConc} pts: ${uniqueConnectors.length < 2 ? "escassez de conectivos intraparágrafos na transição entre períodos internos" : "ausência de operador argumentativo interparágrafo na abertura do desenvolvimento ou repetição lexical"}.`,
-      feedback: `A Competência 4 avalia a variedade de operadores argumentativos e elementos de referenciação anafórica. Foram identificados ${uniqueConnectors.length} operador(es) coesivo(s) expresso(s) no trecho.`,
+      evidenceQuote: uniqueConnectors.length > 0 ? `Articulação identificada: "${uniqueConnectors.join('", "')}"` : firstSentence,
+      scoreJustification: isSnippetZero
+        ? `Nota 0/200 por situação oficial de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}).`
+        : c4ScoreNonConc === 200
+        ? `Nota 200/200 (Nível 5 INEP) confirmada pela adequação semântica, variedade funcional, progressão contínua entre frases/parágrafos e retomada precisa de referentes (conectivos comuns bem usados não são penalizados).`
+        : `Nota ${c4ScoreNonConc}/200 (Avaliador 1: ${c4EvalA} | Avaliador 2: ${c4EvalB}) atribuída considerando a adequação funcional, a progressão entre os períodos (${snippetArticulatedSentences} transições internas articuladas) e a retomada de referentes (${snippetReferents} marcadores referenciais), sem avaliar por contagem bruta de conectivos.`,
+      deductionOrCeilingReason: isSnippetZero
+        ? `Anulação global por ${snippetAudit.zeroScoreCondition.officialReasonTitle}.`
+        : c4ScoreNonConc === 200
+        ? "Cumprimento integral do Nível 5 da Matriz INEP (coesão funcional precisa e progressão fluida)."
+        : `Desconto de ${200 - c4ScoreNonConc} pts: ${snippetHasAnaphoricMesmo ? "uso inadequado de 'o mesmo' anafórico na retomada referencial" : !snippetHasProgression ? "limitação na progressão coesiva entre as frases e parágrafos internos" : "necessidade de maior precisão funcional e retomada referencial entre enunciados (conectivos comuns corretos não foram descontados)"}.`,
+      feedback: `A Competência 4 avalia a adequação funcional, a progressão entre frases e parágrafos e a retomada de referentes sem artificialidade (não se mede por quantidade de conectivos e não penaliza conectivos comuns corretos).`,
       strengths: [
-        uniqueConnectors.length >= 2 ? `Repertório diversificado de conectivos (${uniqueConnectors.slice(0, 3).join(", ")}).` : "Continuidade semântica entre as ideias do parágrafo."
+        uniqueConnectors.length >= 1 ? `Articuladores lógicos empregados com pertinência semântica (${uniqueConnectors.slice(0, 3).join(", ")}).` : "Continuidade semântica básica entre as ideias do parágrafo."
       ],
       improvements: [
-        uniqueConnectors.length < 2 ? "Insira conectivos explícitos na abertura de todos os períodos internos ('Nesse contexto,', 'Sob essa ótica,', 'Dessa forma,')." : "",
-        sectionType !== 'introducao' && !/^(em primeira análise|primeiramente|sob esse viés|nesse sentido|ademais|outrossim|além disso|cabe pontuar)/i.test(cleanText)
-          ? "Inicie o parágrafo de desenvolvimento com um operador argumentativo interparágrafo ('Em primeira análise,', 'Sob esse viés,', 'Ademais,')."
-          : ""
+        !snippetHasProgression ? "Aprimore a progressão lógica entre as frases internas com retomada explícita de referentes ('esse cenário', 'tal impasse')." : "",
+        snippetHasAnaphoricMesmo ? "Substitua o uso anafórico de 'o mesmo' por pronomes pessoais ou sinônimos precisos." : ""
       ].filter(Boolean),
-      howToReach200: "Garanta que cada transição de período tenha um conectivo específico (adversativo, explicativo, comparativo ou conclusivo) e utilize pronomes demonstrativos ('esse cenário', 'tal impasse') para evitar repetições."
+      howToReach200: "Priorize a adequação funcional e a progressão lógica entre frases e parágrafos, usando retomadas referenciais claras e evitando relações artificiais."
     }
   ];
 
@@ -6643,46 +10077,46 @@ function buildFallbackSnippetEvaluation(params: {
     ? [
         {
           label: "1. Contextualização com Repertório Sociocultural Legitimado",
-          present: hasLegitimateRepertoire,
+          present: hasLegitimateRepertoire && !isSnippetZero,
           detail: hasLegitimateRepertoire ? `Repertório identificado (${repertoireMatches.slice(0, 2).join(", ")}).` : "Abra o 1º período com alusão histórica, filosófica, literária ou constitucional.",
           evidenceQuote: firstSentence
         },
         {
-          label: "2. Abordagem Integral dos Núcleos da Frase-Tema",
-          present: themeCoverageRatio >= 0.45 && wordCount >= 30,
-          detail: themeCoverageRatio >= 0.45 ? "Núcleos da frase-tema problematizados na transição." : `Integre explicitamente os termos-chave do tema "${theme}".`,
-          evidenceQuote: sentences[1] || firstSentence
+          label: "2. Abordagem Integral do Recorte Específico da Frase-Tema",
+          present: !isSnippetTangenciamento && !isSnippetZero && themeCoverageRatio >= 0.45 && wordCount >= 30,
+          detail: isSnippetTangenciamento ? `TANGENCIAMENTO: "${snippetAudit.thematicJustification}"` : (themeCoverageRatio >= 0.45 ? "Núcleos e recorte específico da frase-tema problematizados na transição." : `Integre explicitamente os termos-chave do tema "${theme}".`),
+          evidenceQuote: isSnippetTangenciamento ? snippetAudit.thematicEvidenceSnippet : (sentences[1] || firstSentence)
         },
         {
           label: "3. Tese Explícita com Encaminhamento Bipartido (A1 e A2)",
-          present: sentences.length >= 2 && wordCount >= 40,
+          present: !isSnippetTangenciamento && !isSnippetZero && sentences.length >= 2 && wordCount >= 40,
           detail: sentences.length >= 2 && wordCount >= 40 ? "Tese final estruturada com encaminhamento argumentativo." : "Apresente claramente o Argumento 1 e o Argumento 2 no último período.",
           evidenceQuote: lastSentence
         }
       ]
     : [
         {
-          label: "1. Operador Interparágrafo + Tópico Frasal Crítico",
-          present: uniqueConnectors.length >= 1 && sentences.length >= 2,
-          detail: uniqueConnectors.length >= 1 ? "Abertura articulada com ideia-núcleo do parágrafo." : "Inicie com operador ('Em primeira análise,', 'Ademais,') seguido da tese do parágrafo.",
+          label: "1. Operador Interparágrafo + Tópico Frasal Vinculado ao Recorte",
+          present: !isSnippetTangenciamento && !isSnippetZero && uniqueConnectors.length >= 1 && sentences.length >= 2,
+          detail: isSnippetTangenciamento ? `TANGENCIAMENTO: vincule o tópico frasal ao recorte "${specificCutLabel}".` : (uniqueConnectors.length >= 1 ? "Abertura articulada com ideia-núcleo do parágrafo." : "Inicie com operador ('Em primeira análise,', 'Ademais,') seguido da tese do parágrafo."),
           evidenceQuote: firstSentence
         },
         {
           label: "2. Repertório Sociocultural Legitimado e Produtivo (C2)",
-          present: hasLegitimateRepertoire && hasProductiveLink,
+          present: !isSnippetTangenciamento && !isSnippetZero && hasLegitimateRepertoire && hasProductiveLink,
           detail: hasLegitimateRepertoire ? "Fundamentação externa mobilizada no parágrafo." : "Comprove seu argumento com pensador, lei, obra literária ou dado oficial.",
           evidenceQuote: repertoireQuote
         },
         {
-          label: "3. Aprofundamento Crítico de Causa e Consequência (C3)",
-          present: criticalMarkers.length >= 1 && sentences.length >= 3,
-          detail: criticalMarkers.length >= 1 ? "Juízo de valor crítico e relação causal presentes." : "Explique como a causa apontada agrava o problema na realidade brasileira.",
+          label: "3. Aprofundamento Analítico de Causa, Consequência e Articulação (C3)",
+          present: !isSnippetTangenciamento && !isSnippetZero && (criticalMarkers.length >= 1 || snippetCausalCount >= 1) && sentences.length >= 3,
+          detail: (criticalMarkers.length >= 1 || snippetCausalCount >= 1) ? "Seleção, articulação lógica e relação causal identificadas no desenvolvimento." : "Explique com maior profundidade as causas e implicações do problema na realidade brasileira.",
           evidenceQuote: sentences[2] || lastSentence
         },
         {
           label: "4. Articulação Coesiva Intraparágrafo e Fechamento (C4)",
-          present: uniqueConnectors.length >= 2 && sentences.length >= 3,
-          detail: uniqueConnectors.length >= 2 ? `Conectivos variados (${uniqueConnectors.slice(0, 3).join(", ")}).` : "Encadeie todos os períodos internos com conectivos diversificados.",
+          present: !isSnippetZero && (uniqueConnectors.length >= 2 || snippetReferents >= 1) && sentences.length >= 3,
+          detail: uniqueConnectors.length >= 1 ? `Articuladores e retomadas referenciais identificados (${uniqueConnectors.slice(0, 3).join(", ")}).` : "Encadeie os períodos internos com mecanismos coesivos precisos e retomada clara de referentes.",
           evidenceQuote: lastSentence
         }
       ];
@@ -6701,22 +10135,34 @@ function buildFallbackSnippetEvaluation(params: {
       evaluatorATotalAverage: evalAAvg,
       evaluatorBTotalAverage: evalBAvg,
       finalAverage: averageScore,
-      status: Math.abs(evalAAvg - evalBAvg) <= 40 ? "Consenso Técnico Homologado (INEP)" : "Média Calibrada entre Duplo Avaliador",
-      notes: `Avaliador 1 (foco Normativo/Coesivo C1+C4) atribuiu média ${evalAAvg}/200. Avaliador 2 (foco Temático/Argumentativo C2+C3) atribuiu média ${evalBAvg}/200, consolidando ${averageScore}/200 pontos.`
+      status: isSnippetZero
+        ? `NOTA ZERO OFICIAL (${snippetAudit.zeroScoreCondition.officialReasonTitle})`
+        : isSnippetTangenciamento
+          ? "TANGENCIAMENTO TEMÁTICO DETECTADO (Travas INEP aplicadas)"
+          : Math.abs(evalAAvg - evalBAvg) <= 40 ? "Consenso Técnico Homologado (INEP)" : "Média Calibrada entre Duplo Avaliador",
+      notes: isSnippetZero
+        ? `Anulação global (0/200) por ${snippetAudit.zeroScoreCondition.officialReasonTitle}: ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+        : `Avaliador 1 (foco Normativo/Coesivo C1+C4) atribuiu média ${evalAAvg}/200. Avaliador 2 (foco Temático/Argumentativo C2+C3) atribuiu média ${evalBAvg}/200, consolidando ${averageScore}/200 pontos.`
     },
     sectionChecklist,
     c1Deviations,
     strengths: [
-      hasLegitimateRepertoire ? `Repertório sociocultural legitimado mobilizado (${repertoireMatches.slice(0, 2).join(", ")}).` : "Abordagem pertinente do recorte temático proposto.",
+      !isSnippetTangenciamento && hasLegitimateRepertoire ? `Repertório sociocultural legitimado mobilizado (${repertoireMatches.slice(0, 2).join(", ")}).` : "Análise executada conforme matriz oficial do INEP.",
       uniqueConnectors.length >= 2 ? `Emprego consistente de operadores coesivos (${uniqueConnectors.slice(0, 3).join(", ")}).` : "Manutenção do registro formal dissertativo."
     ],
     improvements: [
-      !hasLegitimateRepertoire ? "Insira um repertório sociocultural legitimado e produtivo para elevar a Competência 2 a 200 pontos." : "Aprofunde o vínculo interpretativo entre o repertório citado e os argumentos da base.",
-      sentences.length < targetMinSentences ? `Estruture o trecho em pelo menos ${targetMinSentences} períodos sintaticamente articulados.` : "Utilize vocabulário crítico mais incisivo para evidenciar autoria na Competência 3."
-    ],
-    generalFeedback: `Diagnóstico Oficial do Trecho (${sectionType === 'introducao' ? 'Introdução' : sectionType === 'desenvolvimento_2' ? '2 Desenvolvimentos D1+D2' : '1 Desenvolvimento'}): Média ${averageScore}/200 nas 4 competências ativas (C1: ${activeCompetencies[0].score}, C2: ${activeCompetencies[1].score}, C3: ${activeCompetencies[2].score}, C4: ${activeCompetencies[3].score}).`,
+      isSnippetTangenciamento ? `Articule o argumento diretamente ao recorte específico da proposta ("${specificCutLabel}"), evitando o tangenciamento.` : "",
+      !hasLegitimateRepertoire && c2ScoreNonConc < 200 ? "Integre um repertório sociocultural legitimado e produtivo vinculado ao recorte do tema para elevar a C2." : (hasLegitimateRepertoire && !hasProductiveLink && c2ScoreNonConc < 200 ? "Aprofunde o vínculo explicativo entre o repertório citado e o argumento do parágrafo." : ""),
+      sentences.length < targetMinSentences ? `Estruture o trecho em pelo menos ${targetMinSentences} períodos sintaticamente articulados.` : (c3ScoreNonConc < 200 ? "Aprofunde a relação de causa e consequência do argumento defendido." : ""),
+      snippetHasAnaphoricMesmo ? `Substitua o uso anafórico de "${snippetAnaphoricMesmos[0].match}" por pronome pessoal ou retomada nominal precisa.` : ""
+    ].filter(Boolean),
+    generalFeedback: isSnippetZero
+      ? `Diagnóstico Oficial do Trecho: Enquadrado em situação de Nota Zero (${snippetAudit.zeroScoreCondition.officialReasonTitle}): ${snippetAudit.zeroScoreCondition.analyticalJustification}`
+      : isSnippetTangenciamento
+      ? `Diagnóstico Oficial do Trecho (${sectionType === 'introducao' ? 'Introdução' : sectionType === 'desenvolvimento_2' ? '2 Desenvolvimentos D1+D2' : '1 Desenvolvimento'}): TANGENCIAMENTO TEMÁTICO IDENTIFICADO no trecho "${snippetAudit.thematicEvidenceSnippet}". ${snippetAudit.thematicJustification} Conforme os critérios oficiais do INEP, aplicou-se a trava de 40 pontos em C2 e C3, mantendo a avaliação normal de C1 (${activeCompetencies[0].score}) e C4 (${activeCompetencies[3].score}). Média: ${averageScore}/200.`
+      : `Diagnóstico Oficial do Trecho (${sectionType === 'introducao' ? 'Introdução' : sectionType === 'desenvolvimento_2' ? '2 Desenvolvimentos D1+D2' : '1 Desenvolvimento'}): Média ${averageScore}/200 nas 4 competências ativas (C1: ${activeCompetencies[0].score}, C2: ${activeCompetencies[1].score}, C3: ${activeCompetencies[2].score}, C4: ${activeCompetencies[3].score}).`,
     modelRewrite,
-    rewriteExplanation: "A reescrita Nota 200 aplica a arquitetura de períodos recomendada pelas Cartilhas do INEP, integra repertório sociocultural produtivo com marcador de ponte, utiliza operadores argumentativos variados e explicita o vínculo crítico com a Base de Argumentos."
+    rewriteExplanation: "A reescrita Nota 200 aplica a arquitetura de períodos recomendada pelas Cartilhas do INEP, integra repertório sociocultural produtivo com marcador de ponte, utiliza operadores argumentativos variados e explicita o vínculo crítico com o recorte específico do tema e a Base de Argumentos."
   };
 }
 
@@ -7049,6 +10495,11 @@ app.post("/api/snippet-training/evaluate", async (req, res) => {
       text: combinedText,
       argumentBase
     });
+    const snippetAudit = auditEnemThematicZeroAndHumanRights(combinedText, activeTheme, { isSnippet: true });
+    const isSnippetZero = snippetAudit.zeroScoreCondition.isZeroScore;
+    const isSnippetTangenciamento = !isSnippetZero && snippetAudit.thematicClassification === 'tangenciamento';
+    const isSnippetDHViolated = !isSnippetZero && !snippetAudit.humanRightsAudit.respectsHumanRights;
+    const specificCutLabel = snippetAudit.themeDecomposition.specificCutWords.join(', ') || activeTheme;
 
     const paragraphsList = combinedText.split(/\n\s*\n/).map((p: string) => p.trim()).filter(Boolean);
     const wordsList = combinedText.split(/\s+/).filter(Boolean);
@@ -7056,6 +10507,10 @@ app.post("/api/snippet-training/evaluate", async (req, res) => {
 
     const preAuditBlock = `AUDITORIA TÉCNICA PRELIMINAR DE EVIDÊNCIAS TEXTUAIS (MOTOR DETERMINÍSTICO DO CORRETOR PRINCIPAL):
 - Extensão medida: ${wordsList.length} palavras | ${sentencesList.length} período(s) sintático(s) | ${paragraphsList.length} parágrafo(s).
+- Classificação Temática Preliminar: ${snippetAudit.thematicClassification} (Abordagem do assunto geral: ${snippetAudit.themeDecomposition.matchedGeneralAxisWords.length > 0 ? "Sim" : "Não"} | Recorte específico "${specificCutLabel}": ${snippetAudit.themeDecomposition.matchedSpecificCutWords.length > 0 ? "Atendido" : "Não atendido"}).
+- Justificativa Temática Preliminar: ${snippetAudit.thematicJustification}
+- Situação Oficial de Nota Zero: ${isSnippetZero ? `DETECTADA (${snippetAudit.zeroScoreCondition.officialReasonTitle}) — Justificativa: ${snippetAudit.zeroScoreCondition.analyticalJustification}` : "Nenhuma situação de anulação total detectada"}.
+- Auditoria de Direitos Humanos (C5): ${isSnippetDHViolated ? `VIOLAÇÃO DETECTADA no trecho "${snippetAudit.humanRightsAudit.violationSnippet}" — Justificativa: ${snippetAudit.humanRightsAudit.violationReason}. REGRA FUNDAMENTAL: Zerar APENAS a C5 (0 pts), mantendo a avaliação normal de C1, C2, C3 e C4!` : "Respeito integral aos Direitos Humanos"}.
 - Desvios C1 pré-detectados pelo motor: ${deterministicBase.c1Deviations.length > 0 ? deterministicBase.c1Deviations.map((d: any) => `"${d.snippet}" (${d.problem})`).join("; ") : "Nenhum desvio gramatical bruto detectado pelo scanner léxico"}.
 - Notas de referência pré-calibradas pelo motor determinístico: ${deterministicBase.activeCompetencies.map((c: any) => `${c.code}: ${c.score}/200 (Aval1=${c.evaluatorAScore}, Aval2=${c.evaluatorBScore})`).join(" | ")}.
 ${validSection === 'conclusao' && (deterministicBase as any).c5Structure ? `- Auditoria preliminar C5 (5 elementos): ${(deterministicBase as any).c5Structure.validElementsCount}/5 elementos detectados [Agente: ${(deterministicBase as any).c5Structure.agent?.present ? "Presente" : "Ausente"}, Ação: ${(deterministicBase as any).c5Structure.action?.present ? "Presente" : "Ausente"}, Meio/Modo: ${(deterministicBase as any).c5Structure.modeMedium?.present ? "Presente" : "Ausente"}, Efeito: ${(deterministicBase as any).c5Structure.effect?.present ? "Presente" : "Ausente"}, Detalhamento: ${(deterministicBase as any).c5Structure.detailing?.present ? "Presente" : "Ausente"}].` : ""}`;
@@ -7067,29 +10522,27 @@ ${validSection === 'conclusao' && (deterministicBase as any).c5Structure ? `- Au
         instructions: `AVALIE EXCLUSIVAMENTE ESTE PARÁGRAFO DE INTRODUÇÃO COM OS MESMOS CRITÉRIOS OFICIAIS DO CORRETOR PRINCIPAL DO ENEM (INEP).
 NÃO avalie a Competência 5 (pois proposta de intervenção pertence à conclusão).
 As 4 competências ativas avaliadas neste trecho (0 a 200 cada) são ESTRITAMENTE:
-- C1 (0 a 200): Domínio da modalidade escrita formal da língua portuguesa e estrutura sintática dos períodos da introdução.
-  * Nível 5 (200 pts): Estrutura sintática complexa (3 a 4 períodos subordinados bem pontuados) e registro erudito sem desvios (admite-se no máximo 1 microdesvio leve sem reincidência).
-  * Nível 4 (160 pts): Bom domínio formal, mas com 1 a 2 desvios pontuais ou períodos de sintaxe simples/pouco subordinada.
-  * Nível 3 (120 pts): Domínio mediano, períodos truncados/justapostos (ex: parágrafo inteiro em apenas 1 período longo) ou 3+ desvios gramaticais.
+- C1 (0 a 200): Precisão vocabular e registro formal. NÃO atribua 200 pontos apenas pela ausência de erros ortográficos. Se o texto apresentar marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas"), limite a nota da C1 a 160 pontos. Reserve 200 pontos apenas para textos com períodos complexos bem articulados e vocabulário formal preciso.
+  * Nível 5 (200 pts): Períodos complexos bem articulados, vocabulário formal preciso e ausência de marcas de oralidade ou clichês vagos.
+  * Nível 4 (160 pts): Ausência de desvios graves, porém com marcas de oralidade/imprecisão vocabular ou períodos pouco articulados/simples, ou desvios pontuais.
+  * Nível 3 (120 pts): Domínio mediano, truncamentos/justaposições graves ou vários desvios gramaticais.
   * Nível 2/1 (80/40 pts): Muitos desvios gramaticais, marcas de oralidade e precariedade sintática.
-- C2 (0 a 200): Compreensão integral dos núcleos da frase-tema ("${activeTheme}") + contextualização com repertório sociocultural legitimado e produtivo.
-  * Nível 5 (200 pts): Aborda todos os núcleos semânticos da frase-tema E inicia com repertório sociocultural LEGITIMADO (filosofia, sociologia, história, literatura, CF/88, leis ou dados oficiais) COM USO PRODUTIVO (conectado por contraste ou analogia direta ao tema).
-  * Nível 4 (160 pts): Aborda o tema integralmente e traz repertório legitimado, porém SEM uso produtivo (citação solta sem elo explícito com o problema).
-  * Nível 3 (120 pts): Aborda o tema sem repertório externo legitimado (fica apenas no senso comum) OU tangencia parcialmente um núcleo secundário.
-  * Nível 2/1 (80/40 pts): Tangenciamento severo do tema.
-- C3 (0 a 200): Projeto de texto introdutório estratégico, autoria crítica e clareza da TESE BIPARTIDA (apresentação explícita do ponto de vista e dos argumentos A1 e A2).
-  * Nível 5 (200 pts): Transição fluida entre contextualização -> problematização do tema -> Tese Bipartida explícita com dois argumentos claros (A1 e A2) e modalizadores críticos ("grave entrave", "negligência estatal").
-  * Nível 4 (160 pts): Apresenta tese clara, mas com apenas 1 argumento explícito ou formulação genérica sem juízo crítico contundente.
-  * Nível 3 (120 pts): Introdução meramente expositiva, sem tese definida ou sem encaminhamento argumentativo.
-- C4 (0 a 200): Articulação coesiva intraparágrafo (conectivos adversativos/explicativos/conclusivos, pronomes demonstrativos/relativos e fluidez entre os períodos).
-  * Nível 5 (200 pts): Todos os períodos internos da introdução são encadeados por operadores coesivos precisos (ex: "Entretanto,", "Nesse sentido,", "Sob essa ótica,") e anafóricos sem repetições.
-  * Nível 4 (160 pts): Presença de conectivos internos, mas com 1 repetição vocabular ou transição brusca entre contextualização e tema.
-  * Nível 3 (120 pts): Períodos justapostos sem conectivos intraparágrafos expressivos.
+- C2 (0 a 200): Compreensão integral dos núcleos da frase-tema ("${activeTheme}") + aproveitamento produtivo do repertório sociocultural (nomes de ministérios, leis ou órgãos apenas como agentes da intervenção NÃO contam como repertório).
+  * Nível 5 (180–200 pts): Aborda todos os núcleos da frase-tema E apresenta repertório sociocultural legítimo contextualizado, explicado e integrado produtivamente ao ponto de vista (NÃO dê 200 apenas por citar CF/88, leis, autores ou dados soltos). Na redação completa, exige repertório produtivo também nos desenvolvimentos (D1 e/ou D2).
+  * Nível 4 (160 pts): Aborda o tema integralmente com repertório pertinente pouco explorado/apenas mencionado OU demonstra domínio consistente do tema sem repertório externo produtivo.
+  * Nível 3 (120 pts): Desenvolvimento temático básico sem repertório externo ou abordagem parcial dos aspectos da proposta.
+  * Nível 1 (40 pts): TANGENCIAMENTO TEMÁTICO (aborda apenas o assunto geral amplo sem tratar do recorte específico da proposta). Quando houver tangenciamento, aplique a trava oficial: C2 = 40 pts e C3 <= 40 pts (avaliando C1 e C4 normalmente; nunca zere o trecho por tangenciamento).
+- C3 (0 a 200): Projeto de texto introdutório estratégico e clareza da tese. Diferencie exposição de argumentação aprofundada: tese meramente expositiva/superficial fica em no máximo 160 pts. Em caso de tangenciamento temático, limite C3 ao teto de 40 pts.
+  * Nível 5 (200 pts): Contextualização e problematização articuladas a uma tese clara que encaminha dimensões aprofundáveis com reflexão própria (sem redundância).
+  * Nível 4/3 (120–160 pts): Tese pertinente porém predominantemente expositiva, ampla, superficial ou repetitiva.
+- C4 (0 a 200): Coesão funcional intraparágrafo. NÃO atribua 200 pontos automaticamente quando o trecho apresenta conectivos adequados e relações compreensíveis; considere repetição de estruturas sintáticas e mecanismos de articulação, previsibilidade das construções e fluidez da progressão textual. Entretanto, NÃO penalize conectivos comuns ("Além disso", "Portanto", "Dessa forma", "Nesse sentido") nem transforme variedade vocabular em requisito obrigatório.
+  * Nível 5 (200 pts): Excelência efetiva na articulação entre os períodos internos, progressão fluida, retomada referencial precisa e ausência de construções previsíveis/repetitivas.
+  * Nível 4/3 (120–160 pts ou 160–180 pts conforme gravidade): Articulação mecânica, construções previsíveis, repetição de estruturas sintáticas/explicativas ou falhas de progressão/retomada referencial.
 
 No sectionChecklist, audite os 3 pilares essenciais da Introdução com citação literal (evidenceQuote):
-1. Contextualização com Repertório Sociocultural Legitimado
-2. Abordagem Integral dos Núcleos da Frase-Tema
-3. Tese Explícita com Encaminhamento Argumentativo Bipartido (A1 e A2)`
+1. Contextualização e Aproveitamento do Repertório (se presente)
+2. Domínio Efetivo dos Núcleos da Frase-Tema
+3. Tese Explícita com Encaminhamento de Dimensões Distintas`
       },
       desenvolvimento_1: {
         label: "1 Desenvolvimento (1 parágrafo argumentativo)",
@@ -7097,28 +10550,27 @@ No sectionChecklist, audite os 3 pilares essenciais da Introdução com citaçã
         instructions: `AVALIE EXCLUSIVAMENTE ESTE PARÁGRAFO DE DESENVOLVIMENTO (1 parágrafo) COM OS MESMOS CRITÉRIOS OFICIAIS DO CORRETOR PRINCIPAL DO ENEM (INEP).
 NÃO avalie a Competência 5.
 As 4 competências ativas avaliadas neste trecho (0 a 200 cada) são ESTRITAMENTE:
-- C1 (0 a 200): Domínio da norma-padrão formal, precisão vocabular, regência, crase, concordância e estrutura sintática (ideal: 3 a 4 períodos subordinados).
-  * 200 pts: Sintaxe madura, vocabulário formal preciso e ausência de desvios (máx. 1 microdesvio isolado).
-  * 160 pts: Até 2 desvios pontuais ou estrutura sintática regular.
-  * 120 pts: 3+ desvios normativos, truncamento ou parágrafo escrito em período único.
-- C2 (0 a 200): Repertório sociocultural legitimado, pertinente ao tema ("${activeTheme}") e COM USO PRODUTIVO articulado à defesa do argumento.
-  * 200 pts: Repertório externo legitimado pelas Áreas do Conhecimento E articulado produtivamente ao argumento por meio de ponte interpretativa explícita ("De maneira análoga,", "Fora da ficção,", "Sob essa ótica,").
-  * 160 pts: Repertório legitimado presente, mas colado de forma mecânica/informativa sem desdobramento produtivo.
-  * 120 pts: Argumentação baseada apenas no senso comum, sem repertório sociocultural externo legitimado.
-- C3 (0 a 200): Arquitetura argumentativa completa do parágrafo (1. Tópico frasal claro + 2. Fundamentação com repertório + 3. Aprofundamento crítico de causa/consequência com marcas de autoria + 4. Fechamento reafirmando o argumento).
-  * 200 pts: Cumpre os 4 movimentos argumentativos, explica por que a causa ocorre e qual a consequência social, com juízo crítico autoral explícito.
-  * 160 pts: Defende o argumento, mas apresenta 1 lacuna explicativa (ex: afirma a falha estatal mas não explica como ela impacta o cidadão na prática).
-  * 120 pts: Parágrafo predominantemente expositivo ou com saltos lógicos.
-- C4 (0 a 200): Presença obrigatória de operador argumentativo interparágrafo na abertura (ex: "Em primeira análise,", "Sob esse viés,", "Nesse contexto,") e conectivos intraparágrafos variados em todos os períodos internos sem repetições.
-  * 200 pts: Operador interparágrafo na abertura + conectivos intraparágrafos em todas as transições de períodos sem repetição lexical.
-  * 160 pts: Boa coesão interna, mas sem operador interparágrafo na abertura OU com 1 repetição leve.
-  * 120 pts: Escassez de conectivos ou repetições frequentes.
+- C1 (0 a 200): Precisão vocabular e registro formal. NÃO atribua 200 pontos apenas pela ausência de erros ortográficos. Se o texto apresentar marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas"), limite a nota da C1 a 160 pontos. Reserve 200 pontos apenas para textos com períodos complexos bem articulados e vocabulário formal preciso.
+  * 200 pts: Períodos complexos bem articulados, vocabulário formal preciso e ausência de marcas de oralidade/clichês vagos.
+  * 160 pts: Ausência de desvios graves, porém com imprecisão vocabular/oralidade/clichês vagos, períodos pouco articulados ou desvios pontuais.
+  * 120 pts: Múltiplos desvios normativos ou truncamentos graves.
+- C2 (0 a 200): Domínio do tema ("${activeTheme}") e repertório produtivo no desenvolvimento (órgãos/leis citados apenas como agentes de intervenção NÃO contam como repertório).
+  * 180–200 pts: Domínio pleno do tema E referência sociocultural legitimada, contextualizada, explicada e integrada produtivamente ao argumento defendido neste desenvolvimento.
+  * 160 pts: Referência pertinente pouco explorada/apenas mencionada OU domínio consistente do tema sem repertório externo produtivo (teto máximo de 160 pts sem repertório produtivo no desenvolvimento).
+  * 120 pts: Desenvolvimento temático ainda raso/básico sem repertório externo ou abordagem parcial do tema.
+  * 40 pts: TANGENCIAMENTO TEMÁTICO (trata apenas do assunto geral amplo sem relação efetiva com o recorte da proposta; trava C2 = 40 pts e C3 <= 40 pts).
+- C3 (0 a 200): Diferença entre exposição e argumentação aprofundada. Constatar o problema e suas consequências óbvias sem analisar causas estruturais ou mecanismos sociais garante no máximo 160 pts.
+  * 200 pts: Articula repertório, causa estrutural profunda e consequência crítica com progressão analítica clara no desenvolvimento.
+  * 120–160 pts: Parágrafo pertinente ao tema, mas predominantemente expositivo/superficial (constata o problema sem analisar causas estruturais ou mecanismos sociais).
+- C4 (0 a 200): Coesão funcional. NÃO atribua 200 automaticamente por conectivos adequados e relações compreensíveis; considere repetição de estruturas sintáticas e mecanismos de articulação, previsibilidade das construções e fluidez da progressão textual. NÃO penalize conectivos comuns ("Além disso", "Portanto", "Dessa forma", "Nesse sentido") nem transforme a variedade vocabular em requisito obrigatório.
+  * 200 pts: Excelência efetiva na articulação textual com progressão fluida e retomada referencial clara.
+  * 120–160 pts (ou 160–180 pts se previsível): Repetição de estruturas sintáticas/explicativas, construções previsíveis, articulação mecânica ou quebras de progressão/retomada.
 
 No sectionChecklist, audite os 4 pilares essenciais do Desenvolvimento com citação literal (evidenceQuote):
-1. Operador Interparágrafo + Tópico Frasal Crítico (Ideia-núcleo)
-2. Repertório Sociocultural Legitimado e Uso Produtivo (C2)
-3. Aprofundamento Crítico de Causa/Consequência e Autoria (C3)
-4. Operadores Intraparágrafos e Fechamento Coesivo (C4)`
+1. Tópico Frasal com Dimensão Analítica Clara
+2. Domínio Temático e Integração do Repertório (C2)
+3. Desenvolvimento Argumentativo: Causas, Consequências e Reflexão Própria (C3)
+4. Coesão Funcional, Fluidez da Progressão e Retomada de Referentes (C4)`
       },
       desenvolvimento_2: {
         label: "2 Desenvolvimentos (Parágrafos D1 + D2)",
@@ -7126,16 +10578,16 @@ No sectionChecklist, audite os 4 pilares essenciais do Desenvolvimento com cita�
         instructions: `AVALIE EXCLUSIVAMENTE OS 2 PARÁGRAFOS DE DESENVOLVIMENTO (D1 e D2) COM OS MESMOS CRITÉRIOS OFICIAIS DO CORRETOR PRINCIPAL DO ENEM (INEP).
 NÃO avalie a Competência 5.
 As 4 competências ativas avaliadas neste trecho (0 a 200 cada) são ESTRITAMENTE:
-- C1 (0 a 200): Domínio da norma-padrão, paralelismo sintático, pontuação e precisão vocabular ao longo dos dois parágrafos (D1 e D2).
-- C2 (0 a 200): Qualidade, legitimidade e uso produtivo dos repertórios socioculturais mobilizados no D1 e no D2 sobre o tema ("${activeTheme}"). Para 200 pontos, ambos os parágrafos devem conter fundamentação legitimada e uso produtivo explícito.
-- C3 (0 a 200): Progressão argumentativa complementar entre D1 (defesa do Argumento 1) e D2 (defesa do Argumento 2), aprofundamento crítico de causa/consequência e marcas de autoria em ambos os parágrafos.
-- C4 (0 a 200): Conectivos interparágrafos obrigatórios na abertura de D1 e de D2 (ex: "Em primeira análise," no D1 e "Ademais," / "Outrossim," / "Paralelamente," no D2) e coesão intraparágrafo diversificada sem repetições entre os dois parágrafos.
+- C1 (0 a 200): Precisão vocabular e registro formal ao longo de D1 e D2. NÃO atribua 200 pontos apenas pela ausência de erros ortográficos. Se o texto apresentar marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas"), limite C1 a 160 pontos. Reserve 200 pontos apenas para períodos complexos bem articulados e vocabulário formal preciso.
+- C2 (0 a 200): Domínio do tema ("${activeTheme}") e repertório produtivo nos desenvolvimentos D1 e D2 (órgãos/leis como agentes da intervenção NÃO contam). Para atingir 200 pts na C2, é obrigatório haver repertório pertinente e produtivo na argumentação (D1 e/ou D2). Sem repertório produtivo no desenvolvimento, limite C2 a 160 pts. Em caso de tangenciamento temático, aplique C2 = 40 pts e C3 <= 40 pts.
+- C3 (0 a 200): Diferença entre exposição e argumentação aprofundada entre D1 e D2. Manter dois argumentos distintos em D1 e D2 garante no máximo 160 pts se os parágrafos forem apenas expositivos/superficiais (constatam o problema e consequências óbvias sem analisar causas estruturais ou mecanismos sociais). Reserve 200 pts na C3 apenas quando o texto articular repertório, causa estrutural profunda e consequência crítica nos DOIS parágrafos (D1 e D2), sem repetição literal da mesma ideia central.
+- C4 (0 a 200): Coesão funcional entre D1 e D2 e dentro de cada parágrafo. NÃO atribua 200 automaticamente por conectivos adequados; identifique limitações concretas como a repetição de estruturas sintáticas, mecanismos de articulação ou estruturas explicativas semelhantes entre D1 e D2, além da previsibilidade das construções e fluidez da progressão. NÃO penalize conectivos comuns ("Além disso", "Portanto", "Dessa forma", "Nesse sentido") nem transforme variedade vocabular em requisito obrigatório.
 
 No sectionChecklist, audite os 4 pilares essenciais dos 2 Desenvolvimentos com citação literal (evidenceQuote):
-1. Tópicos Frasais Distintos e Complementares em D1 e D2
-2. Repertórios Socioculturais Legitimados e Produtivos em D1 e D2 (C2)
-3. Defesa Crítica e Progressão Argumentativa D1 -> D2 (C3)
-4. Operadores Interparágrafos e Coesão Intraparágrafo sem Repetições (C4)`
+1. Progressão e Articulação Entre D1 e D2 (Sem Repetição da Mesma Ideia)
+2. Domínio Temático e Integração de Repertório no Conjunto (C2)
+3. Profundidade Analítica: Causas, Consequências e Reflexão Própria (C3)
+4. Coesão Funcional, Fluidez e Não Repetição de Estruturas Explicativas Entre D1 e D2 (C4)`
       },
       conclusao: {
         label: "Apenas a Conclusão (Proposta de Intervenção com Base de Argumentos)",
@@ -7147,27 +10599,32 @@ O aluno recebeu a seguinte BASE DE ARGUMENTOS para trabalhar na conclusão:
 - Argumento 2 (D2): "${argumentBase?.arg2 || 'Causas socioculturais/educacionais'}"
 
 As 4 competências ativas avaliadas neste trecho (0 a 200 cada) são ESTRITAMENTE:
-- C1 (0 a 200): Domínio da norma-padrão, pontuação (especialmente em apostos explicativos e intercalações de detalhamento) e estrutura sintática formal na conclusão (3 a 4 períodos).
-- C3 (0 a 200): Coerência do projeto de texto no fechamento e articulação direta da proposta de intervenção com a Base de Argumentos fornecida.
-  * 200 pts: A conclusão retoma a tese e propõe medidas que enfrentam explicitamente TANTO o Argumento 1 QUANTO o Argumento 2 da Base de Argumentos.
-  * 160 pts: A conclusão resolve apenas 1 dos argumentos da Base (deixando o outro sem resposta) ou faz retomada superficial.
-  * 120 pts: Proposta genérica ("cabe ao governo criar campanhas") desconectada dos argumentos específicos da Base.
-- C4 (0 a 200): Emprego obrigatório de operador argumentativo conclusivo interparágrafo na abertura (ex: "Portanto,", "Diante desse cenário,", "Infere-se, portanto, que") e coesão intraparágrafo ("Para tanto,", "Dessa forma,", "Ademais,") entre os períodos da proposta.
-- C5 (0 a 200): Auditoria matemática rigorosa dos 5 elementos obrigatórios da Matriz Oficial do INEP (40 pontos exatos por elemento válido presente e articulado, respeitando integralmente os Direitos Humanos):
-  1. Agente (Quem executa? Órgão estatal, ministério, instituição social definida — +40 pts)
-  2. Ação (O que será feito? Medida prática concreta, não meramente verbal/vaga — +40 pts)
-  3. Meio/Modo (Como será feito? Recursos, instrumentos introduzidos por 'por meio de', 'mediante' — +40 pts)
-  4. Efeito (Para que será feito? Finalidade social introduzida por 'a fim de', 'com o fito de' — +40 pts)
-  5. Detalhamento (Explicação, exemplificação ou justificativa específica de um dos 4 elementos anteriores — +40 pts).
+- C1 (0 a 200): Precisão vocabular e registro formal na conclusão. NÃO atribua 200 pontos apenas pela ausência de erros ortográficos; marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas") limitam C1 a 160 pts. Reserve 200 pts apenas para períodos complexos bem articulados e vocabulário formal preciso.
+- C3 (0 a 200): Coerência do projeto de texto no fechamento, profundidade das implicações resolutivas, reflexão conclusiva própria e articulação orgânica com a Base de Argumentos fornecida (sem exigir fórmula única). Em caso de tangenciamento temático, limite C3 <= 40 pts.
+  * 200 pts: A conclusão retoma a tese e articula a solução com reflexão própria e relação lógica profunda às implicações do Argumento 1 e do Argumento 2.
+  * 160 pts: A conclusão resolve adequadamente os eixos de forma mais expositiva/previsível ou enfrenta apenas 1 dos argumentos com clareza.
+  * 120 pts: Proposta genérica ou repetitiva desconectada dos argumentos específicos da Base.
+- C4 (0 a 200): Coesão funcional na conclusão. NÃO atribua 200 automaticamente por conectivos adequados e relações compreensíveis; considere repetição de estruturas sintáticas, previsibilidade das construções e fluidez da progressão. NÃO penalize conectivos comuns ("Portanto", "Além disso", "Dessa forma", "Nesse sentido") nem transforme variedade vocabular em requisito obrigatório.
+- C5 (0 a 200): Auditoria completa das propostas de intervenção na conclusão (40 pontos por elemento válido, respeitando integralmente os Direitos Humanos):
+  * ANTES DE PONTUAR, identifique TODAS as propostas presentes no texto integral da conclusão, inclusive quando houver mais de um agente ou mais de uma ação.
+  * Para cada proposta, avalie separadamente: 1. Agente (quem executará); 2. Ação (o que será feito); 3. Meio ou modo (como será executada); 4. Finalidade (qual resultado se pretende alcançar); 5. Detalhamento (informação adicional que especifica um dos elementos anteriores).
+  * NÃO marque uma ação como ausente quando houver verbo propositivo explícito acompanhado de ação identificável (exemplos: expandir, promover, oferecer, implementar, ampliar, desenvolver).
+  * NÃO exija que todos os elementos apareçam em uma única oração: considere a proposta em seu contexto completo e avalie também as intervenções complementares.
+  * NÃO confunda ausência de detalhamento com ausência de ação: uma proposta pode apresentar agente, ação, meio e finalidade, mas não possuir detalhamento suficiente.
+  * Diferencie DETALHAMENTO de MEIO e FINALIDADE: NÃO marque automaticamente como detalhamento um trecho que apenas repete a ação, descreve seu meio de execução ou reformula sua finalidade.
+  * A pontuação deve considerar o conjunto das intervenções, sua articulação, especificidade e qualidade, sem penalizações automáticas pela ausência de um elemento em uma das propostas quando outra intervenção também contribui para a solução apresentada.
+  * REGRA DE CONSISTÊNCIA: toda identificação de elemento ausente exige verificação do texto integral da conclusão; não invente ausências nem ignore ações efetivamente apresentadas.
+  * DIREITOS HUMANOS EM C5 (REGRA FUNDAMENTAL): Se a proposta defender violência física, tortura, castigos físicos, humilhação pública, perseguição, discriminação/exclusão de grupos sociais ou supressão de direitos fundamentais, atribua ZERO (0 pts) na C5, mas NÃO zere C1, C3 e C4! Medidas administrativas, multas ou acompanhamento obrigatório dentro da lei NÃO configuram violação de direitos humanos.
+  * TANGENCIAMENTO EM C5: Se a proposta abordar apenas o assunto geral e tangenciar o recorte temático, limite C5 ao teto de 40 pts.
   Preencha obrigatoriamente o objeto c5Structure detalhando cada um dos 5 elementos!
 
 No sectionChecklist, audite os 6 pilares essenciais da Conclusão com citação literal (evidenceQuote):
 1. Conectivo Conclusivo + Retomada Coerente da Base de Argumentos (A1 e A2)
-2. Agente Interventor (Quem executa a ação?)
-3. Ação Interventiva Prática (O que será feito?)
-4. Meio ou Modo de Execução (Como será feito?)
-5. Efeito / Finalidade Social (Para que será feito?)
-6. Detalhamento de um dos Elementos (Explicação, exemplificação ou justificativa)`
+2. Agente Interventor (Quem executa — considerando múltiplos agentes se houver)
+3. Ação Interventiva Identificável (Verbo propositivo + ação, sem ignorar ações complementares)
+4. Meio ou Modo de Execução (Como será feito no contexto completo)
+5. Finalidade / Efeito Social (Qual resultado se pretende alcançar)
+6. Detalhamento Específico (Distinto de Ação, Meio e Finalidade — sem confundir com ausência de ação)`
       }
     };
 
@@ -7179,28 +10636,62 @@ No sectionChecklist, audite os 6 pilares essenciais da Conclusão com citação 
 Sua avaliação incide EXCLUSIVAMENTE sobre o(s) parágrafo(s) enviado(s) pelo estudante e sobre as competências ativas desta modalidade (${currentSpec.activeCodes.join(", ")}).
 
 REGRAS MANDATÓRIAS DE CONSISTÊNCIA COM O CORRETOR PRINCIPAL DO ENEM:
-1. ESCALA OFICIAL DE 0 A 200 E DUPLO AVALIADOR INDEPENDENTE (INEP):
-   - Para cada competência ativa (${currentSpec.activeCodes.join(", ")}), atribua a nota do Avaliador 1 (evaluatorAScore — perfil normativo, sintático e coesivo) e do Avaliador 2 (evaluatorBScore — perfil temático, argumentativo e interventivo).
-   - Cada avaliador atribui notas estritamente na escala múltipla de 40 do INEP: 0, 40, 80, 120, 160 ou 200.
-   - O campo 'score' de cada competência é a média aritmética exata entre evaluatorAScore e evaluatorBScore (resultando em 0, 20, 40, 60, 80, 100, 120, 140, 160, 180 ou 200).
-   - PROIBIDO INFLAR NOTAS SEM EVIDÊNCIA: Somente atribua 200 pontos quando todos os requisitos do Nível 5 daquela competência estiverem comprovados literalmente no trecho do aluno.
+1. ESCALA OFICIAL DE 0 A 200 E DUPLO AVALIADOR COM PERFIS DISTINTOS (INEP):
+   - Para cada competência ativa (${currentSpec.activeCodes.join(", ")}), atribua a nota do Avaliador 1 ('evaluatorAScore') e do Avaliador 2 ('evaluatorBScore') na escala múltipla de 40 (0, 40, 80, 120, 160 ou 200):
+     * AVALIADOR 1 ('evaluatorAScore' — Perfil Normativo, Sintático e Coesivo): exige rigor máximo em C1 (precisão vocabular, zero oralidade/clichês vagos, sintaxe complexa) e C4 (fluidez e retomada referencial); nos critérios macro (C2, C3 e C5), atua de modo funcional/favorável dentro das regras do INEP.
+     * AVALIADOR 2 ('evaluatorBScore' — Perfil Estrutural, Temático e Interventivo): exige rigor máximo em C2 (repertório produtivo nos desenvolvimentos), C3 (causa estrutural + consequência crítica) e C5 (detalhamento autêntico e 5 elementos); na forma linguística (C1 e C4), atua de modo mais tolerante quando não há falhas graves.
+   - Sempre que o trecho não for Nota Zero nem alcançar perfeição unânime (200/200), os dois avaliadores DEVEM expressar seus perfis distintos (ex.: A < B em C1/C4; B < A em C2/C3/C5), gerando médias finais reais entre si.
+   - O campo 'score' de cada competência é a média aritmética exata entre evaluatorAScore e evaluatorBScore.
+   - REGRA FINAL DE EXCELÊNCIA: A pontuação máxima (200 pts) deve ser sustentada por evidências de excelência na competência avaliada, não apenas pela ausência de erros graves ou pelo cumprimento dos elementos estruturais. Preserve o equilíbrio e não invente limitações para reduzir notas.
 
-2. JUSTIFICATIVA TEXTUAL EXPLÍCITA PARA CADA NOTA ATRIBUÍDA (OBRIGATÓRIO):
+2. REGRA PRIORITÁRIA — DIFERENÇA ENTRE TANGENCIAMENTO E FUGA TOTAL (VERIFICAR ANTES DE TUDO):
+   - ANTES de aplicar qualquer penalização por tangenciamento, verifique se o trecho apresenta alguma relação temática efetiva com a proposta ("${activeTheme}").
+   - NUNCA classifique como tangenciamento um trecho que aborda exclusivamente outro assunto, sem relação temática suficiente com o tema solicitado (mesmo que cite de passagem uma palavra genérica).
+   - Exemplo obrigatório de Fuga Total: Tema "Os desafios para combater a evasão escolar no Brasil" + Trecho sobre preservação dos oceanos, poluição marinha e pesca predatória => Classificação obrigatória: FUGA TOTAL AO TEMA => Resultado: NOTA ZERO (0/200) em TODAS as competências ativas (${currentSpec.activeCodes.join(", ")}), média = 0.
+   - EXEMPLO OBRIGATÓRIO DE DISTINÇÃO — TANGENCIAMENTO NÃO É FUGA TOTAL:
+     * Tema: "Os desafios para combater a insegurança alimentar no Brasil".
+     * Trecho desenvolvido: texto que aborda exclusivamente hábitos alimentares inadequados, consumo de produtos industrializados, obesidade, educação nutricional e alimentação equilibrada, sem discutir fome, pobreza, vulnerabilidade socioeconômica ou dificuldade de acesso aos alimentos.
+     * Classificação correta: TANGENCIAMENTO TEMÁTICO, NÃO FUGA TOTAL.
+     * Justificativa: o texto pertence ao campo semântico e temático da alimentação, mas desloca a discussão para a saúde nutricional, sem desenvolver o problema específico da insegurança alimentar.
+     * NÃO considere que a ausência de discussão sobre um aspecto específico (como a fome) seja suficiente, isoladamente, para caracterizar fuga total. Examine a relação temática global e o campo semântico entre o texto e a proposta.
+     * A fuga total exige que o texto desenvolva assunto efetivamente alheio à proposta, sem relação temática suficiente, direta ou contextual. Palavras isoladas em comum não estabelecem relação temática; considere o sentido global.
+   - Boa gramática, estrutura dissertativa, coesão, repertório ou proposta de intervenção NÃO anulam a fuga total.
+   - ANTES de consolidar as notas, execute a verificação de consistência em 4 passos (preenchendo thematicAudit):
+     1) Qual assunto foi efetivamente desenvolvido no trecho? (thematicAudit.developedSubject)
+     2) Existe relação temática real (direta ou dentro do mesmo campo semântico) com a proposta considerando o sentido global? (thematicAudit.hasRealThematicRelation)
+     3) A classificação é fuga_total, tangenciamento, abordagem_parcial ou abordagem_completa? (thematicAudit.classification)
+     4) A nota final de todas as competências ativas respeita a regra correspondente (0/200 em tudo para fuga_total; C2=40 e C3/C5<=40 para tangenciamento)? (thematicAudit.consistencyJustification)
+   - Quando houver tangenciamento genuíno (pertinência ao campo semântico/assunto amplo, mas desvio do recorte específico): C2 = 40 pts, C3 <= 40 pts e C5 <= 40 pts; nunca zere o trecho inteiro por tangenciamento; avalie C1 e C4 normalmente.
+   - Não exija argumentos predeterminados: argumentos alternativos legítimos efetivamente vinculados ao recorte temático configuram abordagem completa.
+   - Não confunda ausência de repertório, argumentação superficial ou desenvolvimento insuficiente com tangenciamento ou fuga ao tema.
+   - REGRA FUNDAMENTAL — NOTA ZERO NA C5 NÃO SIGNIFICA NOTA ZERO NO TRECHO: Quando a proposta de intervenção desrespeitar os direitos humanos (violência física, tortura, castigos físicos, humilhações públicas, discriminação/exclusão social), atribua ZERO (0 pts) exclusivamente à C5, mantendo a avaliação normal de C1, C2, C3 e C4. Medidas administrativas e acompanhamento legal não configuram violação aos direitos humanos.
+   - EXIGÊNCIA DE JUSTIFICATIVA: Sempre que identificar tangenciamento, fuga ao tema ou desrespeito aos direitos humanos, cite literalmente o trecho que fundamenta a classificação, explique por que se enquadra naquela situação, diferencie de problemas próximos e informe o impacto exato nas competências.
+
+3. CALIBRAÇÃO INTEGRADA E VALIDAÇÃO ESTRUTURAL DE EVIDÊNCIAS (C1–C5):
+   - VALIDAÇÃO DE EVIDÊNCIAS: Toda falha apontada deve corresponder a um trecho literal completo presente no texto do aluno, preservando localização exata (parágrafo e frase). NUNCA cite evidências truncadas com "...", reconstruídas ou pertencentes a outro trecho, e NUNCA conte o mesmo desvio duas vezes. Se não houver falha concreta identificável no texto, não a aponte.
+   - C1 (Precisão Vocabular e Registro Formal): NUNCA classifique períodos longos como erros apenas pela extensão. Porém, NÃO atribua 200 pontos apenas pela ausência de erros ortográficos: se o texto apresentar marcas de oralidade, clichês vagos ou imprecisão vocabular (ex.: "no dia a dia", "por causa de", "tomar medidas", "acaba gerando", "coisas"), limite a nota da C1 a 160 pontos, reservando 200 pontos apenas para períodos complexos bem articulados e vocabulário formal preciso.
+   - C2 (Tema e Repertório Produtivo nos Desenvolvimentos): Nomes de ministérios, leis ou órgãos citados apenas como agentes da Proposta de Intervenção (Conclusão) NÃO contam como repertório sociocultural. Se houver repertório legitimado apenas na introdução sem uso produtivo em D1/D2, limite C2 a 160 pts (200 pts exigem repertório pertinente e produtivo também na argumentação). Nunca negue um repertório legitimado já citado nas evidências.
+   - C3 (Exposição vs. Argumentação Aprofundada): Manter estrutura com dois argumentos distintos garante no máximo 160 pts se os desenvolvimentos forem apenas expositivos/superficiais (constatam o problema e consequências óbvias sem analisar causas estruturais ou mecanismos sociais). Reserve 200 pts apenas para textos que articulem repertório, causa estrutural profunda e consequência crítica nos dois parágrafos de desenvolvimento (D1 e D2).
+   - C4 (Coesão Textual): NÃO atribua 200 automaticamente por conectivos corretos; avalie repetição de estruturas sintáticas/explicativas semelhantes em parágrafos consecutivos, previsibilidade e fluidez da progressão, SEM penalizar conectivos comuns ("Além disso", "Portanto", "Dessa forma", "Nesse sentido") nem exigir variedade vocabular obrigatória.
+   - C5 (Proposta e Detalhamento Concreto): Identifique separadamente TODAS as propostas na conclusão (Agente, Ação, Meio/Modo, Finalidade e Detalhamento). Reconheça como DETALHAMENTO especificações concretas sobre público atendido, localização, critérios de prioridade, condições de execução ou outros aspectos específicos, SEM exigir expressões fixas, diferenciando de repetição da ação, do meio ou da finalidade. Nunca marque ação como ausente diante de verbo propositivo + ação identificável.
+   - VERIFICAÇÃO FINAL DE CONSISTÊNCIA (6 CHECKS ANTES DE EMITIR): Confirme que (1) toda falha tem evidência literal, (2) a evidência demonstra o problema descrito, (3) a mesma falha não foi contada duas vezes, (4) a justificativa condiz com os critérios, (5) não há contradição entre diagnóstico e evidências e (6) todas as referências e propostas foram consideradas.
+
+4. JUSTIFICATIVA TEXTUAL EXPLÍCITA PARA CADA NOTA ATRIBUÍDA (OBRIGATÓRIO):
    Em cada competência ativa de 'activeCompetencies', você DEVE preencher com máxima precisão técnica:
-   - 'evidenceQuote': Citação literal exata (copiada palavra por palavra do texto do aluno) que serve de prova material para a nota atribuída.
+   - 'evidenceQuote': Citação literal exata e completa (copiada palavra por palavra do texto do aluno, sem reticências "..." artificiais) que serve de prova material para a nota atribuída.
    - 'scoreJustification': Justificativa textual explícita e minuciosa (2 a 4 frases) explicando POR QUE a competência recebeu exatamente aquela nota (0-200) e aquele Nível INEP (0 a 5), mencionando as notas do Avaliador 1 e do Avaliador 2, citando trechos do rascunho do aluno e explicando tecnicamente o que garantiu os pontos obtidos e o que impediu o nível superior (quando a nota for menor que 200).
-   - 'deductionOrCeilingReason': Declaração direta e objetiva do motivo exato de perda de pontos (ex: "Desconto de 40 pts: ausência de marcador de uso produtivo conectando o repertório ao tema") OU confirmação explícita de nota máxima ("Cumprimento integral do Nível 5 da Matriz INEP — 0 descontos").
+   - 'deductionOrCeilingReason': Declaração direta e objetiva do motivo exato de perda de pontos fundamentada no texto OU confirmação explícita de nota máxima ("Cumprimento integral do Nível 5 da Matriz INEP — 0 descontos").
    - 'feedback': Diagnóstico pedagógico aprofundado sobre o desempenho do aluno naquela competência específica dentro deste parágrafo.
    - 'strengths': Lista de acertos concretos comprovados no trecho para aquela competência.
    - 'improvements': Lista de correções específicas e acionáveis necessárias naquela competência.
    - 'howToReach200': Passo a passo prático mostrando como transformar o trecho atual em nota 200 naquela competência.
 
-3. AUDITORIA DE DESVIOS C1 E MATRIZ DOS 5 ELEMENTOS C5:
-   - Em 'c1Deviations', liste todos os desvios de norma culta, ortografia, acentuação, crase, regência, concordância, pontuação, truncamento ou informalidade presentes no texto do aluno, informando 'snippet', 'problem', 'bestForm' e 'category'.
-   - Quando a modalidade for 'conclusao', audite os 5 elementos da Competência 5 em 'c5Structure' (Agente, Ação, Meio/Modo, Efeito e Detalhamento), garantindo que a nota da C5 corresponda matematicamente a (validElementsCount * 40).
+5. AUDITORIA DE DESVIOS C1 E MATRIZ DOS 5 ELEMENTOS C5:
+   - Em 'c1Deviations', liste apenas desvios reais e literais presentes no texto do aluno, informando 'snippet' completo, 'problem' (com parágrafo/frase), 'bestForm' (preservando o sentido original sem construções artificiais) e 'category'.
+   - Quando a modalidade for 'conclusao', audite os 5 elementos da Competência 5 em 'c5Structure' (Agente, Ação, Meio/Modo, Efeito e Detalhamento), garantindo que a nota da C5 corresponda matematicamente a (validElementsCount * 40), ou 0 em caso de violação aos direitos humanos.
 
-4. REESCRITA MODELO NOTA 200:
-   - Em 'modelRewrite', reescreva o(s) parágrafo(s) do aluno no padrão Nota 200 (Nível 5 em todas as competências ativas), mantendo a essência da tese/argumentos do estudante.
+6. REESCRITA MODELO NOTA 200:
+   - Em 'modelRewrite', reescreva o(s) parágrafo(s) do aluno no padrão Nota 200 (Nível 5 em todas as competências ativas), mantendo a essência da tese/argumentos do estudante (ou corrigindo para uma intervenção ética e constitucional caso tenha havido violação aos direitos humanos).
    - Em 'rewriteExplanation', detalhe quais ajustes técnicos foram aplicados na reescrita.`;
 
       const prompt = `TEMA DA REDAÇÃO: "${activeTheme}"
@@ -7366,7 +10857,17 @@ Analise o texto acima com o mesmo rigor do Corretor Principal do ENEM, preenchen
                 },
                 generalFeedback: { type: Type.STRING },
                 modelRewrite: { type: Type.STRING },
-                rewriteExplanation: { type: Type.STRING }
+                rewriteExplanation: { type: Type.STRING },
+                thematicAudit: {
+                  type: Type.OBJECT,
+                  properties: {
+                    developedSubject: { type: Type.STRING },
+                    hasRealThematicRelation: { type: Type.BOOLEAN },
+                    classification: { type: Type.STRING },
+                    consistencyJustification: { type: Type.STRING }
+                  },
+                  required: ["developedSubject", "hasRealThematicRelation", "classification", "consistencyJustification"]
+                }
               },
               required: [
                 "activeCompetencies",
@@ -7377,7 +10878,8 @@ Analise o texto acima com o mesmo rigor do Corretor Principal do ENEM, preenchen
                 "improvements",
                 "generalFeedback",
                 "modelRewrite",
-                "rewriteExplanation"
+                "rewriteExplanation",
+                "thematicAudit"
               ]
             }
           }
@@ -7392,28 +10894,351 @@ Analise o texto acima com o mesmo rigor do Corretor Principal do ENEM, preenchen
         return Math.max(0, Math.min(200, Math.round(n / 40) * 40));
       };
 
+      const llmSnippetThematicClass = String(parsed.thematicAudit?.classification || "").toLowerCase().trim();
+      const llmSnippetAuditValid = Boolean(
+        parsed.thematicAudit &&
+        typeof parsed.thematicAudit.hasRealThematicRelation === 'boolean' &&
+        ['fuga_total', 'tangenciamento', 'abordagem_parcial', 'abordagem_completa'].includes(llmSnippetThematicClass)
+      );
+      const llmSnippetBlob = `${parsed.thematicAudit?.consistencyJustification || ""} ${parsed.generalFeedback || ""} ${(Array.isArray(parsed.activeCompetencies) ? parsed.activeCompetencies : []).map((x: any) => `${x.levelTitle || ""} ${x.scoreJustification || ""} ${x.feedback || ""}`).join(" ")}`;
+      const isLlmSnippetFugaTotal =
+        llmSnippetThematicClass === 'fuga_total' ||
+        parsed.thematicAudit?.hasRealThematicRelation === false ||
+        (!llmSnippetAuditValid && /\b(fuga\s+total(\s+ao\s+tema)?|fuga\s+completa\s+ao\s+tema|assunto\s+(completamente\s+|totalmente\s+|integralmente\s+|exclusivamente\s+)?alheio|sem\s+rela[çc][ãa]o\s+tem[áa]tica\s+(suficiente|efetiva|real))\b/i.test(llmSnippetBlob));
+
+      const isMechanicalSnippetZero =
+        isSnippetZero &&
+        snippetAudit.zeroScoreCondition.reasonCode !== 'fuga_total_ao_tema';
+      const deterministicSnippetZeroOverriddenByLlm =
+        snippetAudit.zeroScoreCondition.reasonCode === 'fuga_total_ao_tema' &&
+        llmSnippetAuditValid &&
+        !isLlmSnippetFugaTotal;
+
+      const effectiveSnippetZero =
+        isMechanicalSnippetZero ||
+        isLlmSnippetFugaTotal ||
+        (isSnippetZero && !deterministicSnippetZeroOverriddenByLlm);
+
+      const effectiveSnippetTangenciamento = !effectiveSnippetZero && (
+        isSnippetTangenciamento ||
+        (llmSnippetThematicClass === 'tangenciamento' && snippetAudit.thematicClassification !== 'abordagem_completa')
+      );
+      const effectiveSnippetDHViolated = !effectiveSnippetZero && isSnippetDHViolated;
+
+      const effectiveZeroTitle = isSnippetZero && !isLlmSnippetFugaTotal
+        ? snippetAudit.zeroScoreCondition.officialReasonTitle
+        : 'Fuga Total ao Tema Proposto';
+      const effectiveZeroSnippet = isSnippetZero && !isLlmSnippetFugaTotal
+        ? snippetAudit.zeroScoreCondition.evidenceSnippet
+        : (snippetAudit.thematicEvidenceSnippet || combinedText.slice(0, 140));
+      const effectiveZeroJustification = isSnippetZero && !isLlmSnippetFugaTotal
+        ? snippetAudit.zeroScoreCondition.analyticalJustification
+        : `FUGA TOTAL AO TEMA IDENTIFICADA (REGRA PRIORITÁRIA): Assunto efetivamente desenvolvido no trecho: "${parsed.thematicAudit?.developedSubject || 'assunto alheio ao tema proposto'}". ${parsed.thematicAudit?.consistencyJustification || `O trecho desenvolve assunto efetivamente alheio ao tema "${activeTheme}", sem relação temática suficiente, direta ou contextual.`} Boa gramática, estrutura dissertativa, coesão, repertório ou proposta de intervenção NÃO anulam a fuga total ao tema: todas as competências ativas recebem NOTA ZERO (0/200).`;
+
+      const rawSnippetC5 = validSection === 'conclusao' && parsed.c5Structure
+        ? JSON.parse(JSON.stringify(parsed.c5Structure))
+        : null;
+      if (rawSnippetC5?.agent?.present && rawSnippetC5.agent.text) {
+        const cleanedSnipAgent = cleanSingleAgentCandidate(rawSnippetC5.agent.text);
+        if (cleanedSnipAgent) rawSnippetC5.agent.text = cleanedSnipAgent;
+      }
+      const snippetConclusionAudit = validSection === 'conclusao'
+        ? auditConclusionInterventions(combinedText)
+        : null;
+      let snippetActionRestored = false;
+      let snippetDetailingRestored = false;
+      if (rawSnippetC5 && snippetConclusionAudit && !effectiveSnippetZero && !effectiveSnippetDHViolated && !effectiveSnippetTangenciamento) {
+        if (rawSnippetC5.action && !rawSnippetC5.action.present && snippetConclusionAudit.hasAction) {
+          snippetActionRestored = true;
+          rawSnippetC5.action = {
+            ...rawSnippetC5.action,
+            present: true,
+            text: snippetConclusionAudit.actionText,
+            details: "Ação propositiva identificada na verificação integral da conclusão (não confundir ausência de detalhamento com ausência de ação)."
+          };
+        }
+        if (rawSnippetC5.detailing && !rawSnippetC5.detailing.present) {
+          let extractedFromSnippetSpan: { detailingExtracted: string; targetHint: string } | null = null;
+          for (const obj of [rawSnippetC5.action, rawSnippetC5.modeMedium, rawSnippetC5.effect, rawSnippetC5.agent]) {
+            if (obj?.present && obj.text) {
+              const detRes = extractDetailingFromTextSpan(obj.text);
+              if (detRes.detailingExtracted) {
+                if (detRes.cleanedCore && detRes.cleanedCore.length >= 6) obj.text = detRes.cleanedCore;
+                extractedFromSnippetSpan = { detailingExtracted: detRes.detailingExtracted, targetHint: detRes.targetHint };
+                break;
+              }
+            }
+          }
+          if (extractedFromSnippetSpan) {
+            snippetDetailingRestored = true;
+            rawSnippetC5.detailing = {
+              ...rawSnippetC5.detailing,
+              present: true,
+              text: extractedFromSnippetSpan.detailingExtracted,
+              targetElement: extractedFromSnippetSpan.targetHint,
+              details: "Detalhamento específico extraído do contexto sintático da proposta."
+            };
+          } else if (snippetConclusionAudit.hasDetailing) {
+            snippetDetailingRestored = true;
+            rawSnippetC5.detailing = {
+              ...rawSnippetC5.detailing,
+              present: true,
+              text: snippetConclusionAudit.detailingText,
+              details: "Detalhamento concreto identificado (público atendido, localização, critérios de prioridade ou condições de execução, sem exigir fórmula fixa)."
+            };
+          }
+        }
+        let recalcAfterConc = 0;
+        if (rawSnippetC5.agent?.present) recalcAfterConc++;
+        if (rawSnippetC5.action?.present) recalcAfterConc++;
+        if (rawSnippetC5.modeMedium?.present) recalcAfterConc++;
+        if (rawSnippetC5.effect?.present) recalcAfterConc++;
+        if (rawSnippetC5.detailing?.present) recalcAfterConc++;
+        rawSnippetC5.validElementsCount = recalcAfterConc;
+      }
+      let snippetFakeDetailingDetected = false;
+      if (rawSnippetC5 && !snippetDetailingRestored && !effectiveSnippetZero && !effectiveSnippetDHViolated && rawSnippetC5.detailing?.present) {
+        const dTxt = String(rawSnippetC5.detailing?.text || "").trim().toLowerCase();
+        const aTxt = String(rawSnippetC5.action?.text || "").trim().toLowerCase();
+        const mTxt = String(rawSnippetC5.modeMedium?.text || "").trim().toLowerCase();
+        const eTxt = String(rawSnippetC5.effect?.text || "").trim().toLowerCase();
+        const startsAsModeOrEffect = /^(por meio de|mediante|através de|por intermédio de|a fim de|com o objetivo de|com o fito de|com o intuito de|para que|visando)\b/i.test(dTxt);
+        const overlapsOther =
+          isVagueOrAcronymDetailing(dTxt) ||
+          (aTxt.length >= 6 && (dTxt === aTxt || (dTxt.length >= 12 && aTxt.includes(dTxt.slice(0, 18))))) ||
+          (mTxt.length >= 6 && (dTxt === mTxt || (dTxt.length >= 12 && mTxt.includes(dTxt.slice(0, 18))))) ||
+          (eTxt.length >= 6 && (dTxt === eTxt || (dTxt.length >= 12 && eTxt.includes(dTxt.slice(0, 18)))));
+        if (startsAsModeOrEffect || overlapsOther) {
+          snippetFakeDetailingDetected = true;
+          rawSnippetC5.detailing = {
+            ...rawSnippetC5.detailing,
+            present: false,
+            text: "Ausente (o trecho informado apenas repetia ação, meio/modo ou finalidade sem acrescentar especificação nova)"
+          };
+          let recalcValid = 0;
+          if (rawSnippetC5.agent?.present) recalcValid++;
+          if (rawSnippetC5.action?.present) recalcValid++;
+          if (rawSnippetC5.modeMedium?.present) recalcValid++;
+          if (rawSnippetC5.effect?.present) recalcValid++;
+          rawSnippetC5.validElementsCount = recalcValid;
+        }
+      }
+
+      // Verificação estrutural de desvios C1 (literais, localizados, sem truncamento, sem duplicidade e sem penalizar períodos longos)
+      const snippetC1OralOrVague = effectiveSnippetZero ? [] : findC1OralityOrVagueVocabulary(combinedText);
+      const snippetComplexSyntax = hasComplexWellArticulatedSyntax(combinedText, validSection === 'desenvolvimento_2' ? 2 : 1);
+      const verifiedSnippetDeviations = effectiveSnippetZero
+        ? []
+        : validateAndDeduplicateC1Deviations(
+            [
+              ...(Array.isArray(parsed.c1Deviations) ? parsed.c1Deviations : []),
+              ...snippetC1OralOrVague.map((v) => ({
+                snippet: v.snippet,
+                problem: v.problem,
+                bestForm: v.bestForm,
+                category: v.category
+              })),
+              ...(Array.isArray(deterministicBase.c1Deviations) ? deterministicBase.c1Deviations : [])
+            ],
+            combinedText
+          );
+      const snippetRecognizedReps = extractRecognizedRepertoiresInEssay(combinedText);
+      const snippetCauseRe = /\b(porque|visto que|j[áa] que|uma vez que|haja vista|posto que|na medida em que|em decorr[êe]ncia|em raz[ãa]o d[aeo]|em virtude d[aeo]|por conta d[aeo]|por falta de|motivad[oa]s?\s+por|decorre|origina|adv[ée]m|prov[ée]m|enraizado|estrutural|estruturante|hist[óo]ric[oa](?:mente)?|socioecon[ôo]mic[oa]|mecanismo|l[óo]gica|cultura|sistema|modelo|omiss[ãa]o|neglig[êe]ncia|falha|lacuna|desigualdade|precariza[çc][ãa]o|mercantiliza[çc][ãa]o|monetiza[çc][ãa]o|invisibilidade|heran[çc]a|concentra[çc][ãa]o|segrega[çc][ãa]o|subfinanciamento|escravocrata|patriarca(?:l|do)|etnocentrismo|eurocentrismo|capitalismo|individualismo|estigma(?:tiza[çc][ãa]o)?|burocracia|desarticula[çc][ãa]o|sucateamento|escassez|car[êe]ncia|falta\s+de|aus[êe]ncia\s+de|priva[çc][ãa]o\s+de|desconhecimento|aliena[çc][ãa]o|menoridade|filtragem|rastreamento|direcionamento|desregulada|racismo\s+(?:estrutural|institucional)|divis[ãa]o\s+sexual|domina[çc][ãa]o|simbiose|ao\s+(?:navegar|privar|impedir|reproduzir)|sem\s+(?:mecanismos?|fiscaliza[çc][ãa]o|certid[ãa]o|espa[çc]os?|editais?|representantes?|a\s+certid[ãa]o)|exigindo|quando\s+(?:o\s+estado|as\s+plataformas|sobre\s+ela))\b/giu;
+      const snippetConseqRe = /\b(consequentemente|por conseguinte|desse modo|dessa forma|sob essa [óo]tica|sob esse prisma|nesse vi[ée]s|nessa l[óo]gica|prova disso|resultando|resulta|acarreta|desencadeia|perpetua|agrava|compromete|inviabiliza|aprofunda|intensifica|fomenta|marginaliza|exclui|exclu[íi]d[oa]|viola|violando|impede|impedid[oa]|impedindo|gera|gerando|culmina|naturaliza|fragiliza|prejudica|dificulta|acentua|refor[çc]a|corrobora|cerceando|cerceia|priva|privando|relega|relegando|condena|limitando|limita|restringe|reduz|reduzindo|impulsiona|corrói|alimenta|estimula|subordina|desampara|contraria|atenta\s+contra|reverbera|produz\s+perigos|erguendo\s+barreiras|atua\s+como\s+(?:uma\s+)?barreira|condiciona|submetid[oa]s|opera\s+como|deixa\s+[\p{L}\s]{1,25}\s+sem|faz\s+com\s+que|de\s+modo\s+que|tornando|torna-se\s+ref[ée]m|tornam-se|mantendo|silencia|oprime|aprisiona|confina|confinando|exp[õo]e|desonera|em\s+desacordo\s+com|para\s+que\s+o\s+cidad[ãa]o)\b/giu;
+      const snippetParaDeep = (p: string) =>
+        (p.match(snippetCauseRe) || []).length >= 1 &&
+        (p.match(snippetConseqRe) || []).length >= 1 &&
+        p.split(/\s+/).filter(Boolean).length >= 42 &&
+        p.split(/(?<=[.!?])\s+/).filter(Boolean).length >= 2;
+      const snippetMeetsC3Excellence =
+        validSection === 'desenvolvimento_2'
+          ? (paragraphsList.length >= 2 && snippetRecognizedReps.length > 0 && snippetParaDeep(paragraphsList[0]) && snippetParaDeep(paragraphsList[1]))
+          : validSection === 'desenvolvimento_1'
+            ? (snippetRecognizedReps.length > 0 && snippetParaDeep(paragraphsList[0] || combinedText))
+            : true;
+
       const sanitizedCompetencies = Array.isArray(parsed.activeCompetencies) && parsed.activeCompetencies.length > 0
         ? parsed.activeCompetencies.map((c: any, idx: number) => {
             const fallbackComp: any = deterministicBase.activeCompetencies[idx] || deterministicBase.activeCompetencies[0];
-            const evalA = toValidEnemStep(c.evaluatorAScore ?? c.score ?? fallbackComp.evaluatorAScore);
-            const evalB = toValidEnemStep(c.evaluatorBScore ?? c.score ?? fallbackComp.evaluatorBScore);
+            const compCode = String(c.code || fallbackComp.code || "C1").toUpperCase();
+            let evalA = toValidEnemStep(c.evaluatorAScore ?? c.score ?? fallbackComp.evaluatorAScore);
+            let evalB = toValidEnemStep(c.evaluatorBScore ?? c.score ?? fallbackComp.evaluatorBScore);
+            let c1CappedReason = "";
+            let c2CappedReason = "";
+            let c3CappedReason = "";
+
+            if (effectiveSnippetZero) {
+              evalA = 0;
+              evalB = 0;
+            } else {
+              let compCap = 200;
+              let compTension = false;
+
+              if (compCode === 'C1') {
+                if (verifiedSnippetDeviations.length === 0 && snippetC1OralOrVague.length === 0 && snippetComplexSyntax) {
+                  const c1OnlyLength = /(per[ií]odo\s+(?:excessivamente\s+|muito\s+)?longo)/i.test(`${c.scoreJustification || ''} ${c.deductionOrCeilingReason || ''}`) &&
+                    !/(desvio|erro\s+gramatical|concord[âa]ncia|reg[êe]ncia|crase|pontua[çc][ãa]o\s+incorreta|ortograf|oralidade|imprecis[ãa]o|clich[êe])/i.test(`${c.scoreJustification || ''} ${c.deductionOrCeilingReason || ''}`);
+                  if (c1OnlyLength) {
+                    evalA = 200;
+                    evalB = 200;
+                  }
+                }
+                if (snippetC1OralOrVague.length > 0 || !snippetComplexSyntax || verifiedSnippetDeviations.length >= 2) {
+                  if (evalA > 160 || evalB > 160) {
+                    c1CappedReason = snippetC1OralOrVague.length > 0
+                      ? `Teto de 160 pts aplicado na C1 por marcas de oralidade, clichês vagos ou imprecisão vocabular ("${snippetC1OralOrVague[0].snippet}").`
+                      : !snippetComplexSyntax
+                        ? "Teto de 160 pts aplicado na C1: ausência de erros ortográficos isolada não garante 200 pts sem períodos complexos bem articulados e vocabulário formal preciso."
+                        : `Teto de 160 pts aplicado na C1 em razão de ${verifiedSnippetDeviations.length} desvios da modalidade escrita formal.`;
+                  }
+                  compCap = 160;
+                  compTension = true;
+                } else if (verifiedSnippetDeviations.length === 1) {
+                  compTension = true;
+                }
+              }
+              if (effectiveSnippetTangenciamento) {
+                if (compCode === 'C2') {
+                  compCap = 40;
+                  evalA = 40;
+                  evalB = 40;
+                } else if (compCode === 'C3' || compCode === 'C5') {
+                  compCap = 40;
+                }
+              } else {
+                if (compCode === 'C2' && snippetRecognizedReps.length === 0) {
+                  if (evalA > 160 || evalB > 160) {
+                    c2CappedReason = "Teto de 160 pts aplicado na C2: ausência de repertório sociocultural produtivo válido no trecho (órgãos, leis ou ministérios apenas como agentes interventores não contam como repertório).";
+                  }
+                  compCap = 160;
+                  compTension = true;
+                }
+                if (compCode === 'C3' && (validSection === 'desenvolvimento_1' || validSection === 'desenvolvimento_2') && !snippetMeetsC3Excellence) {
+                  if (evalA > 160 || evalB > 160) {
+                    c3CappedReason = "Teto de 160 pts aplicado na C3: desenvolvimento expositivo/superficial ou sem articulação simultânea de repertório, causa estrutural profunda e consequência crítica.";
+                  }
+                  compCap = 160;
+                  compTension = true;
+                }
+              }
+              if (effectiveSnippetDHViolated && compCode === 'C5') {
+                compCap = 0;
+              } else if (compCode === 'C5') {
+                if ((snippetActionRestored || snippetDetailingRestored) && rawSnippetC5) {
+                  const minByElements = toValidEnemStep((rawSnippetC5.validElementsCount || 0) * 40);
+                  evalA = Math.max(evalA, minByElements);
+                  evalB = Math.max(evalB, minByElements);
+                }
+                if (snippetFakeDetailingDetected || (rawSnippetC5 && (rawSnippetC5.validElementsCount || 0) < 5)) {
+                  const c5ElemCap = rawSnippetC5 ? toValidEnemStep((rawSnippetC5.validElementsCount || 0) * 40) : 160;
+                  compCap = Math.min(160, Math.max(40, c5ElemCap));
+                  compTension = snippetFakeDetailingDetected || (rawSnippetC5 ? (rawSnippetC5.validElementsCount || 0) <= 3 : false);
+                }
+              }
+
+              const pair = calibrateSnippetCompetencyPair({
+                code: (compCode as 'C1' | 'C2' | 'C3' | 'C4' | 'C5'),
+                rawA: evalA,
+                rawB: evalB,
+                cap: compCap,
+                hasTension: compTension,
+                isZero: effectiveSnippetZero,
+                isTangenciamento: effectiveSnippetTangenciamento,
+                isHumanRightsViolationC5: effectiveSnippetDHViolated
+              });
+              evalA = pair.evalA;
+              evalB = pair.evalB;
+            }
+
             const finalCompScore = Math.round((evalA + evalB) / 2);
             const levelMeta = getCompetencyLevelMeta(finalCompScore);
 
+            if (effectiveSnippetZero) {
+              return {
+                code: compCode,
+                name: String(c.name || fallbackComp.name || "Competência"),
+                evaluatorAScore: 0,
+                evaluatorBScore: 0,
+                score: 0,
+                level: 0,
+                levelTitle: `Nível 0 — Anulação Oficial (${effectiveZeroTitle})`,
+                evidenceQuote: effectiveZeroSnippet,
+                scoreJustification: `Nota 0/200 atribuída por ${effectiveZeroTitle}: ${effectiveZeroJustification}`,
+                deductionOrCeilingReason: `Anulação global por ${effectiveZeroTitle} (todas as competências ativas = 0).`,
+                feedback: effectiveZeroJustification,
+                strengths: ["Nenhuma pontuação atribuída em razão de condição oficial de anulação integral (Nota Zero)."],
+                improvements: [`Reescreva o trecho abordando diretamente o tema proposto ("${activeTheme}"), evitando fuga total ao tema.`],
+                howToReach200: `Assegure relação temática direta com o recorte "${activeTheme}" antes de estruturar argumentos, repertório ou intervenção.`
+              };
+            }
+
+            const enforceFallbackJustification =
+              (effectiveSnippetTangenciamento && isSnippetTangenciamento && (compCode === 'C2' || compCode === 'C3' || compCode === 'C5')) ||
+              (effectiveSnippetDHViolated && compCode === 'C5');
+
+            const isLlmOnlyTangComp = effectiveSnippetTangenciamento && !isSnippetTangenciamento && (compCode === 'C2' || compCode === 'C3' || compCode === 'C5');
+            const llmTangSummary = parsed.thematicAudit?.consistencyJustification || `Tangenciamento temático identificado (NÃO é fuga total): o trecho pertence ao campo semântico amplo do tema, mas desloca a discussão sem desenvolver o recorte específico ("${specificCutLabel}").`;
+
+            // Garantir evidência literal completa e localizada no texto do aluno
+            const rawQuote = enforceFallbackJustification ? fallbackComp.evidenceQuote : String(c.evidenceQuote || fallbackComp.evidenceQuote || "");
+            const qLoc = locateSnippetInEssay(rawQuote, combinedText);
+            const verifiedEvidenceQuote = qLoc.found
+              ? (qLoc.wasTruncated || qLoc.exactSpan.length < 12 ? qLoc.fullSentenceContext : qLoc.exactSpan)
+              : (compCode === 'C2' && snippetRecognizedReps[0]
+                  ? snippetRecognizedReps[0].fullSentence
+                  : String(fallbackComp.evidenceQuote || ""));
+
+            // Guardião de consistência C2 contra negação de repertório já reconhecido no texto
+            let cleanJustification = String(c.scoreJustification || fallbackComp.scoreJustification || "");
+            let cleanDeduction = String(c.deductionOrCeilingReason || fallbackComp.deductionOrCeilingReason || "");
+            let cleanFeedback = String(c.feedback || fallbackComp.feedback || "");
+            if (compCode === 'C2' && snippetRecognizedReps.length > 0) {
+              const falseAbsenceRe = /(aus[êe]ncia\s+de\s+repert[óo]rio|sem\s+repert[óo]rio|n[ãa]o\s+(?:apresenta|mobiliza)\s+repert[óo]rio|repert[óo]rio\s+inexistente)/gi;
+              const repRef = `repertório identificado ("${snippetRecognizedReps[0].matched}", ${snippetRecognizedReps[0].locationTag})`;
+              cleanJustification = cleanJustification.replace(falseAbsenceRe, repRef);
+              cleanDeduction = cleanDeduction.replace(falseAbsenceRe, `aproveitamento parcial do ${repRef}`);
+              cleanFeedback = cleanFeedback.replace(falseAbsenceRe, repRef);
+            }
+            const activeCapReason = c1CappedReason || c2CappedReason || c3CappedReason;
+            if (activeCapReason) {
+              cleanDeduction = activeCapReason;
+              cleanJustification = `${activeCapReason} ${cleanJustification}`.trim();
+            }
+
             return {
-              code: String(c.code || fallbackComp.code || "C1").toUpperCase(),
+              code: compCode,
               name: String(c.name || fallbackComp.name || "Competência"),
               evaluatorAScore: evalA,
               evaluatorBScore: evalB,
               score: finalCompScore,
               level: levelMeta.level,
-              levelTitle: String(c.levelTitle || levelMeta.levelTitle),
-              evidenceQuote: String(c.evidenceQuote || fallbackComp.evidenceQuote || ""),
-              scoreJustification: String(c.scoreJustification || fallbackComp.scoreJustification || ""),
-              deductionOrCeilingReason: String(c.deductionOrCeilingReason || fallbackComp.deductionOrCeilingReason || ""),
-              feedback: String(c.feedback || fallbackComp.feedback || ""),
+              levelTitle: enforceFallbackJustification
+                ? fallbackComp.levelTitle
+                : isLlmOnlyTangComp
+                  ? `Nível ${levelMeta.level} (${finalCompScore} pts) — Tangenciamento Temático`
+                  : activeCapReason
+                    ? levelMeta.levelTitle
+                    : String(c.levelTitle || levelMeta.levelTitle),
+              evidenceQuote: verifiedEvidenceQuote,
+              scoreJustification: enforceFallbackJustification
+                ? fallbackComp.scoreJustification
+                : isLlmOnlyTangComp
+                  ? `Nota ${finalCompScore}/200 (Trava oficial INEP por Tangenciamento Temático): ${llmTangSummary} Diferenciação: o tangenciamento limita C2=40 e C3/C5<=40, sem zerar o trecho inteiro.`
+                  : cleanJustification,
+              deductionOrCeilingReason: enforceFallbackJustification
+                ? fallbackComp.deductionOrCeilingReason
+                : isLlmOnlyTangComp
+                  ? `Trava oficial de ${finalCompScore} pts por tangenciamento temático em "${specificCutLabel}".`
+                  : snippetFakeDetailingDetected && compCode === 'C5'
+                    ? "Detalhamento não comprovado separadamente: o trecho apontado apenas repetia ação, meio ou finalidade (teto 160 pts)."
+                    : cleanDeduction,
+              feedback: enforceFallbackJustification
+                ? fallbackComp.feedback
+                : isLlmOnlyTangComp
+                  ? `${llmTangSummary} ${cleanFeedback}`.trim()
+                  : cleanFeedback,
               strengths: Array.isArray(c.strengths) && c.strengths.length > 0 ? c.strengths : fallbackComp.strengths,
-              improvements: Array.isArray(c.improvements) && c.improvements.length > 0 ? c.improvements : fallbackComp.improvements,
+              improvements: enforceFallbackJustification ? fallbackComp.improvements : (Array.isArray(c.improvements) && c.improvements.length > 0 ? c.improvements : fallbackComp.improvements),
               howToReach200: String(c.howToReach200 || fallbackComp.howToReach200 || "")
             };
           })
@@ -7430,38 +11255,105 @@ Analise o texto acima com o mesmo rigor do Corretor Principal do ENEM, preenchen
           sanitizedCompetencies.reduce((acc: number, c: any) => acc + c.score, 0) / sanitizedCompetencies.length
         );
 
-        const mergedDeviations = Array.isArray(parsed.c1Deviations) && parsed.c1Deviations.length > 0
-          ? parsed.c1Deviations.map((d: any) => ({
-              snippet: String(d.snippet || ""),
-              problem: String(d.problem || ""),
-              bestForm: String(d.bestForm || ""),
-              category: String(d.category || "Norma-Padrão / Sintaxe")
+        const mergedDeviations = verifiedSnippetDeviations;
+
+        const resolvedC5Structure = validSection === 'conclusao'
+          ? (effectiveSnippetZero || effectiveSnippetDHViolated
+              ? {
+                  agent: { present: false, text: "Anulado", details: effectiveSnippetZero ? effectiveZeroTitle : "Violação aos Direitos Humanos" },
+                  action: { present: false, text: "Anulado", details: effectiveSnippetZero ? effectiveZeroTitle : "Violação aos Direitos Humanos" },
+                  modeMedium: { present: false, text: "Anulado", details: effectiveSnippetZero ? effectiveZeroTitle : "Violação aos Direitos Humanos" },
+                  effect: { present: false, text: "Anulado", details: effectiveSnippetZero ? effectiveZeroTitle : "Violação aos Direitos Humanos" },
+                  detailing: { present: false, text: "Anulado", targetElement: "Geral", details: effectiveSnippetZero ? effectiveZeroTitle : "Violação aos Direitos Humanos" },
+                  respectsHumanRights: !effectiveSnippetDHViolated,
+                  validElementsCount: 0
+                }
+              : (rawSnippetC5 || (deterministicBase as any).c5Structure))
+          : undefined;
+
+        const baseChecklist = Array.isArray(parsed.sectionChecklist) && parsed.sectionChecklist.length > 0
+          ? parsed.sectionChecklist
+          : deterministicBase.sectionChecklist;
+        const resolvedChecklist = effectiveSnippetZero
+          ? baseChecklist.map((item: any) => ({
+              ...item,
+              present: false,
+              detail: `${effectiveZeroTitle}: ${effectiveZeroJustification}`
             }))
-          : deterministicBase.c1Deviations;
+          : baseChecklist;
+
+        const snippetMesmosEval = findAnaphoricMesmoExcerpts(combinedText);
+        const filterSnippetTextArray = (arr: any): string[] =>
+          Array.isArray(arr)
+            ? arr
+                .map((x: any) => stripGenericC3Cliches(String(x || "").trim(), activeTheme))
+                .filter((s: string) => {
+                  if (!s) return false;
+                  if (/(?:o\s+mesmo|os\s+mesmos|a\s+mesma|as\s+mesmas)/i.test(s) && snippetMesmosEval.length === 0) return false;
+                  if (/direitos\s+humanos/i.test(s) && !effectiveSnippetDHViolated && /viol|desrespeit|penal|zer/i.test(s)) return false;
+                  return true;
+                })
+            : [];
+
+        const cleanedSanitizedComps = sanitizedCompetencies.map((compItem: any) => ({
+          ...compItem,
+          scoreJustification: stripGenericC3Cliches(compItem.scoreJustification || "", activeTheme),
+          deductionOrCeilingReason: compItem.score === 200
+            ? "Cumprimento integral do Nível 5 da Matriz INEP (sem descontos)."
+            : stripGenericC3Cliches(compItem.deductionOrCeilingReason || "", activeTheme),
+          feedback: stripGenericC3Cliches(compItem.feedback || "", activeTheme),
+          strengths: filterSnippetTextArray(compItem.strengths),
+          improvements: compItem.score === 200 ? [] : filterSnippetTextArray(compItem.improvements)
+        }));
+
+        const resolvedStrengths = effectiveSnippetZero
+          ? ["Nenhuma pontuação atribuída em razão de condição oficial de anulação integral (Nota Zero)."]
+          : (filterSnippetTextArray(parsed.strengths).length > 0 ? filterSnippetTextArray(parsed.strengths) : deterministicBase.strengths);
+        const resolvedImprovements = effectiveSnippetZero
+          ? [`Reescreva o trecho abordando diretamente o tema proposto ("${activeTheme}"), sem fuga ao tema.`]
+          : (filterSnippetTextArray(parsed.improvements).length > 0 ? filterSnippetTextArray(parsed.improvements) : deterministicBase.improvements);
 
         return res.json({
           sectionType: validSection,
           averageScore,
-          activeCompetencies: sanitizedCompetencies,
+          activeCompetencies: cleanedSanitizedComps,
           dualEvaluatorSimulation: {
             evaluatorATotalAverage: evalAAvg,
             evaluatorBTotalAverage: evalBAvg,
             finalAverage: averageScore,
-            status: parsed.dualEvaluatorSimulation?.status || (Math.abs(evalAAvg - evalBAvg) <= 40 ? "Consenso Técnico Homologado (INEP)" : "Média Calibrada entre Duplo Avaliador"),
-            notes: parsed.dualEvaluatorSimulation?.notes || `Avaliador 1 atribuiu média ${evalAAvg}/200 e Avaliador 2 atribuiu média ${evalBAvg}/200 nas competências ativas deste trecho.`
+            status: effectiveSnippetZero
+              ? `NOTA ZERO OFICIAL (${effectiveZeroTitle})`
+              : effectiveSnippetDHViolated
+                ? "C5 ZERADA POR DESRESPEITO AOS DIREITOS HUMANOS (Demais Competências Mantidas)"
+                : effectiveSnippetTangenciamento
+                  ? "TANGENCIAMENTO TEMÁTICO DETECTADO (Travas INEP aplicadas)"
+                  : (parsed.dualEvaluatorSimulation?.status || (Math.abs(evalAAvg - evalBAvg) <= 40 ? "Consenso Técnico Homologado (INEP)" : "Média Calibrada entre Duplo Avaliador")),
+            notes: effectiveSnippetZero
+              ? `Anulação global (0/200) por ${effectiveZeroTitle}: ${effectiveZeroJustification}`
+              : effectiveSnippetDHViolated
+                ? deterministicBase.dualEvaluatorSimulation.notes
+                : effectiveSnippetTangenciamento
+                  ? (isSnippetTangenciamento
+                      ? deterministicBase.dualEvaluatorSimulation.notes
+                      : `Tangenciamento temático identificado (NÃO é fuga total): ${parsed.thematicAudit?.consistencyJustification || "desvio do recorte específico mantendo pertinência ao campo semântico amplo"}. Travas oficiais aplicadas (C2=40, C3/C5<=40); média ${averageScore}/200.`)
+                  : (parsed.dualEvaluatorSimulation?.notes || `Avaliador 1 atribuiu média ${evalAAvg}/200 e Avaliador 2 atribuiu média ${evalBAvg}/200 nas competências ativas deste trecho.`)
           },
-          c5Structure: validSection === 'conclusao'
-            ? (parsed.c5Structure || (deterministicBase as any).c5Structure)
-            : undefined,
-          sectionChecklist: Array.isArray(parsed.sectionChecklist) && parsed.sectionChecklist.length > 0
-            ? parsed.sectionChecklist
-            : deterministicBase.sectionChecklist,
+          c5Structure: resolvedC5Structure,
+          sectionChecklist: resolvedChecklist,
           c1Deviations: mergedDeviations,
-          strengths: Array.isArray(parsed.strengths) && parsed.strengths.length > 0 ? parsed.strengths : deterministicBase.strengths,
-          improvements: Array.isArray(parsed.improvements) && parsed.improvements.length > 0 ? parsed.improvements : deterministicBase.improvements,
-          generalFeedback: parsed.generalFeedback || deterministicBase.generalFeedback,
-          modelRewrite: parsed.modelRewrite || deterministicBase.modelRewrite,
-          rewriteExplanation: parsed.rewriteExplanation || deterministicBase.rewriteExplanation
+          strengths: resolvedStrengths,
+          improvements: resolvedImprovements,
+          generalFeedback: effectiveSnippetZero
+            ? `Diagnóstico Oficial do Trecho: Enquadrado em situação de Nota Zero (${effectiveZeroTitle}): ${effectiveZeroJustification}`
+            : effectiveSnippetDHViolated
+              ? deterministicBase.generalFeedback
+              : effectiveSnippetTangenciamento
+                ? (isSnippetTangenciamento
+                    ? deterministicBase.generalFeedback
+                    : `Diagnóstico Oficial do Trecho: TANGENCIAMENTO TEMÁTICO IDENTIFICADO (NÃO É FUGA TOTAL). ${parsed.thematicAudit?.consistencyJustification || `O texto pertence ao campo semântico do tema, mas desloca o foco sem desenvolver o recorte específico ("${specificCutLabel}").`} Aplicadas as travas oficiais em C2 (40 pts) e C3/C5 (<=40 pts), avaliando C1 e C4 normalmente. Média: ${averageScore}/200.`)
+                : stripGenericC3Cliches(parsed.generalFeedback || deterministicBase.generalFeedback, activeTheme),
+          modelRewrite: stripGenericC3Cliches(parsed.modelRewrite || deterministicBase.modelRewrite, activeTheme),
+          rewriteExplanation: stripGenericC3Cliches(parsed.rewriteExplanation || deterministicBase.rewriteExplanation, activeTheme)
         });
       }
     } catch {

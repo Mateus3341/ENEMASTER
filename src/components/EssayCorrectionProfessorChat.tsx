@@ -16,7 +16,7 @@ import {
   ExternalLink,
   MessageSquare
 } from 'lucide-react';
-import Markdown from 'react-markdown';
+import { RichChatMarkdown, normalizeChatMarkdown, hasChatTable } from './RichChatMarkdown';
 import { EssayCorrectionResult, ProfessorMessage } from '../types';
 
 interface EssayCorrectionProfessorChatProps {
@@ -102,7 +102,7 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
 
     const historyPayload = messages.slice(-8).map(m => ({
       role: m.role,
-      content: m.content
+      content: typeof m.content === 'string' ? m.content : normalizeChatMarkdown(m.content)
     }));
 
     setMessages(prev => [...prev, userMessage]);
@@ -135,6 +135,7 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
         id: `bot-${Date.now()}`,
         role: 'assistant',
         content: data.reply || 'Não foi possível gerar a resposta.',
+        tableData: data.tableData || data.table,
         timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         suggestedFollowUps: data.suggestedFollowUps || []
       };
@@ -157,8 +158,8 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
     }
   };
 
-  const handleCopy = (id: string, text: string) => {
-    navigator.clipboard.writeText(text);
+  const handleCopy = (id: string, text: ProfessorMessage['content']) => {
+    navigator.clipboard.writeText(normalizeChatMarkdown(text));
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
@@ -325,6 +326,7 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
       >
         {messages.map((msg) => {
           const isAssistant = msg.role === 'assistant';
+          const containsTable = hasChatTable(msg.content, msg.tableData);
           return (
             <div
               key={msg.id}
@@ -336,7 +338,11 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
                 </div>
               )}
 
-              <div className={`max-w-[88%] sm:max-w-[80%] space-y-2 ${isAssistant ? 'items-start' : 'items-end'}`}>
+              <div
+                className={`${
+                  containsTable ? 'max-w-[96%] sm:max-w-[92%] w-full' : 'max-w-[88%] sm:max-w-[80%]'
+                } space-y-2 ${isAssistant ? 'items-start' : 'items-end'}`}
+              >
                 <div
                   className={`p-4 sm:p-5 rounded-2xl text-xs sm:text-sm leading-relaxed transition-all shadow-xs ${
                     isAssistant
@@ -344,13 +350,11 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
                       : 'bg-indigo-600 text-white rounded-tr-xs ml-auto font-medium'
                   }`}
                 >
-                  {isAssistant ? (
-                    <div className="markdown-body space-y-2 prose dark:prose-invert max-w-none text-xs sm:text-sm prose-p:my-1.5 prose-headings:my-2 prose-ul:my-1.5 prose-li:my-0.5">
-                      <Markdown>{msg.content}</Markdown>
-                    </div>
-                  ) : (
-                    <p className="whitespace-pre-wrap">{msg.content}</p>
-                  )}
+                  <RichChatMarkdown
+                    content={msg.content}
+                    tableData={msg.tableData}
+                    variant={isAssistant ? 'assistant' : 'user'}
+                  />
 
                   <div className={`flex items-center justify-between gap-3 pt-2 text-[10px] ${
                     isAssistant ? 'text-slate-400 border-t border-slate-100 dark:border-slate-800 mt-2' : 'text-indigo-200'

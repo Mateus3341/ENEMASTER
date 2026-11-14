@@ -243,16 +243,78 @@ export interface HighPerformanceCurveReport {
   };
 }
 
+export interface ConsistencyContradiction {
+  id: string;
+  competency: 'C1' | 'C2' | 'C3' | 'C4' | 'C5' | 'GLOBAL';
+  ruleCode: string;
+  friendlyTitlePt?: string;
+  severity: 'alerta' | 'aviso' | 'bloqueante';
+  justificationClaim: string;
+  citedExcerpt: string;
+  extractedEvidence: string;
+  explanation: string;
+}
+
+export interface EvidenceCrossValidationItem {
+  competency: 'C1' | 'C2' | 'C3' | 'C4' | 'C5';
+  score: number | null;
+  isPenalized: boolean;
+  citedExcerpt: string;
+  locatedParagraphs: number[];
+  semanticCorrelationMatched: boolean;
+  correlationScore: number; // 0 a 100
+  matchedDomainSignals: string[];
+  mismatchedDomainHints: string[];
+  groundedFactsExtracted: string[];
+  reanchoredExcerpt?: string;
+}
+
+export interface EvidenceCrossValidationReport {
+  timestamp: string;
+  allPenalizedCorrelated: boolean;
+  c3FeedbackGroundedInFacts: boolean;
+  c5FeedbackGroundedInFacts: boolean;
+  overallCorrelationScore: number;
+  items: EvidenceCrossValidationItem[];
+  summaryMessage: string;
+}
+
+export interface AuditConcessionItem {
+  competency: 'C1' | 'C2' | 'C3' | 'C4' | 'C5';
+  previousScore: number;
+  reconciledScore: number;
+  reasonPt: string;
+}
+
+export interface DiagnosticConsistencyAuditReport {
+  timestamp: string;
+  passed: boolean;
+  blockedFinalScoreEmission: boolean;
+  finalScoreEmitted: number | null;
+  totalChecksRun: number;
+  contradictionsCount: number;
+  contradictions: ConsistencyContradiction[];
+  summaryMessage: string;
+  verifiedDimensions: string[];
+  crossValidationReport?: EvidenceCrossValidationReport;
+  concessionApplied?: boolean;
+  concessionDeltaPoints?: number;
+  concessionSummaryPt?: string;
+  concessionDetails?: AuditConcessionItem[];
+}
+
 export interface ScoreValidationReport {
   timestamp: string;
   isCoherent: boolean;
+  scoreBlocked?: boolean;
   rawSum: number;
-  validatedTotal: number;
+  validatedTotal: number | null;
   hasAdjustments: boolean;
   auditedCompetencies: ScoreValidationItem[];
   exceptionalVerificationPrompt: string;
   validationSummary: string;
   highPerformanceCurveReport?: HighPerformanceCurveReport;
+  consistencyAuditReport?: DiagnosticConsistencyAuditReport;
 }
 
 export interface EssayAuditLog {
@@ -319,6 +381,8 @@ export interface EssayCorrectionResult {
   aiAnalysisLog?: StructuredAiAnalysisLog;
   validationReport?: ScoreValidationReport;
   evidenceValidatorReport?: EvidenceValidatorReport;
+  consistencyAuditReport?: DiagnosticConsistencyAuditReport;
+  scoreBlocked?: boolean;
   highPerformanceCurveReport?: HighPerformanceCurveReport;
   dualEvaluatorSimulation?: DualEvaluatorSimulation;
   cartilhaBenchmark?: CartilhaBenchmark;
@@ -538,10 +602,17 @@ export interface GroundingSource {
   url: string;
 }
 
+export interface ChatTableData {
+  title?: string;
+  headers: string[];
+  rows: Array<string[] | Record<string, any>>;
+}
+
 export interface ProfessorMessage {
   id: string;
   role: 'user' | 'assistant';
-  content: string;
+  content: string | Record<string, any> | Array<Record<string, any>>;
+  tableData?: ChatTableData | Array<Record<string, any>> | Record<string, any>;
   timestamp: string;
   modelUsed?: string;
   groundingSources?: GroundingSource[];

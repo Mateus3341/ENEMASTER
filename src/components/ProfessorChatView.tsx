@@ -32,7 +32,7 @@ import {
   Edit2,
   X
 } from 'lucide-react';
-import Markdown from 'react-markdown';
+import { RichChatMarkdown, normalizeChatMarkdown, hasChatTable } from './RichChatMarkdown';
 import { ProfessorMessage, ProfessorChatSession, ChatModelMode, GroundingSource } from '../types';
 import { EnemasterMascot } from './EnemasterMascot';
 
@@ -377,7 +377,7 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
     // Prepare bounded message history (last 8 messages for speed & accuracy)
     const historyPayload = messages.slice(-8).map(m => ({
       role: m.role,
-      content: m.content
+      content: typeof m.content === 'string' ? m.content : normalizeChatMarkdown(m.content)
     }));
 
     updateActiveMessages((prev) => [...prev, userMsg]);
@@ -415,6 +415,7 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
         id: `bot-${Date.now()}`,
         role: 'assistant',
         content: data.reply || 'Não foi possível gerar a resposta.',
+        tableData: data.tableData || data.table,
         timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         suggestedFollowUps: data.suggestedFollowUps || [],
         groundingSources: data.groundingSources || [],
@@ -442,13 +443,13 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
     }
   };
 
-  const handleCopyMessage = (msgId: string, content: string) => {
-    navigator.clipboard.writeText(content);
+  const handleCopyMessage = (msgId: string, content: ProfessorMessage['content']) => {
+    navigator.clipboard.writeText(normalizeChatMarkdown(content));
     setCopiedId(msgId);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleToggleSpeak = (msgId: string, text: string) => {
+  const handleToggleSpeak = (msgId: string, text: ProfessorMessage['content']) => {
     if (!('speechSynthesis' in window)) return;
 
     if (speakingId === msgId) {
@@ -459,7 +460,9 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
 
     window.speechSynthesis.cancel();
     // Clean markdown symbols for cleaner TTS voice
-    const cleanText = text
+    const cleanText = normalizeChatMarkdown(text)
+      .replace(/\|?\s*:?-{2,}:?\s*\|/g, ' ')
+      .replace(/\|/g, ', ')
       .replace(/###|##|#|\*\*|\*|`|\[|\]\([^)]*\)/g, '')
       .replace(/SUGESTÕES_DE_CONTINUIDADE:[\s\S]*/, '')
       .trim();
@@ -923,6 +926,7 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
           {messages.map((msg) => {
             const isUser = msg.role === 'user';
             const isCurrentSpeaking = speakingId === msg.id;
+            const containsTable = hasChatTable(msg.content, msg.tableData);
 
             return (
               <div
@@ -941,7 +945,11 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
                 </div>
 
                 {/* Message Bubble Container */}
-                <div className={`max-w-[88%] sm:max-w-[80%] space-y-2`}>
+                <div
+                  className={`${
+                    containsTable ? 'max-w-[96%] sm:max-w-[92%] w-full' : 'max-w-[88%] sm:max-w-[80%]'
+                  } space-y-2`}
+                >
                   {/* Bubble Content */}
                   <div
                     className={`rounded-3xl p-4 sm:p-5 text-xs sm:text-sm leading-relaxed relative ${
@@ -950,13 +958,11 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
                         : 'bg-slate-50 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 rounded-tl-xs border border-slate-200/80 dark:border-slate-700/80 shadow-2xs'
                     }`}
                   >
-                    {isUser ? (
-                      <p className="whitespace-pre-line font-medium">{msg.content}</p>
-                    ) : (
-                      <div className="prose prose-sm max-w-none text-slate-800 dark:text-slate-200 prose-headings:font-black prose-headings:text-slate-900 dark:prose-headings:text-white prose-strong:text-indigo-950 dark:prose-strong:text-indigo-300 prose-strong:font-black prose-a:text-indigo-600 dark:prose-a:text-indigo-400 prose-ul:my-2 prose-li:my-0.5 prose-p:my-2">
-                        <Markdown>{msg.content}</Markdown>
-                      </div>
-                    )}
+                    <RichChatMarkdown
+                      content={msg.content}
+                      tableData={msg.tableData}
+                      variant={isUser ? 'user' : 'assistant'}
+                    />
 
                     {/* Sources / Grounding Web Citations if returned */}
                     {!isUser && msg.groundingSources && msg.groundingSources.length > 0 && (

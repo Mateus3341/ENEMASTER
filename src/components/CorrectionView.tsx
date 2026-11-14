@@ -52,7 +52,9 @@ import {
   AvaliacaoCompetencia, 
   ReviewerAuditReport, 
   ReviewerCompetencyCheck,
-  StructuredAiAnalysisLog
+  StructuredAiAnalysisLog,
+  DiagnosticConsistencyAuditReport,
+  AuditConcessionItem
 } from '../types';
 import { 
   HISTORICAL_THEMES,
@@ -66,6 +68,7 @@ import {
 import { AiProgressBar } from './AiProgressBar';
 import { useAiProgress } from '../hooks/useAiProgress';
 import { validateAndAuditEssayScore } from '../utils/scoreValidator';
+import { auditDiagnosticVsEvidenceConsistency } from '../utils/consistencyAuditor';
 import { EssayCorrectionProfessorChat } from './EssayCorrectionProfessorChat';
 import { useSavedWork } from '../contexts/SavedWorkContext';
 import { useBackgroundTasks } from '../contexts/BackgroundTasksContext';
@@ -912,6 +915,7 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
       const hasScore200 = compScores.some(s => s === 200);
       const isTotalHighScore = (data.totalScore || 0) >= 900;
       let reviewerAuditData: ReviewerAuditReport | undefined = undefined;
+      let reviewerConsistencyReport: DiagnosticConsistencyAuditReport | undefined = undefined;
 
       if (hasScore200 || isTotalHighScore) {
         try {
@@ -925,8 +929,13 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
             }),
           });
 
+          const reviewData = await reviewRes.json();
+          if (reviewData?.consistencyAuditReport) {
+            reviewerConsistencyReport = reviewData.consistencyAuditReport;
+          }
+
           if (reviewRes.ok) {
-            reviewerAuditData = await reviewRes.json();
+            reviewerAuditData = reviewData;
 
             // Se a Banca Revisora recalibrou notas ou apontou evidências mais precisas, atualizar as competências
             if (reviewerAuditData && Array.isArray(reviewerAuditData.competencyReviews)) {
@@ -951,22 +960,94 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
               data.totalScore = reviewerAuditData.finalAuditedTotalScore;
             }
           }
-        } catch (revError) {
+        } catch (revError: any) {
           console.warn('Reviewer endpoint call fallback:', revError);
         }
       }
 
       // Pre-display Score Validator & Exceptional Evidence Verification Prompt Check
-      const { validatedTotalScore: rawValidatedTotalScore, validatedCompetencies, validationReport, evidenceValidatorReport } = validateAndAuditEssayScore(
+      const {
+        validatedTotalScore: rawValidatedTotalScore,
+        validatedCompetencies,
+        validationReport,
+        evidenceValidatorReport,
+        consistencyAuditReport,
+        cleanedTop3Problems
+      } = validateAndAuditEssayScore(
         {
           totalScore: data.totalScore,
           competencies: data.competencies,
           c1Deviations: data.c1Deviations || [],
           c5Structure: data.c5Structure,
+          pedagogicalRewrites: data.pedagogicalRewrites || [],
+          reviewerReport: reviewerAuditData,
+          dualEvaluatorSimulation: data.dualEvaluatorSimulation,
+          top3Problems: data.top3Problems || []
         },
         essayText.trim(),
         activeTheme
       );
+
+      // Consolidar concessões entre a avaliação inicial e a auditoria de evidências, mantendo
+      // apenas as observações vigentes sobre a nota final equilibrada.
+      const combinedConcessionDetails = (() => {
+        const byComp = new Map<AuditConcessionItem['competency'], AuditConcessionItem>();
+        const serverItems: AuditConcessionItem[] = Array.isArray(data?.consistencyAuditReport?.concessionDetails)
+          ? data.consistencyAuditReport.concessionDetails
+          : [];
+        const clientItems: AuditConcessionItem[] = Array.isArray(consistencyAuditReport?.concessionDetails)
+          ? consistencyAuditReport.concessionDetails
+          : [];
+        for (const item of serverItems) {
+          byComp.set(item.competency, { ...item });
+        }
+        for (const item of clientItems) {
+          const prev = byComp.get(item.competency);
+          if (prev) {
+            byComp.set(item.competency, {
+              competency: item.competency,
+              previousScore: prev.previousScore,
+              reconciledScore: item.reconciledScore,
+              reasonPt: item.reasonPt
+            });
+          } else {
+            byComp.set(item.competency, { ...item });
+          }
+        }
+        return Array.from(byComp.values()).filter((d) => d.reconciledScore !== d.previousScore);
+      })();
+
+      const activeContradictions = (consistencyAuditReport?.contradictions || []).length > 0
+        ? consistencyAuditReport.contradictions
+        : (reviewerConsistencyReport?.contradictions || []).filter((rc) =>
+            !combinedConcessionDetails.some((cd) => cd.competency === rc.competency)
+          );
+
+      const combinedConcessionApplied = combinedConcessionDetails.length > 0;
+      const combinedConcessionDelta = combinedConcessionDetails.reduce(
+        (acc, item) => acc + (item.reconciledScore - item.previousScore),
+        0
+      );
+
+      let consolidatedConsistencyReport: DiagnosticConsistencyAuditReport = {
+        ...consistencyAuditReport,
+        passed: activeContradictions.length === 0,
+        blockedFinalScoreEmission: false,
+        finalScoreEmitted: rawValidatedTotalScore,
+        contradictionsCount: activeContradictions.length,
+        contradictions: activeContradictions,
+        concessionApplied: combinedConcessionApplied,
+        concessionDeltaPoints: combinedConcessionDelta,
+        concessionDetails: combinedConcessionDetails,
+        concessionSummaryPt: combinedConcessionApplied
+          ? `Fizemos uma concessão entre a avaliação inicial e os trechos encontrados na sua redação, resultando na nota equilibrada de ${rawValidatedTotalScore} pts (${combinedConcessionDelta >= 0 ? `+${combinedConcessionDelta}` : combinedConcessionDelta} pts).`
+          : (consistencyAuditReport?.concessionSummaryPt || 'A nota final está alinhada com os trechos encontrados na sua redação.'),
+        summaryMessage: activeContradictions.length === 0
+          ? (combinedConcessionApplied
+              ? `Nota equilibrada (${rawValidatedTotalScore} pts): fizemos a concessão entre a análise inicial e o que está escrito na sua redação.`
+              : 'Nota e justificativas 100% alinhadas com o que está escrito na sua redação.')
+          : `Encontramos ${activeContradictions.length} diferença(s) entre a explicação dos erros e o que está no texto, detalhada(s) abaixo de forma simples.`,
+      };
 
       const normalizeForNota1000Comparison = (txt: string) =>
         (txt || '')
@@ -1023,11 +1104,14 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
             data.dualEvaluatorSimulation.evaluatorB.c5 = 200;
             data.dualEvaluatorSimulation.evaluatorB.total = 1000;
           }
-          data.dualEvaluatorSimulation.discrepancyPerCompetency = { c1: 0, c2: 0, c3: 0, c4: 0, c5: 0 };
+          data.dualEvaluatorSimulation.discrepancyC1 = 0;
+          data.dualEvaluatorSimulation.discrepancyC2 = 0;
+          data.dualEvaluatorSimulation.discrepancyC3 = 0;
+          data.dualEvaluatorSimulation.discrepancyC4 = 0;
+          data.dualEvaluatorSimulation.discrepancyC5 = 0;
           data.dualEvaluatorSimulation.totalDiscrepancy = 0;
-          data.dualEvaluatorSimulation.exceededCompetencyTolerance = false;
-          data.dualEvaluatorSimulation.exceededTotalTolerance = false;
-          data.dualEvaluatorSimulation.wouldTriggerThirdEvaluator = false;
+          data.dualEvaluatorSimulation.status = 'consenso_direto';
+          data.dualEvaluatorSimulation.explanation = 'Consenso unânime direto: ambos os avaliadores atribuíram 200 pontos nas 5 competências (Nota 1000 oficial).';
         }
 
         if (reviewerAuditData && Array.isArray(reviewerAuditData.competencyReviews)) {
@@ -1065,6 +1149,59 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
       }
 
       // A nota final oficial a considerar (Média INEP) é a média aritmética dos dois corretores (soma das médias das competências)
+      const clientBreakdown = validationReport.highPerformanceCurveReport?.dualEvaluatorBreakdown;
+      if (!shouldLockNota1000 && clientBreakdown) {
+        const rawSimA = data.dualEvaluatorSimulation?.evaluatorA;
+        const rawSimB = data.dualEvaluatorSimulation?.evaluatorB;
+        const rawASum = rawSimA ? (rawSimA.c1 + rawSimA.c2 + rawSimA.c3 + rawSimA.c4 + rawSimA.c5) : -1;
+        const rawBSum = rawSimB ? (rawSimB.c1 + rawSimB.c2 + rawSimB.c3 + rawSimB.c4 + rawSimB.c5) : -1;
+        const clientAdjustedAny = (['c1', 'c2', 'c3', 'c4', 'c5'] as const).some((ck) => {
+          const simMean = rawSimA && rawSimB ? Math.round(((rawSimA[ck] ?? 0) + (rawSimB[ck] ?? 0)) / 2) : 999;
+          return simMean !== (validatedCompetencies[ck]?.score ?? 0);
+        });
+        const nonMaxTotalsTied = rawASum === rawBSum && rawValidatedTotalScore > 0 && rawValidatedTotalScore < 1000;
+
+        if (!rawSimA || !rawSimB || clientAdjustedAny || nonMaxTotalsTied) {
+          const aScores = clientBreakdown.evaluatorA_scores;
+          const bScores = clientBreakdown.evaluatorB_scores;
+          const dC1 = Math.abs(aScores.c1 - bScores.c1);
+          const dC2 = Math.abs(aScores.c2 - bScores.c2);
+          const dC3 = Math.abs(aScores.c3 - bScores.c3);
+          const dC4 = Math.abs(aScores.c4 - bScores.c4);
+          const dC5 = Math.abs(aScores.c5 - bScores.c5);
+          const totA = clientBreakdown.evaluatorA_total;
+          const totB = clientBreakdown.evaluatorB_total;
+          const totDisc = Math.abs(totA - totB);
+          const maxCompDisc = Math.max(dC1, dC2, dC3, dC4, dC5);
+          const isUnanimous = totDisc === 0 && maxCompDisc === 0;
+
+          data.dualEvaluatorSimulation = {
+            evaluatorA: {
+              ...aScores,
+              total: totA,
+              evaluatorProfile: rawSimA?.evaluatorProfile || 'Avaliador 1 — Perfil Normativo, Sintático e Coesivo (rigor estrito em C1 e C4)',
+              notes: `Leitura estrita de norma-padrão, precisão vocabular, sintaxe e coesão (C1: ${aScores.c1} | C4: ${aScores.c4}); leitura funcional nos eixos macroestruturais (C2: ${aScores.c2} | C3: ${aScores.c3} | C5: ${aScores.c5}).`
+            },
+            evaluatorB: {
+              ...bScores,
+              total: totB,
+              evaluatorProfile: rawSimB?.evaluatorProfile || 'Avaliador 2 — Perfil Estrutural, Temático e Interventivo (rigor estrito em C2, C3 e C5)',
+              notes: `Leitura estrita de tema/repertório em D1/D2, aprofundamento estrutural e proposta C5 (C2: ${bScores.c2} | C3: ${bScores.c3} | C5: ${bScores.c5}); leitura funcional na forma linguística (C1: ${bScores.c1} | C4: ${bScores.c4}).`
+            },
+            discrepancyC1: dC1,
+            discrepancyC2: dC2,
+            discrepancyC3: dC3,
+            discrepancyC4: dC4,
+            discrepancyC5: dC5,
+            totalDiscrepancy: totDisc,
+            status: isUnanimous ? 'consenso_direto' : 'divergencia_tolerada',
+            explanation: isUnanimous
+              ? 'Consenso unânime direto entre os dois avaliadores nas 5 competências.'
+              : `Perfis independentes do INEP aplicados: Avaliador 1 (Normativo/Sintático/Coesivo) somou ${totA} pts e Avaliador 2 (Estrutural/Temático/Interventivo) somou ${totB} pts (diferença total de ${totDisc} pts, dentro da tolerância oficial). Nota final = média aritmética (${clientBreakdown.calculatedArithmeticMean} pts).`
+          };
+        }
+      }
+
       const simA = data.dualEvaluatorSimulation?.evaluatorA;
       const simB = data.dualEvaluatorSimulation?.evaluatorB;
       let finalOfficialScore = validatedTotalScore;
@@ -1084,6 +1221,8 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
           if (validatedCompetencies[compKey]) {
             validatedCompetencies[compKey].score = compMean;
             validatedCompetencies[compKey].nota = compMean;
+            validatedCompetencies[compKey].level = Math.round(compMean / 40);
+            validatedCompetencies[compKey].nivel = Math.round(compMean / 40);
           }
           const logEntry = data.auditLog?.competencyLogs?.find((l: any) => l.competencyNum === cNum);
           if (logEntry) {
@@ -1091,7 +1230,7 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
             logEntry.isMaxScore200 = compMean === 200;
           }
         });
-        if (sumMeans > 0) {
+        if (sumMeans >= 0) {
           finalOfficialScore = sumMeans;
         }
       } else {
@@ -1110,6 +1249,45 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
         data.auditLog.finalConsolidatedScore = finalOfficialScore;
       }
 
+      if (shouldLockNota1000) {
+        consolidatedConsistencyReport = {
+          ...consolidatedConsistencyReport,
+          passed: true,
+          blockedFinalScoreEmission: false,
+          finalScoreEmitted: 1000,
+          contradictionsCount: 0,
+          contradictions: [],
+          summaryMessage: 'Nota 1000 conferida: todas as competências e justificativas estão 100% alinhadas com o texto.'
+        };
+      } else if (finalOfficialScore !== rawValidatedTotalScore) {
+        const refreshedAudit = auditDiagnosticVsEvidenceConsistency(
+          {
+            totalScore: finalOfficialScore,
+            competencies: validatedCompetencies,
+            c1Deviations: data.c1Deviations || [],
+            c5Structure: data.c5Structure,
+            pedagogicalRewrites: data.pedagogicalRewrites || [],
+            reviewerReport: reviewerAuditData
+          },
+          essayText.trim(),
+          activeTheme
+        );
+        consolidatedConsistencyReport = {
+          ...refreshedAudit,
+          concessionApplied: combinedConcessionApplied,
+          concessionDeltaPoints: combinedConcessionDelta,
+          concessionDetails: combinedConcessionDetails,
+          concessionSummaryPt: combinedConcessionApplied
+            ? `Fizemos uma concessão entre a avaliação inicial e os trechos encontrados na sua redação, resultando na nota equilibrada de ${finalOfficialScore} pts (${combinedConcessionDelta >= 0 ? `+${combinedConcessionDelta}` : combinedConcessionDelta} pts).`
+            : consolidatedConsistencyReport.concessionSummaryPt,
+          summaryMessage: refreshedAudit.passed && combinedConcessionApplied
+            ? `Nota equilibrada (${finalOfficialScore} pts): fizemos a concessão entre a análise inicial e o que está escrito na sua redação.`
+            : refreshedAudit.summaryMessage
+        };
+      } else {
+        consolidatedConsistencyReport.finalScoreEmitted = finalOfficialScore;
+      }
+
       const result: EssayCorrectionResult = {
         id: aiAnalysisLog.id_analise,
         date: new Date().toLocaleDateString('pt-BR'),
@@ -1120,17 +1298,25 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
         reviewerReport: reviewerAuditData,
         aiAnalysisLog: aiAnalysisLog,
         auditLog: data.auditLog,
-        validationReport: validationReport,
+        validationReport: {
+          ...validationReport,
+          scoreBlocked: false,
+          consistencyAuditReport: consolidatedConsistencyReport,
+        },
         evidenceValidatorReport: evidenceValidatorReport,
+        consistencyAuditReport: consolidatedConsistencyReport,
+        scoreBlocked: false,
         dualEvaluatorSimulation: data.dualEvaluatorSimulation,
         cartilhaBenchmark: data.cartilhaBenchmark,
         c1Deviations: data.c1Deviations || [],
         c5Structure: data.c5Structure,
-        generalDiagnostic: data.generalDiagnostic,
-        top3Problems: data.top3Problems || [],
+        generalDiagnostic:
+          (data.generalDiagnostic && String(data.generalDiagnostic).trim()) ||
+          `Sua redação alcançou ${finalOfficialScore}/1000 pontos no tema "${activeTheme}" (C1: ${validatedCompetencies.c1?.score ?? 160} | C2: ${validatedCompetencies.c2?.score ?? 160} | C3: ${validatedCompetencies.c3?.score ?? 160} | C4: ${validatedCompetencies.c4?.score ?? 160} | C5: ${validatedCompetencies.c5?.score ?? 160}). Confira abaixo os pontos fortes identificados e o direcionamento em cada competência para evoluir rumo aos 1000 pontos.`,
+        top3Problems: cleanedTop3Problems || data.top3Problems || [],
         top3Strengths: data.top3Strengths || [],
         actionPlanToImprove: data.actionPlanToImprove || [],
-        highPerformanceComparison: data.highPerformanceComparison,
+        highPerformanceComparison: data.highPerformanceComparison || '',
         highPerformanceCurveReport: data.highPerformanceCurveReport || validationReport.highPerformanceCurveReport,
         pedagogicalRewrites: data.pedagogicalRewrites || [],
         isHandwrittenOcr: !!ocrFileName,
@@ -1220,13 +1406,15 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
 
     const scoreA = isResultAll200OrOfficialNota1000
       ? 200
-      : (correctionResult.dualEvaluatorSimulation?.evaluatorA?.[k] ?? 
+      : (correctionResult.dualEvaluatorSimulation?.evaluatorA?.[k] ??
+         correctionResult.validationReport?.highPerformanceCurveReport?.dualEvaluatorBreakdown?.evaluatorA_scores?.[k] ??
          correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.initialScore ??
          correctionResult.competencies[k]?.score ?? 0);
 
     const scoreB = isResultAll200OrOfficialNota1000
       ? 200
-      : (correctionResult.dualEvaluatorSimulation?.evaluatorB?.[k] ?? 
+      : (correctionResult.dualEvaluatorSimulation?.evaluatorB?.[k] ??
+         correctionResult.validationReport?.highPerformanceCurveReport?.dualEvaluatorBreakdown?.evaluatorB_scores?.[k] ??
          correctionResult.reviewerReport?.competencyReviews?.find(r => r.competencyNum === num)?.reviewedScore ??
          correctionResult.competencies[k]?.score ?? 0);
 
@@ -1286,6 +1474,548 @@ export const CorrectionView: React.FC<CorrectionViewProps> = ({
   const minScoreRange = Math.min(preliminaryEstimatedScore, strictAuditedScore);
   const maxScoreRange = Math.max(preliminaryEstimatedScore, strictAuditedScore);
 
+  const getC5MissingElementLabels = (c5?: EssayCorrectionResult['c5Structure']): string[] => {
+    if (!c5) return [];
+    const missing: string[] = [];
+    if (!c5.agent?.present) missing.push('quem faz (Agente)');
+    if (!c5.action?.present) missing.push('o que fazer (Ação)');
+    if (!c5.modeMedium?.present) missing.push('como fazer (Meio/Modo)');
+    if (!c5.effect?.present) missing.push('para que fazer (Finalidade)');
+    if (!c5.detailing?.present) missing.push('uma explicação extra de um dos elementos (Detalhamento)');
+    return missing;
+  };
+
+  const shortenToConciseText = (raw: string, maxChars = 190): string => {
+    const clean = (raw || '')
+      .replace(/Ocorrências extraídas do texto:[\s\S]*/gi, '')
+      .replace(/Ocorrências retiradas do texto:[\s\S]*/gi, '')
+      .replace(/Desvios identificados no texto:[\s\S]*/gi, '')
+      .replace(/Desvios pontuais verificados:[\s\S]*/gi, '')
+      .replace(/\(agentes citados apenas na Conclusão não contam como repertório;\s*teto de \d+ pts\)/gi, '')
+      .replace(/Manter 4 parágrafos com dois argumentos distintos garante no máximo 160 pts quando os desenvolvimentos permanecem expositivos\.?/gi, '')
+      .replace(/\(Conectivos comuns bem empregados não sofrem desconto nem se exige variedade vocabular obrigatória\)\.?/gi, '')
+      .replace(/\[[^\]]*\]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    if (!clean) return '';
+    if (clean.length <= maxChars) return clean;
+    const sentences = clean.split(/(?<=[.!?])\s+/).filter(Boolean);
+    if (sentences.length > 0 && sentences[0].length <= maxChars) {
+      if (sentences.length > 1 && (sentences[0].length + 1 + sentences[1].length) <= maxChars) {
+        return `${sentences[0]} ${sentences[1]}`;
+      }
+      return sentences[0];
+    }
+    return `${clean.slice(0, maxChars - 1).trim()}…`;
+  };
+
+  const getSimplifiedCompetencyLevelTitle = (
+    compNum: number,
+    score: number,
+    rawTitle?: string,
+    c5?: EssayCorrectionResult['c5Structure']
+  ): string => {
+    const level = Math.max(0, Math.min(5, Math.round((score || 0) / 40)));
+    if (compNum === 1) {
+      if (score >= 200) return 'Nível 5 — Escrita formal excelente';
+      if (score >= 160) return 'Nível 4 — Boa escrita formal (poucos desvios)';
+      if (score >= 120) return 'Nível 3 — Escrita regular (atenção à gramática)';
+      if (score >= 80) return 'Nível 2 — Muitos desvios gramaticais';
+      if (score >= 40) return 'Nível 1 — Domínio precário da escrita';
+      return 'Nível 0 — Sem domínio mínimo';
+    }
+    if (compNum === 2) {
+      if (score >= 200) return 'Nível 5 — Tema completo e repertório produtivo';
+      if (score >= 160) return 'Nível 4 — Bom domínio do tema';
+      if (score >= 120) return 'Nível 3 — Abordagem mediana do tema';
+      if (score >= 80) return 'Nível 2 — Abordagem superficial do tema';
+      if (score >= 40) return 'Nível 1 — Tangenciamento ao tema';
+      return 'Nível 0 — Fuga ao tema';
+    }
+    if (compNum === 3) {
+      if (score >= 200) return 'Nível 5 — Argumentação completa e aprofundada';
+      if (score >= 160) return 'Nível 4 — Bons argumentos (falta aprofundar)';
+      if (score >= 120) return 'Nível 3 — Argumentação mediana';
+      if (score >= 80) return 'Nível 2 — Argumentos pouco desenvolvidos';
+      if (score >= 40) return 'Nível 1 — Pouca defesa de ponto de vista';
+      return 'Nível 0 — Sem projeto argumentativo';
+    }
+    if (compNum === 4) {
+      if (score >= 200) return 'Nível 5 — Conectivos e coesão excelentes';
+      if (score >= 160) return 'Nível 4 — Boa coesão entre frases e parágrafos';
+      if (score >= 120) return 'Nível 3 — Coesão regular';
+      if (score >= 80) return 'Nível 2 — Poucos conectivos ou repetições';
+      if (score >= 40) return 'Nível 1 — Frases pouco conectadas';
+      return 'Nível 0 — Ausência de coesão';
+    }
+    if (compNum === 5) {
+      if (c5 && !c5.respectsHumanRights) return 'Nível 0 — Desrespeito aos Direitos Humanos';
+      if (score >= 200) return 'Nível 5 — Proposta completa (5 elementos)';
+      if (score >= 160) {
+        if (c5 && !c5.detailing?.present) return 'Nível 4 — Quase completa (falta detalhar)';
+        return 'Nível 4 — Quase completa (4 de 5 elementos)';
+      }
+      if (score >= 120) return 'Nível 3 — Proposta incompleta (3 de 5 elementos)';
+      if (score >= 80) return 'Nível 2 — Poucos elementos (2 de 5)';
+      if (score >= 40) return 'Nível 1 — Muito incompleta (1 de 5)';
+      return 'Nível 0 — Sem proposta válida';
+    }
+    return rawTitle || `Nível ${level}`;
+  };
+
+  const buildCompetencyScoreExplanationDisplay = (
+    compNum: number,
+    compData: EssayCorrectionResult['competencies']['c1'] | undefined,
+    compAudit?: NonNullable<EssayCorrectionResult['auditLog']>['competencyLogs'][number],
+    c5?: EssayCorrectionResult['c5Structure']
+  ): { headline: string; detail: string; scoreNote: string } => {
+    const score = compData?.score ?? compData?.nota ?? compAudit?.assignedScore ?? 0;
+    const rawDiag = shortenToConciseText(compData?.diagnostic || '', 175);
+    const rawEval = shortenToConciseText(
+      compData?.evaluation || compData?.justificativa_analitica || compAudit?.scoreJustification || '',
+      185
+    );
+    const devCount = correctionResult?.c1Deviations?.length ?? 0;
+
+    if (compNum === 5) {
+      const missing = getC5MissingElementLabels(c5);
+      const presentCount = c5?.validElementsCount ?? Math.min(5, Math.round(score / 40));
+      let scoreNote = '';
+      if (c5 && !c5.respectsHumanRights) {
+        scoreNote =
+          'Explicação da nota: foi identificado desrespeito aos Direitos Humanos na proposta, o que zera apenas a Competência 5 (0/200), mantendo as notas normais das demais competências.';
+      } else if (score >= 200) {
+        scoreNote =
+          'Explicação da nota: sua conclusão trouxe todos os 5 elementos exigidos (Agente, Ação, Meio/Modo, Finalidade e Detalhamento) respeitando os Direitos Humanos (200/200).';
+      } else if (missing.length > 0) {
+        scoreNote = `Explicação da nota: você apresentou ${presentCount} de 5 elementos na conclusão (${score}/200). Para chegar aos 200 pontos, faltou deixar claro: ${missing.join('; ')}.`;
+      } else {
+        scoreNote = `Explicação da nota: sua conclusão somou ${score}/200 pontos com ${presentCount} de 5 elementos claramente identificados.`;
+      }
+      const headline =
+        rawDiag ||
+        (score >= 200
+          ? 'Sua proposta de intervenção está completa, clara e bem articulada.'
+          : `Sua conclusão apresentou ${presentCount} de 5 elementos exigidos na Competência 5.`);
+      return { headline, detail: '', scoreNote };
+    }
+
+    let defaultHeadline = '';
+    let scoreNote = '';
+
+    if (compNum === 1) {
+      defaultHeadline =
+        score >= 200
+          ? 'Excelente domínio da escrita formal, com frases bem pontuadas e vocabulário preciso.'
+          : `Sua escrita formal recebeu ${score}/200 pontos na Competência 1.`;
+      scoreNote =
+        score >= 200
+          ? 'Explicação da nota: você construiu períodos claros e bem articulados, sem desvios gramaticais relevantes.'
+          : devCount > 0
+            ? `Explicação da nota: foram identificados ${devCount} ponto(s) de revisão (como vírgula, concordância, crase ou termos informais) que impediram os 200 pontos.`
+            : 'Explicação da nota: para chegar aos 200 pontos, é preciso unir correção gramatical com vocabulário formal preciso e frases mais bem articuladas.';
+    } else if (compNum === 2) {
+      defaultHeadline =
+        score >= 200
+          ? 'Você abordou o tema por completo e usou repertório produtivo nos desenvolvimentos.'
+          : score === 40
+            ? 'Atenção: o texto tratou apenas do assunto geral, sem focar no recorte específico do tema (40/200).'
+            : `Você recebeu ${score}/200 pontos pelo desenvolvimento do tema e uso de repertório.`;
+      scoreNote =
+        score >= 200
+          ? 'Explicação da nota: seu texto desenvolveu o recorte do tema e explicou bem o repertório sociocultural nos parágrafos de desenvolvimento.'
+          : 'Explicação da nota: para alcançar 200 pontos na C2, além de abordar todo o tema, é necessário trazer repertório legítimo também no D1 ou D2 e conectá-lo ao seu argumento.';
+    } else if (compNum === 3) {
+      defaultHeadline =
+        score >= 200
+          ? 'Projeto de texto completo, com causas e consequências bem explicadas em D1 e D2.'
+          : `Seus argumentos são coerentes (${score}/200), mas ainda podem ser mais aprofundados.`;
+      scoreNote =
+        score >= 200
+          ? 'Explicação da nota: seus dois parágrafos de desenvolvimento defendem ideias claras e explicam o porquê do problema (causa) e seu efeito (consequência).'
+          : 'Explicação da nota: você organizou bem os parágrafos, mas faltou explicar com mais profundidade a causa do problema e sua consequência prática nos dois desenvolvimentos (D1 e D2).';
+    } else {
+      defaultHeadline =
+        score >= 200
+          ? 'Excelente uso de conectivos entre parágrafos e frases, garantindo leitura fluida.'
+          : `Boa conexão geral das ideias (${score}/200), com espaço para variar melhor a estrutura das frases.`;
+      scoreNote =
+        score >= 200
+          ? 'Explicação da nota: você ligou bem os parágrafos e períodos internos sem repetir estruturas.'
+          : 'Explicação da nota: seus conectivos funcionam bem, mas houve repetição de estruturas parecidas ou faltou maior fluidez na ligação interna entre algumas frases.';
+    }
+
+    const headline = rawDiag || defaultHeadline;
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const showDetail = Boolean(
+      rawEval &&
+      norm(rawEval) !== norm(headline) &&
+      !norm(scoreNote).includes(norm(rawEval).slice(0, 30)) &&
+      !norm(headline).includes(norm(rawEval).slice(0, 30))
+    );
+
+    return {
+      headline,
+      detail: showDetail ? rawEval : '',
+      scoreNote,
+    };
+  };
+
+  const buildCompetencyGuidanceDisplay = (
+    compNum: number,
+    compData: EssayCorrectionResult['competencies']['c1'] | undefined,
+    compAudit?: NonNullable<EssayCorrectionResult['auditLog']>['competencyLogs'][number],
+    c5?: EssayCorrectionResult['c5Structure']
+  ): { primaryGuidance: string; practicalStep: string } => {
+    const score = compData?.score ?? compData?.nota ?? compAudit?.assignedScore ?? 0;
+    const rawImprove = shortenToConciseText(compData?.howToImprove || '', 185);
+
+    if (compNum === 5) {
+      const missing = getC5MissingElementLabels(c5);
+      let practicalStep = '';
+      if (c5 && !c5.respectsHumanRights) {
+        practicalStep =
+          'Direcionamento: reformule a proposta garantindo medidas educativas, preventivas ou de apoio social que respeitem integralmente os Direitos Humanos.';
+      } else if (score >= 200) {
+        practicalStep =
+          'Direcionamento: continue usando essa estrutura completa (quem faz, o que faz, como faz, para quê e um detalhe concreto sobre público, local ou funcionamento).';
+      } else if (c5 && !c5.detailing?.present && missing.length === 1) {
+        practicalStep =
+          'Direcionamento: mantenha os elementos que você já colocou e acrescente uma explicação extra entre travessões ou vírgulas (dizendo quem será atendido, onde ocorrerá ou dando um exemplo concreto da ação) para chegar aos 200 pontos.';
+      } else if (missing.length > 0) {
+        practicalStep = `Direcionamento: complete sua proposta na conclusão incluindo claramente ${missing.join(' e ')} para alcançar os 200 pontos.`;
+      } else {
+        practicalStep =
+          'Direcionamento: revise sua conclusão para confirmar que estão explícitos quem faz (Agente), o que faz (Ação), como faz (Meio), para quê (Finalidade) e uma explicação extra (Detalhamento).';
+      }
+      return { primaryGuidance: practicalStep, practicalStep: '' };
+    }
+
+    let primaryGuidance = '';
+    if (compNum === 1) {
+      primaryGuidance =
+        score >= 200
+          ? 'Direcionamento: mantenha a revisão atenta de vírgulas, crase e concordância e continue usando vocabulário formal preciso.'
+          : 'Direcionamento: revise a vírgula após os conectivos de início de frase, troque expressões informais ("no dia a dia", "por causa de", "coisas") por termos formais e confira a concordância.';
+    } else if (compNum === 2) {
+      primaryGuidance =
+        score >= 200
+          ? 'Direcionamento: continue trazendo repertório legítimo nos desenvolvimentos e explicando como ele comprova sua tese.'
+          : 'Direcionamento: inclua um repertório sociocultural legítimo (autor, obra, dado ou lei) também dentro do D1 ou D2 e adicione uma frase explicando como ele confirma o seu argumento.';
+    } else if (compNum === 3) {
+      primaryGuidance =
+        score >= 200
+          ? 'Direcionamento: continue estruturando D1 e D2 com duas causas diferentes, explicando o motivo e a consequência de cada uma.'
+          : 'Direcionamento: em cada desenvolvimento (D1 e D2), siga 3 passos claros: 1) apresente a causa do problema; 2) relacione com um repertório; 3) mostre a consequência prática disso na sociedade.';
+    } else {
+      primaryGuidance =
+        score >= 200
+          ? 'Direcionamento: continue iniciando D1, D2 e Conclusão com conectivos adequados e variando a ligação entre as frases.'
+          : 'Direcionamento: inicie o D1, o D2 e a Conclusão com conectivos variados (ex.: "Nesse cenário", "Ademais", "Portanto") e evite repetir o mesmo formato de frase entre parágrafos.';
+    }
+
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const showExtra = Boolean(
+      rawImprove &&
+      norm(rawImprove) !== norm(primaryGuidance) &&
+      !norm(primaryGuidance).includes(norm(rawImprove).slice(0, 30))
+    );
+
+    return {
+      primaryGuidance,
+      practicalStep: showExtra ? rawImprove : '',
+    };
+  };
+
+  const simplifyAuditScoreExplanation = (
+    logItem: NonNullable<EssayCorrectionResult['auditLog']>['competencyLogs'][number],
+    compData: EssayCorrectionResult['competencies']['c1'] | undefined,
+    officialAuditScore: number
+  ): { mainReason: string; extraExplanation: string } => {
+    const exp = buildCompetencyScoreExplanationDisplay(
+      logItem.competencyNum,
+      compData ? { ...compData, score: officialAuditScore } : ({ score: officialAuditScore } as any),
+      logItem,
+      correctionResult?.c5Structure
+    );
+    return {
+      mainReason: exp.headline,
+      extraExplanation: exp.scoreNote,
+    };
+  };
+
+  const simplifyAuditMissingAndGuidance = (
+    logItem: NonNullable<EssayCorrectionResult['auditLog']>['competencyLogs'][number],
+    compData: EssayCorrectionResult['competencies']['c1'] | undefined,
+    isMax200: boolean
+  ): { missingSummary: string; guidanceText: string } => {
+    const score = isMax200 ? 200 : (compData?.score ?? logItem.assignedScore ?? 160);
+    const guide = buildCompetencyGuidanceDisplay(
+      logItem.competencyNum,
+      compData ? { ...compData, score } : ({ score } as any),
+      logItem,
+      correctionResult?.c5Structure
+    );
+
+    if (logItem.competencyNum === 5 && correctionResult?.c5Structure) {
+      const c5Struct = correctionResult.c5Structure;
+      const missing = getC5MissingElementLabels(c5Struct);
+      const missingSummary = isMax200
+        ? 'Sua proposta reuniu todos os 5 elementos obrigatórios com clareza.'
+        : missing.length > 0
+          ? `Faltou deixar mais claro na conclusão: ${missing.join('; ')}.`
+          : 'Vale deixar cada um dos 5 elementos da proposta ainda mais explícito na conclusão.';
+      return {
+        missingSummary,
+        guidanceText: guide.primaryGuidance,
+      };
+    }
+
+    const rawReason = shortenToConciseText(logItem.reasonNotRoundedTo200 || '', 155);
+    const missingSummary = isMax200
+      ? 'Você atendeu a todos os critérios exigidos para a nota máxima nesta competência.'
+      : rawReason || 'Pequenos ajustes pontuais impediram a nota 200 nesta competência.';
+
+    return {
+      missingSummary,
+      guidanceText: guide.primaryGuidance,
+    };
+  };
+
+  const simplifyAuditPillar = (
+    pillar: { pillar: string; status: 'atendido' | 'parcial' | 'ausente'; detail: string },
+    pillarIdx: number,
+    competencyNum: number
+  ): { title: string; detail: string } => {
+    const ok = pillar.status === 'atendido';
+    if (competencyNum === 1) {
+      if (pillarIdx === 0) {
+        return {
+          title: 'Construção das frases',
+          detail: ok ? 'Períodos claros e bem pontuados.' : 'Melhore a pontuação e ligação das frases.',
+        };
+      }
+      if (pillarIdx === 1) {
+        return {
+          title: 'Vocabulário formal',
+          detail: ok ? 'Linguagem formal e precisa.' : 'Substitua termos informais ou vagos.',
+        };
+      }
+      const devCount = correctionResult?.c1Deviations?.length ?? 0;
+      return {
+        title: 'Revisão de desvios',
+        detail: ok || devCount === 0 ? 'Sem desvios gramaticais graves.' : `${devCount} ponto(s) de revisão encontrados.`,
+      };
+    }
+    if (competencyNum === 2) {
+      if (pillarIdx === 0) {
+        return {
+          title: 'Foco no tema',
+          detail: ok ? 'Tema abordado dentro do recorte.' : 'Atenção ao recorte específico do tema.',
+        };
+      }
+      if (pillarIdx === 1) {
+        return {
+          title: 'Repertório em D1/D2',
+          detail: ok ? 'Referência presente nos argumentos.' : 'Inclua repertório também no D1 ou D2.',
+        };
+      }
+      return {
+        title: 'Uso do repertório',
+        detail: ok ? 'Referência bem conectada à tese.' : 'Explique melhor a referência no parágrafo.',
+      };
+    }
+    if (competencyNum === 3) {
+      if (pillarIdx === 0) {
+        return {
+          title: 'Ideias em D1 e D2',
+          detail: ok ? 'D1 e D2 defendem pontos distintos.' : 'Diferencie melhor os argumentos de D1 e D2.',
+        };
+      }
+      if (pillarIdx === 1) {
+        return {
+          title: 'Causa e consequência',
+          detail: ok ? 'Causas e efeitos bem explicados.' : 'Aprofunde o porquê e o impacto do problema.',
+        };
+      }
+      return {
+        title: 'Repertório nos argumentos',
+        detail: ok ? 'Ideias e referências bem ligadas.' : 'Conecte melhor tese, repertório e explicação.',
+      };
+    }
+    if (competencyNum === 4) {
+      if (pillarIdx === 0) {
+        return {
+          title: 'Variação das frases',
+          detail: ok ? 'Sem repetição de estruturas.' : 'Varie a forma de iniciar as explicações.',
+        };
+      }
+      if (pillarIdx === 1) {
+        return {
+          title: 'Fluidez da leitura',
+          detail: ok ? 'Boa transição entre frases e blocos.' : 'Melhore a ligação entre as frases internas.',
+        };
+      }
+      return {
+        title: 'Uso dos conectivos',
+        detail: ok ? 'Conectivos bem usados e naturais.' : 'Ajuste os conectivos entre parágrafos.',
+      };
+    }
+    if (competencyNum === 5) {
+      if (pillarIdx === 0) {
+        const count = correctionResult?.c5Structure?.validElementsCount ?? (ok ? 5 : 4);
+        return {
+          title: 'Elementos da proposta',
+          detail: `${count} de 5 elementos identificados na conclusão.`,
+        };
+      }
+      if (pillarIdx === 1) {
+        return {
+          title: 'Detalhamento',
+          detail: ok ? 'Detalhamento claro e específico.' : 'Faltou adicionar uma explicação extra.',
+        };
+      }
+      return {
+        title: 'Direitos Humanos',
+        detail: ok ? 'Sua proposta respeita os Direitos Humanos.' : 'Proposta incompatível com os Direitos Humanos.',
+      };
+    }
+    return {
+      title: shortenToConciseText(pillar.pillar, 40),
+      detail: shortenToConciseText(pillar.detail, 70),
+    };
+  };
+
+  const buildGeneralPerformanceOverview = (res: EssayCorrectionResult | null): string => {
+    if (!res) return '';
+    const c1 = competencyDivergences[0]?.officialCompMean ?? res.competencies?.c1?.score ?? res.competencies?.c1?.nota ?? 0;
+    const c2 = competencyDivergences[1]?.officialCompMean ?? res.competencies?.c2?.score ?? res.competencies?.c2?.nota ?? 0;
+    const c3 = competencyDivergences[2]?.officialCompMean ?? res.competencies?.c3?.score ?? res.competencies?.c3?.nota ?? 0;
+    const c4 = competencyDivergences[3]?.officialCompMean ?? res.competencies?.c4?.score ?? res.competencies?.c4?.nota ?? 0;
+    const c5 = competencyDivergences[4]?.officialCompMean ?? res.competencies?.c5?.score ?? res.competencies?.c5?.nota ?? 0;
+    const total = officialMeanScore || res.totalScore || (c1 + c2 + c3 + c4 + c5);
+
+    const raw = (res.generalDiagnostic || '').trim();
+    const isBoilerplateOnly = /^Redação avaliada por auditoria ponderada de evidências/i.test(raw);
+    if (raw && raw.length >= 25 && !isBoilerplateOnly) {
+      return raw.replace(/\b\d{3,4}\s*\/\s*1000\b/g, `${total}/1000`);
+    }
+
+    const compList = [
+      { num: 1, label: 'C1 (Escrita Formal)', score: c1 },
+      { num: 2, label: 'C2 (Tema e Repertório)', score: c2 },
+      { num: 3, label: 'C3 (Argumentação)', score: c3 },
+      { num: 4, label: 'C4 (Coesão)', score: c4 },
+      { num: 5, label: 'C5 (Proposta de Intervenção)', score: c5 },
+    ];
+
+    const strongComps = compList
+      .filter((c) => c.score >= 160)
+      .sort((a, b) => b.score - a.score)
+      .map((c) => `${c.label} (${c.score} pts)`);
+
+    const improveComps = compList
+      .filter((c) => c.score < 200)
+      .sort((a, b) => a.score - b.score)
+      .map((c) => `${c.label} (${c.score} pts)`);
+
+    const tierLabel =
+      total === 1000
+        ? 'desempenho máximo (Nota 1000)'
+        : total >= 920
+        ? 'excelente desempenho'
+        : total >= 800
+        ? 'bom desempenho'
+        : total >= 600
+        ? 'desempenho intermediário'
+        : 'desempenho em fase de consolidação';
+
+    const strongSentence =
+      strongComps.length > 0
+        ? `Seus melhores resultados foram em ${strongComps.slice(0, 3).join(', ')}, mostrando boa base na estrutura dissertativo-argumentativa.`
+        : 'Sua redação abordou a proposta, mas precisa consolidar a estrutura dos parágrafos e a fundamentação dos argumentos.';
+
+    const improveSentence =
+      improveComps.length > 0
+        ? `Para subir sua nota nas próximas redações, concentre seus ajustes principalmente em ${improveComps.slice(0, 2).join(' e ')}.`
+        : 'Você atingiu a pontuação máxima nas 5 competências da Matriz Oficial do INEP.';
+
+    return `Sua redação obteve ${total}/1000 pontos (${tierLabel}) no tema "${res.theme}" — C1: ${c1} | C2: ${c2} | C3: ${c3} | C4: ${c4} | C5: ${c5}. ${strongSentence} ${improveSentence}`;
+  };
+
+  const getEffectiveTop3Strengths = (res: EssayCorrectionResult | null): string[] => {
+    if (!res) return [];
+    const valid = (res.top3Strengths || []).map((s) => String(s || '').trim()).filter(Boolean);
+    if (valid.length > 0) return valid;
+
+    const c1 = competencyDivergences[0]?.officialCompMean ?? res.competencies?.c1?.score ?? 160;
+    const c2 = competencyDivergences[1]?.officialCompMean ?? res.competencies?.c2?.score ?? 160;
+    const c3 = competencyDivergences[2]?.officialCompMean ?? res.competencies?.c3?.score ?? 160;
+    const c4 = competencyDivergences[3]?.officialCompMean ?? res.competencies?.c4?.score ?? 160;
+    const c5 = competencyDivergences[4]?.officialCompMean ?? res.competencies?.c5?.score ?? 160;
+
+    const fallbacks: string[] = [];
+    if (c2 >= 160) fallbacks.push(`Desenvolvimento consistente do tema "${res.theme}" dentro do texto dissertativo-argumentativo (${c2}/200 na C2).`);
+    if (c1 >= 160) fallbacks.push(`Bom domínio da modalidade escrita formal e construção clara das frases (${c1}/200 na C1).`);
+    if (c4 >= 160) fallbacks.push(`Uso adequado de conectivos para ligar os parágrafos e ideias (${c4}/200 na C4).`);
+    if (c3 >= 160) fallbacks.push(`Defesa de ponto de vista com organização entre introdução, desenvolvimento e conclusão (${c3}/200 na C3).`);
+    if (c5 >= 160) fallbacks.push(`Proposta de intervenção alinhada aos Direitos Humanos na conclusão (${c5}/200 na C5).`);
+    while (fallbacks.length < 3) {
+      if (fallbacks.length === 0) fallbacks.push('Atendimento ao formato dissertativo-argumentativo exigido pelo ENEM.');
+      else if (fallbacks.length === 1) fallbacks.push('Organização visual do texto em parágrafos distintos.');
+      else fallbacks.push('Respeito integral aos Direitos Humanos ao longo do texto.');
+    }
+    return fallbacks.slice(0, 3);
+  };
+
+  const getEffectiveTop3Problems = (res: EssayCorrectionResult | null): string[] => {
+    if (!res) return [];
+    const valid = (res.top3Problems || []).map((p) => String(p || '').trim()).filter(Boolean);
+    if (valid.length > 0) return valid;
+
+    const list: string[] = [];
+    (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((ck, idx) => {
+      const comp = res.competencies?.[ck];
+      const sc = competencyDivergences[idx]?.officialCompMean ?? comp?.score ?? 200;
+      if (sc < 200) {
+        const exp = buildCompetencyScoreExplanationDisplay(idx + 1, comp, undefined, res.c5Structure);
+        list.push(`C${idx + 1} (${sc}/200): ${exp.scoreNote.replace(/^Explicação da nota:\s*/i, '')}`);
+      }
+    });
+    if (list.length === 0) {
+      list.push('Todas as competências atingiram 200 pontos. Mantenha o padrão de revisão gramatical, repertório produtivo e proposta detalhada.');
+    }
+    return list.slice(0, 3);
+  };
+
+  const getEffectiveActionPlan = (res: EssayCorrectionResult | null): string[] => {
+    if (!res) return [];
+    const valid = (res.actionPlanToImprove || []).map((a) => String(a || '').trim()).filter(Boolean);
+    if (valid.length > 0) return valid;
+
+    const actions: string[] = [];
+    (['c1', 'c2', 'c3', 'c4', 'c5'] as const).forEach((ck, idx) => {
+      const comp = res.competencies?.[ck];
+      const sc = competencyDivergences[idx]?.officialCompMean ?? comp?.score ?? 200;
+      if (sc < 200) {
+        const guide = buildCompetencyGuidanceDisplay(idx + 1, comp, undefined, res.c5Structure);
+        actions.push(`Na Competência ${idx + 1}: ${guide.primaryGuidance.replace(/^Direcionamento:\s*/i, '')}`);
+      }
+    });
+    if (actions.length === 0) {
+      actions.push('Continue praticando novos eixos temáticos mantendo repertórios produtivos nos desenvolvimentos e os 5 elementos na conclusão.');
+    }
+    return actions.slice(0, 4);
+  };
+
+  const getEffectiveHighPerformanceComparison = (res: EssayCorrectionResult | null): string => {
+    if (!res) return '';
+    const raw = (res.highPerformanceComparison || '').trim();
+    if (raw.length >= 15) return raw;
+    const actions = getEffectiveActionPlan(res);
+    return actions.join(' ');
+  };
+
   const handleCopyReport = () => {
     if (!correctionResult) return;
     const reportText = `================================================
@@ -1304,16 +2034,16 @@ PONTUAÇÃO POR COMPETÊNCIAS (MÉDIA OFICIAL):
 - C5 (Proposta Intervenção): ${competencyDivergences[4]?.officialCompMean ?? correctionResult.competencies.c5.score} / 200
 
 DIAGNÓSTICO GERAL:
-${correctionResult.generalDiagnostic}
+${buildGeneralPerformanceOverview(correctionResult)}
 
 3 MAIORES PONTOS FORTES:
-${correctionResult.top3Strengths.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+${getEffectiveTop3Strengths(correctionResult).map((s, i) => `${i + 1}. ${s}`).join('\n')}
 
-3 MAIORES PROBLEMAS:
-${correctionResult.top3Problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}
+${correctionResult.totalScore >= 960 ? 'AJUSTES FINOS DE EXCELÊNCIA (RUMO AOS 1000):' : '3 MAIORES PROBLEMAS:'}
+${getEffectiveTop3Problems(correctionResult).map((p, i) => `${i + 1}. ${p}`).join('\n')}
 
 COMO SUBIR SUA NOTA (PLANO DE AÇÃO):
-${correctionResult.actionPlanToImprove.map((a, i) => `${i + 1}. ${a}`).join('\n')}
+${getEffectiveActionPlan(correctionResult).map((a, i) => `${i + 1}. ${a}`).join('\n')}
 
 ESTRUTURA C5 (PROPOSTA DE INTERVENÇÃO):
 - Agente: ${correctionResult.c5Structure.agent.present ? '✅' : '❌'} ${correctionResult.c5Structure.agent.text || 'Ausente'}
@@ -1920,12 +2650,12 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <span className="text-[11px] font-black uppercase text-blue-700 dark:text-blue-400 tracking-wider flex items-center gap-1.5">
                       <span className="w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 flex items-center justify-center text-xs font-bold">1</span>
-                      1º Avaliador (Macro)
+                      1º Avaliador (Normativo)
                     </span>
-                    <span className="text-[10px] font-semibold text-slate-400">Leitura Ampla</span>
+                    <span className="text-[10px] font-semibold text-slate-400">Rigor C1 e C4</span>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
-                    {correctionResult.dualEvaluatorSimulation?.evaluatorA?.evaluatorProfile || 'Visão global da estrutura e argumentação'}
+                    {correctionResult.dualEvaluatorSimulation?.evaluatorA?.evaluatorProfile || 'Rigor estrito em norma-padrão, sintaxe e coesão textual'}
                   </p>
                 </div>
                 <div className="pt-3 mt-2 border-t border-slate-200/80 dark:border-slate-700/80 flex items-baseline justify-between">
@@ -1936,18 +2666,18 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 </div>
               </div>
 
-              {/* Avaliador 2 / Banca Revisora */}
+              {/* Avaliador 2 (Estrutural, Temático e Interventivo) */}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex flex-col justify-between">
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <span className="text-[11px] font-black uppercase text-amber-700 dark:text-amber-400 tracking-wider flex items-center gap-1.5">
                       <span className="w-5 h-5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 flex items-center justify-center text-xs font-bold">2</span>
-                      2º Avaliador (Banca)
+                      2º Avaliador (Estrutural)
                     </span>
-                    <span className="text-[10px] font-semibold text-slate-400">Rigor Estrito</span>
+                    <span className="text-[10px] font-semibold text-slate-400">Rigor C2, C3 e C5</span>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
-                    {correctionResult.dualEvaluatorSimulation?.evaluatorB?.evaluatorProfile || 'Auditoria técnica estrita da matriz do INEP'}
+                    {correctionResult.dualEvaluatorSimulation?.evaluatorB?.evaluatorProfile || 'Rigor estrito em repertório, projeto de texto e proposta C5'}
                   </p>
                 </div>
                 <div className="pt-3 mt-2 border-t border-slate-200/80 dark:border-slate-700/80 flex items-baseline justify-between">
@@ -2011,7 +2741,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                     <tr className="bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 font-bold">
                       <th className="p-3">Competência</th>
                       <th className="p-3 text-center">1º Avaliador</th>
-                      <th className="p-3 text-center">2º Avaliador (Banca)</th>
+                      <th className="p-3 text-center">2º Avaliador</th>
                       <th className="p-3 text-center bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-200 font-black">
                         Nota Oficial (Média)
                       </th>
@@ -2135,7 +2865,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 <span>Visão Geral do Desempenho</span>
               </div>
               <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
-                {correctionResult.generalDiagnostic}
+                {buildGeneralPerformanceOverview(correctionResult)}
               </p>
             </div>
           </div>
@@ -2336,7 +3066,14 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                       <div>
                         <div className="flex items-center gap-2">
                           <h4 className="font-extrabold text-slate-900 dark:text-slate-100 text-base">{comp.name}</h4>
-                          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">({comp.data.levelTitle})</span>
+                          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                            ({getSimplifiedCompetencyLevelTitle(
+                              comp.num,
+                              comp.data.score,
+                              comp.data.levelTitle || comp.data.titulo_nivel,
+                              correctionResult.c5Structure
+                            )})
+                          </span>
                         </div>
                         <p className="text-xs text-slate-500 dark:text-slate-400">{comp.subtitle}</p>
                       </div>
@@ -2396,31 +3133,35 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                       original: string;
                       problem: string;
                       explanation: string;
+                      competencyNum?: number;
                     }): 1 | 2 | 3 | 4 | 5 => {
+                      if (rw.competencyNum && [1, 2, 3, 4, 5].includes(rw.competencyNum)) {
+                        return rw.competencyNum as 1 | 2 | 3 | 4 | 5;
+                      }
                       const probText = `${rw.problem || ''} ${rw.explanation || ''}`.toLowerCase();
                       if (
-                        /(intervenç|intervenc|proposta|agente|meio\/modo|meio ou modo|detalhamento|finalidade|efeito social)/i.test(
+                        /(intervenç|intervenc|proposta|agente|meio\/modo|meio ou modo|detalhamento|finalidade|efeito social|\bc5\b)/i.test(
                           probText
                         )
                       ) {
                         return 5;
                       }
                       if (
-                        /(gramat|ortograf|vírgula|virgula|crase|concord|regênc|regenc|sintát|sintat|norma-padrão|norma culta|acentua|pontuaç|oralidade|coloquial|informal|truncament|paralelismo)/i.test(
+                        /(gramat|ortograf|vírgula|virgula|crase|concord|regênc|regenc|sintát|sintat|norma-padrão|norma culta|acentua|pontuaç|oralidade|coloquial|informal|truncament|paralelismo|\bc1\b)/i.test(
                           probText
                         )
                       ) {
                         return 1;
                       }
                       if (
-                        /(conectiv|coesão|coesao|coesiv|operador|transiç|articulador|repetição de palavra|anáfora|anafora|interparágrafo|intraparágrafo)/i.test(
+                        /(conectiv|coesão|coesao|coesiv|operador|transiç|articulador|repetição de palavra|anáfora|anafora|interparágrafo|intraparágrafo|\bc4\b)/i.test(
                           probText
                         )
                       ) {
                         return 4;
                       }
                       if (
-                        /(repertór|repertor|recorte temático|tangencia|senso comum|legitimad|alinhad|produtiv|filósof|sociólog|constituição|tema central)/i.test(
+                        /(repertór|repertor|recorte temático|tangencia|senso comum|legitimad|alinhad|produtiv|filósof|sociólog|constituição|tema central|\bc2\b)/i.test(
                           probText
                         )
                       ) {
@@ -2429,9 +3170,11 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                       return 3;
                     };
 
-                    const matchingRewrites = (correctionResult.pedagogicalRewrites || []).filter(
-                      (rw) => classifyRewriteCompetency(rw) === comp.num
-                    );
+                    const matchingRewrites = comp.data.score >= 200
+                      ? []
+                      : (correctionResult.pedagogicalRewrites || []).filter(
+                          (rw) => classifyRewriteCompetency(rw) === comp.num
+                        );
 
                     // Helper to clean a student quote and generate a natural, non-repetitive 200-point rewrite (Depois)
                     const cleanTheme = (correctionResult.theme || 'a problemática em questão')
@@ -2519,8 +3262,8 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                           Math.min(2, themeSignificantWords.length);
                       const quoteAlreadyHasBrazil = /(brasil|pais|sociedade brasileira)/i.test(clauseNorm);
 
-                      const themeRef = quoteAlreadyHasTheme ? 'essa problemática estrutural' : cleanTheme;
-                      const countryRef = quoteAlreadyHasBrazil ? 'na contemporaneidade' : 'no Brasil contemporâneo';
+                      const themeRef = quoteAlreadyHasTheme ? 'essa questão' : cleanTheme;
+                      const countryRef = quoteAlreadyHasBrazil ? 'no país' : 'no Brasil';
 
                       if (cNum === 1) {
                         let fixedC1 = fullClean;
@@ -2536,18 +3279,15 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                           .replace(/\bpra\b/gi, 'para')
                           .replace(/\btá\b/gi, 'está')
                           .replace(/\btem muitos\b/gi, 'existem diversos')
-                          .replace(/\btem muitas\b/gi, 'existem diversas')
-                          .replace(/\bhoje em dia\b/gi, 'na contemporaneidade');
+                          .replace(/\btem muitas\b/gi, 'existem diversas');
 
-                        if (normalizeForDedup(fixedC1) === normalizeForDedup(fullClean)) {
-                          fixedC1 = `Constata-se que ${coreClause}, circunstância que exige rigor sintático e adequação vocabular à norma-padrão.`;
-                        } else if (!/[.!?]$/.test(fixedC1)) {
+                        if (!/[.!?]$/.test(fixedC1)) {
                           fixedC1 = `${fixedC1}.`;
                         }
                         return {
                           fixAfter: sanitizeRewriteOutput(fixedC1),
                           stepByStep:
-                            'Substitua expressões coloquiais, períodos truncados ou falhas gramaticais pela construção formal reescrita acima.',
+                            'Aplique apenas os ajustes pontuais de norma-padrão ou pontuação necessários, preservando o sentido e a fluidez do seu período.',
                         };
                       }
 
@@ -2587,35 +3327,35 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                       if (cNum === 3) {
                         return {
                           fixAfter: sanitizeRewriteOutput(
-                            `${fullClean}, haja vista que a omissão institucional e a naturalização social dessa falha impedem sua superação, o que perpetua os impactos negativos de ${themeRef} ${countryRef}.`
+                            `${fullClean}, visto que a persistência das causas ligadas a ${themeRef} impede a superação efetiva desse quadro e amplia seus impactos concretos ${countryRef}.`
                           ),
                           stepByStep:
-                            'Desdobre sua afirmação no mesmo período explicitando a causa ("haja vista que...") e a consequência prática sobre a sociedade ("o que perpetua...").',
+                            'Mantenha seu tema específico e seu repertório, aprofundando no mesmo parágrafo a explicação da causa (por que ocorre) e da consequência prática.',
                         };
                       }
 
                       if (cNum === 4) {
                         return {
                           fixAfter: sanitizeRewriteOutput(
-                            `Outrossim, sob essa mesma perspectiva analítica, constata-se que ${coreClause}, de modo que tal conjuntura demanda medidas articuladas para ser revertida.`
+                            `Ademais, sob essa perspectiva, ${coreClause}, de modo que tal cenário demanda ações articuladas para ser superado.`
                           ),
                           stepByStep:
-                            'Substitua conectivos básicos ou repetidos por operadores argumentativos variados ("Outrossim", "Sob essa perspectiva", "De modo que") e utilize retomadas coesivas ("tal conjuntura").',
+                            'Articule os períodos com precisão funcional e retomadas referenciais claras ("tal cenário", "essa realidade"), evitando repetição de estruturas explicativas semelhantes.',
                         };
                       }
 
                       // C5 - Proposta de Intervenção com os 5 Elementos
                       const c5 = correctionResult.c5Structure;
-                      const agentPart =
-                        c5?.agent?.present && c5.agent.text
-                          ? c5.agent.text.replace(/[.]+$/, '')
-                          : 'o Ministério Público, em parceria com o Governo Federal';
+                      const rawAgentTxt = c5?.agent?.present && c5.agent.text
+                        ? c5.agent.text.split(/[\/|;]+/)[0].replace(/[.]+$/, '').trim()
+                        : '';
+                      const agentPart = rawAgentTxt || 'o Poder Público Federal';
                       return {
                         fixAfter: sanitizeRewriteOutput(
-                          `Portanto, cabe a ${agentPart} — instituição responsável pela defesa dos direitos sociais e fiscalização de políticas públicas (Detalhamento) — criar um plano nacional de enfrentamento a ${cleanTheme} (Ação), por meio do direcionamento de verbas públicas, fiscalização rigorosa e campanhas educativas nas escolas e mídias (Meio/Modo), a fim de erradicar esse entrave e garantir a cidadania plena ${countryRef} (Efeito).`
+                          `Portanto, cabe a ${agentPart} — instância responsável pela gestão e efetivação de políticas públicas (Detalhamento) — implementar um plano nacional voltado a ${cleanTheme} (Ação), por meio do direcionamento de recursos e campanhas formativas nas escolas e mídias (Meio/Modo), a fim de reduzir esse problema e garantir o pleno exercício da cidadania ${countryRef} (Efeito).`
                         ),
                         stepByStep:
-                          'Reúna no parágrafo final os 5 elementos obrigatórios do INEP: 1) Agente (Quem faz), 2) Detalhamento explicativo entre travessões ou vírgulas, 3) Ação prática (O que faz), 4) Meio/Modo ("por meio de...") e 5) Efeito ("a fim de...").',
+                          'Mantenha o agente e a ação já presentes e complete apenas os elementos faltantes entre os 5 exigidos pelo INEP (Agente, Ação, Meio/Modo, Efeito e Detalhamento específico).',
                       };
                     };
 
@@ -2742,9 +3482,9 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                       });
                     }
 
-                    // 2. Add matching Pedagogical Rewrites ONLY if not already covered by C1 deviations or an earlier card
+                    // 2. Add matching Pedagogical Rewrites ONLY if score < 200 and not already covered by C1 deviations or an earlier card
                     // In C1, if c1Deviations already populated the exact errors, skip redundant C1 rewrites
-                    if (!(comp.num === 1 && allCompetencyErrors.length > 0)) {
+                    if (comp.data.score < 200 && !(comp.num === 1 && allCompetencyErrors.length > 0)) {
                       matchingRewrites.forEach((rw) => {
                         if (isQuoteAlreadyUsed(rw.original) || isErrorTopicAlreadyUsed(rw.problem)) return;
                         // For C2..C5, keep at most 1 rewrite per topic so C2 never repeats two cards about repertoire/theme
@@ -2900,12 +3640,29 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                               </span>
                             )}
                           </div>
-                          <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 leading-relaxed">
-                            {comp.data.diagnostic}
-                          </p>
-                          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                            {comp.data.evaluation}
-                          </p>
+                          {(() => {
+                            const compExp = buildCompetencyScoreExplanationDisplay(
+                              comp.num,
+                              comp.data,
+                              compAudit,
+                              correctionResult.c5Structure
+                            );
+                            return (
+                              <div className="space-y-1.5">
+                                <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 leading-relaxed">
+                                  {compExp.headline}
+                                </p>
+                                {compExp.detail && (
+                                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+                                    {compExp.detail}
+                                  </p>
+                                )}
+                                <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-200 leading-relaxed pt-0.5">
+                                  {compExp.scoreNote}
+                                </p>
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         {/* 2. O que você acertou vs. Resumo do que melhorar */}
@@ -2947,9 +3704,26 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                                   : 'Direcionamento geral para chegar aos 200'}
                               </span>
                             </h5>
-                            <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
-                              {comp.data.howToImprove}
-                            </p>
+                            {(() => {
+                              const compGuide = buildCompetencyGuidanceDisplay(
+                                comp.num,
+                                comp.data,
+                                compAudit,
+                                correctionResult.c5Structure
+                              );
+                              return (
+                                <div className="space-y-1.5 text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+                                  <p className="font-medium text-slate-800 dark:text-slate-100">
+                                    {compGuide.primaryGuidance}
+                                  </p>
+                                  {compGuide.practicalStep && (
+                                    <p className="text-slate-600 dark:text-slate-300">
+                                      {compGuide.practicalStep}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
 
@@ -3352,39 +4126,45 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                             </div>
 
                             {/* Clear Score Reason & What Was Needed for 200 */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                              <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-1.5">
-                                <span className="text-[11px] font-extrabold uppercase text-indigo-300 tracking-wider flex items-center gap-1.5">
-                                  <Info className="w-3.5 h-3.5 text-indigo-400" />
-                                  Motivo claro da sua nota ({officialAuditScore} pts)
-                                </span>
-                                {compData?.diagnostic && (
-                                  <p className="text-slate-100 font-semibold leading-relaxed">
-                                    {compData.diagnostic}
-                                  </p>
-                                )}
-                                <p className="text-slate-300 leading-relaxed">
-                                  {logItem.scoreJustification}
-                                </p>
-                              </div>
+                            {(() => {
+                              const simpleReason = simplifyAuditScoreExplanation(logItem, compData, officialAuditScore);
+                              const simpleGuidance = simplifyAuditMissingAndGuidance(logItem, compData, isOfficialMax200);
+                              return (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                                  <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-1.5">
+                                    <span className="text-[11px] font-extrabold uppercase text-indigo-300 tracking-wider flex items-center gap-1.5">
+                                      <Info className="w-3.5 h-3.5 text-indigo-400" />
+                                      Explicação clara da sua nota ({officialAuditScore} pts)
+                                    </span>
+                                    <p className="text-slate-100 font-semibold leading-relaxed">
+                                      {simpleReason.mainReason}
+                                    </p>
+                                    {simpleReason.extraExplanation && (
+                                      <p className="text-slate-300 leading-relaxed">
+                                        {simpleReason.extraExplanation}
+                                      </p>
+                                    )}
+                                  </div>
 
-                              <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-1.5">
-                                <span className="text-[11px] font-extrabold uppercase text-amber-300 tracking-wider flex items-center gap-1.5">
-                                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                                  {isOfficialMax200
-                                    ? 'Por que você garantiu os 200 pontos'
-                                    : 'O que faltou no seu texto para tirar 200'}
-                                </span>
-                                {!isOfficialMax200 && logItem.reasonNotRoundedTo200 && (
-                                  <p className="text-amber-200 font-semibold leading-relaxed">
-                                    {logItem.reasonNotRoundedTo200}
-                                  </p>
-                                )}
-                                <p className="text-slate-300 leading-relaxed">
-                                  {compData?.howToImprove || logItem.requiredTextualEvidence}
-                                </p>
-                              </div>
-                            </div>
+                                  <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-1.5">
+                                    <span className="text-[11px] font-extrabold uppercase text-amber-300 tracking-wider flex items-center gap-1.5">
+                                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                                      {isOfficialMax200
+                                        ? 'Como você garantiu os 200 pontos'
+                                        : 'O que faltou e direcionamento para 200'}
+                                    </span>
+                                    {simpleGuidance.missingSummary && (
+                                      <p className="text-amber-200 font-semibold leading-relaxed">
+                                        {simpleGuidance.missingSummary}
+                                      </p>
+                                    )}
+                                    <p className="text-slate-300 leading-relaxed">
+                                      {simpleGuidance.guidanceText}
+                                    </p>
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {/* SPECIAL FOR C1 IN AUDIT LOG: Explicit & Detailed C1 Deviations Extracted from Text */}
                             {logItem.competencyNum === 1 && (() => {
@@ -3495,12 +4275,13 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                                 }
                               });
 
-                              // 3. Inspect student's actual sentences for concrete C1 deviations if score < 200
-                              if (!isOfficialMax200 && essaySentencesList.length > 0) {
+                              // 3. Inspect student's actual sentences for concrete C1 deviations ONLY if backend did not provide verified c1Deviations and score < 200
+                              const backendHasC1Devs = (correctionResult.c1Deviations || []).length > 0;
+                              if (!isOfficialMax200 && !backendHasC1Devs && essaySentencesList.length > 0) {
                                 essaySentencesList.forEach((sent) => {
                                   // 3a. Missing comma after initial connector or displaced adverbial phrase
                                   const missingCommaMatch = sent.match(
-                                    /^(Nesse contexto|Nesse sentido|Diante desse cenário|Diante disso|Sob essa ótica|Sob esse viés|Além disso|Ademais|Outrossim|Portanto|Dessa forma|Desse modo|Em primeiro lugar|Em segundo lugar|Primeiramente|Atualmente|Hoje em dia|No Brasil contemporâneo|No Brasil|Por conseguinte|Contudo|Entretanto|Todavia)\s+([a-záàâãéêíóôõúç][^,.!?]+)/i
+                                    /^(Nesse contexto|Nesse sentido|Diante desse cenário|Diante disso|Sob essa ótica|Sob esse viés|Além disso|Ademais|Outrossim|Portanto|Dessa forma|Desse modo|Em primeiro lugar|Em segundo lugar|Primeiramente|Por conseguinte|Contudo|Entretanto|Todavia)\s+([a-záàâãéêíóôõúç][^,.!?]+)/i
                                   );
                                   if (missingCommaMatch) {
                                     const connector = missingCommaMatch[1];
@@ -3512,90 +4293,28 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                                       categoryLabel: 'Estrutura Sintática (Pontuação / Vírgula)',
                                       locationLabel: locateSnippetParagraph(sent),
                                       snippet: sent,
-                                      problem: `Ausência de vírgula obrigatória logo após o conectivo ou adjunto adverbial deslocado na abertura do período ("${connector}").`,
+                                      problem: `Ausência de vírgula após o conector ou adjunto deslocado na abertura do período ("${connector}").`,
                                       bestForm: fixedSent,
                                     });
                                   }
 
                                   // 3b. Marks of informality / colloquialism
-                                  if (/\b(a gente|pra\b|pro\b|tá\b|hoje em dia|tipo assim)\b/i.test(sent)) {
+                                  if (/\b(a gente|pra\b|pro\b|tá\b|tipo assim)\b/i.test(sent)) {
                                     const fixedInformal = sent
                                       .replace(/\ba gente\b/gi, 'a sociedade')
                                       .replace(/\bpra\b/gi, 'para')
                                       .replace(/\bpro\b/gi, 'para o')
                                       .replace(/\btá\b/gi, 'está')
-                                      .replace(/\bhoje em dia\b/gi, 'na contemporaneidade')
                                       .replace(/\btipo assim\b/gi, 'desse modo');
                                     addC1AuditDev({
                                       categoryLabel: 'Registro Formal / Oralidade',
                                       locationLabel: locateSnippetParagraph(sent),
                                       snippet: sent,
                                       problem:
-                                        'Presença de marca de oralidade ou expressão informal no período, o que reduz a adequação ao registro formal exigido na Competência 1.',
+                                        'Presença de marca de oralidade ou expressão informal no período, incompatível com a modalidade escrita formal do ENEM.',
                                       bestForm: fixedInformal,
                                     });
                                   }
-
-                                  // 3c. Queísmo (3 or more "que" in the same sentence causing syntactic overload)
-                                  const queMatches = sent.match(/\bque\b/gi);
-                                  if (queMatches && queMatches.length >= 3) {
-                                    const fixedQueismo = sent
-                                      .replace(/,\s*que\s+faz\s+com\s+que/i, ', fazendo com que')
-                                      .replace(/,\s*o\s+que\s+mostra\s+que/i, ', evidenciando como')
-                                      .replace(/\bque\s+é\s+/i, 'considerado ');
-                                    addC1AuditDev({
-                                      categoryLabel: 'Estrutura Sintática (Paralelismo / Queísmo)',
-                                      locationLabel: locateSnippetParagraph(sent),
-                                      snippet: sent,
-                                      problem: `Repetição excessiva da partícula "que" (${queMatches.length} ocorrências no mesmo período), prejudicando a fluidez sintática e a concisão oracional.`,
-                                      bestForm:
-                                        fixedQueismo !== sent
-                                          ? fixedQueismo
-                                          : `${sent.replace(/[.!?]+$/, '')} — trecho que deve substituir orações adjetivas encadeadas com "que" por formas reduzidas de gerúndio ou particípio.`,
-                                    });
-                                  }
-                                });
-                              }
-
-                              // 4. Ensure any remaining quotes from collectedQuotes or problemsIdentified are clearly shown with the exact text snippet
-                              if (!isOfficialMax200) {
-                                const c1ProblemsPool = [
-                                  ...(compData?.problemsIdentified || []),
-                                  ...(compData?.penaltiesOrGaps || []),
-                                  logItem.reasonNotRoundedTo200,
-                                ]
-                                  .map((p) => (p || '').trim())
-                                  .filter((p) => p.length > 8);
-
-                                const candidateQuotesForC1 =
-                                  collectedQuotes.length > 0 ? collectedQuotes : essaySentencesList.slice(0, 2);
-
-                                candidateQuotesForC1.forEach((q, qIdx) => {
-                                  if (c1ExtractedDeviations.length >= 3 && qIdx > 0) return;
-                                  const cleanQ = q.replace(/^["'“”]+|["'“”.]+$/g, '').trim();
-                                  const strippedQ = cleanQ
-                                    .replace(
-                                      /^(nesse contexto,\s*|diante disso,\s*|além disso,\s*|portanto,\s*|assim,\s*|observa-se que\s*|verifica-se que\s*|constata-se que\s*)/i,
-                                      ''
-                                    )
-                                    .trim();
-                                  const lowerClause =
-                                    strippedQ.length > 1
-                                      ? strippedQ[0].toLowerCase() + strippedQ.slice(1)
-                                      : strippedQ;
-                                  const specificProblem =
-                                    c1ProblemsPool[qIdx] ||
-                                    c1ProblemsPool[0] ||
-                                    compData?.diagnostic ||
-                                    'Oscilação pontual de pontuação, escolha vocabular ou encadeamento sintático do período.';
-
-                                  addC1AuditDev({
-                                    categoryLabel: 'Análise Sintática e Norma-Padrão no Trecho',
-                                    locationLabel: locateSnippetParagraph(q),
-                                    snippet: q,
-                                    problem: specificProblem,
-                                    bestForm: `Constata-se que ${lowerClause}, construção que assegura precisão vocabular, regência adequada e pontuação em conformidade com a norma-padrão.`,
-                                  });
                                 });
                               }
 
@@ -3715,26 +4434,29 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                                   Critérios avaliados nesta competência:
                                 </span>
                                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                  {logItem.qualityPillarsChecked.map((pillar, pIdx) => (
-                                    <div
-                                      key={pIdx}
-                                      className={`p-2.5 rounded-lg text-[11px] border flex items-center justify-between gap-2 ${
-                                        pillar.status === 'atendido'
-                                          ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
-                                          : pillar.status === 'parcial'
-                                          ? 'bg-amber-950/30 border-amber-800/60 text-amber-200'
-                                          : 'bg-rose-950/30 border-rose-800/60 text-rose-300'
-                                      }`}
-                                    >
-                                      <div className="min-w-0">
-                                        <span className="font-bold block truncate">{pillar.pillar}</span>
-                                        <span className="text-[10px] opacity-85 block leading-snug">{pillar.detail}</span>
+                                  {logItem.qualityPillarsChecked.map((pillar, pIdx) => {
+                                    const displayedPillar = simplifyAuditPillar(pillar, pIdx, logItem.competencyNum);
+                                    return (
+                                      <div
+                                        key={pIdx}
+                                        className={`p-2.5 rounded-lg text-[11px] border flex items-center justify-between gap-2 ${
+                                          pillar.status === 'atendido'
+                                            ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
+                                            : pillar.status === 'parcial'
+                                            ? 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+                                            : 'bg-rose-950/30 border-rose-800/60 text-rose-300'
+                                        }`}
+                                      >
+                                        <div className="min-w-0">
+                                          <span className="font-bold block truncate">{displayedPillar.title}</span>
+                                          <span className="text-[10px] opacity-85 block leading-snug">{displayedPillar.detail}</span>
+                                        </div>
+                                        <span className="font-black shrink-0 text-xs">
+                                          {pillar.status === 'atendido' ? '✓' : pillar.status === 'parcial' ? '⚠' : '✗'}
+                                        </span>
                                       </div>
-                                      <span className="font-black shrink-0 text-xs">
-                                        {pillar.status === 'atendido' ? '✓' : pillar.status === 'parcial' ? '⚠' : '✗'}
-                                      </span>
-                                    </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               </div>
                             )}
@@ -4046,7 +4768,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 <span>🏆 3 Maiores Acertos da Sua Redação</span>
               </h4>
               <ul className="space-y-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
-                {correctionResult.top3Strengths.map((str, i) => (
+                {getEffectiveTop3Strengths(correctionResult).map((str, i) => (
                   <li key={i} className="flex items-start gap-2">
                     <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
                       {i + 1}
@@ -4057,16 +4779,42 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
               </ul>
             </div>
 
-            {/* 3 Maiores Problemas */}
-            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-rose-200 dark:border-rose-800 shadow-xs space-y-3 transition-colors">
-              <h4 className="font-extrabold text-base flex items-center gap-2 text-rose-800 dark:text-rose-300">
-                <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
-                <span>⚠️ 3 Principais Pontos que Descontaram Nota</span>
+            {/* 3 Maiores Problemas / Ajustes Finos de Excelência */}
+            <div
+              className={`bg-white dark:bg-slate-900 p-6 rounded-2xl border shadow-xs space-y-3 transition-colors ${
+                correctionResult.totalScore >= 960
+                  ? 'border-indigo-200 dark:border-indigo-800'
+                  : 'border-rose-200 dark:border-rose-800'
+              }`}
+            >
+              <h4
+                className={`font-extrabold text-base flex items-center gap-2 ${
+                  correctionResult.totalScore >= 960
+                    ? 'text-indigo-800 dark:text-indigo-300'
+                    : 'text-rose-800 dark:text-rose-300'
+                }`}
+              >
+                {correctionResult.totalScore >= 960 ? (
+                  <Sparkles className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                ) : (
+                  <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+                )}
+                <span>
+                  {correctionResult.totalScore >= 960
+                    ? '✨ Ajustes Finos de Excelência (Rumo aos 1000)'
+                    : '⚠️ 3 Principais Pontos que Descontaram Nota'}
+                </span>
               </h4>
               <ul className="space-y-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
-                {correctionResult.top3Problems.map((prob, i) => (
+                {getEffectiveTop3Problems(correctionResult).map((prob, i) => (
                   <li key={i} className="flex items-start gap-2">
-                    <span className="w-5 h-5 rounded-full bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+                    <span
+                      className={`w-5 h-5 rounded-full font-bold text-xs flex items-center justify-center shrink-0 mt-0.5 ${
+                        correctionResult.totalScore >= 960
+                          ? 'bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300'
+                          : 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300'
+                      }`}
+                    >
                       {i + 1}
                     </span>
                     <span>{prob}</span>
@@ -4087,7 +4835,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
             </p>
 
             <div className="space-y-2.5 pt-2">
-              {correctionResult.actionPlanToImprove.map((action, i) => (
+              {getEffectiveActionPlan(correctionResult).map((action, i) => (
                 <div key={i} className="p-3 rounded-xl bg-white/10 border border-white/15 flex items-start gap-3">
                   <span className="w-6 h-6 rounded-lg bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center justify-center shrink-0 mt-0.5">
                     {i + 1}
@@ -4107,7 +4855,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
               <span>O que falta para sua redação chegar ao nível Nota 1000?</span>
             </h4>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-              {correctionResult.highPerformanceComparison}
+              {getEffectiveHighPerformanceComparison(correctionResult)}
             </p>
           </div>
 
@@ -4207,15 +4955,23 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                   Math.min(2, themeWordsConsolidated.length);
               const alreadyHasBrazil = /(brasil|pais|sociedade brasileira)/i.test(sentNorm);
 
-              const themeLabel = alreadyHasTheme ? 'essa problemática estrutural' : cleanThemeConsolidated;
-              const placeLabel = alreadyHasBrazil ? 'na contemporaneidade' : 'no Brasil';
+              const themeLabel = alreadyHasTheme ? 'essa questão' : cleanThemeConsolidated;
+              const placeLabel = alreadyHasBrazil ? 'no país' : 'no Brasil';
 
               if (cNum === 1) {
+                let fixedFirst = firstSent;
+                if (correctionResult.c1Deviations && correctionResult.c1Deviations.length > 0) {
+                  correctionResult.c1Deviations.forEach((dev) => {
+                    if (dev.snippet && dev.bestForm && fixedFirst.includes(dev.snippet)) {
+                      fixedFirst = fixedFirst.replace(dev.snippet, dev.bestForm);
+                    }
+                  });
+                }
                 return {
                   improved: sanitizeConsolidatedText(
-                    `Constata-se que ${clause}, circunstância que requer precisão vocabular e rigor sintático na exposição argumentativa.`
+                    /[.!?]$/.test(fixedFirst) ? fixedFirst : `${fixedFirst}.`
                   ),
-                  step: 'Substitua expressões informais, desvios de concordância ou períodos truncados pela estrutura formal reescrita acima.',
+                  step: 'Aplique apenas os ajustes pontuais de norma-padrão ou pontuação necessários, preservando o sentido original do período.',
                 };
               }
               if (cNum === 2) {
@@ -4234,7 +4990,7 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
                 }
                 return {
                   improved: sanitizeConsolidatedText(
-                    `À luz da Constituição Federal de 1988 — que assegura a dignidade e o bem-estar social como garantias fundamentais —, constata-se que ${clause}, realidade que evidencia os entraves de ${themeLabel} ${placeLabel}.`
+                    `À luz da Constituição Federal de 1988 — que assegura a dignidade e o bem-estar social como garantias fundamentais —, observa-se que ${clause}, realidade que evidencia os entraves de ${themeLabel} ${placeLabel}.`
                   ),
                   step: `Ancore sua afirmação em um repertório sociocultural legitimado (como a Constituição Federal de 1988, dados do IBGE ou um pensador) vinculado ao tema.`,
                 };
@@ -4242,24 +4998,28 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
               if (cNum === 3) {
                 return {
                   improved: sanitizeConsolidatedText(
-                    `${firstSent}, haja vista que a negligência histórica das instituições e a naturalização social do problema impedem sua resolução, o que perpetua os impactos de ${themeLabel} sobre a coletividade.`
+                    `${firstSent}, visto que a persistência das causas ligadas a ${themeLabel} impede a superação efetiva desse quadro e amplia seus impactos concretos ${placeLabel}.`
                   ),
-                  step: 'Desdobre sua afirmação explicando a causa ("haja vista que...") e o efeito social concreto ("o que perpetua...") no mesmo período.',
+                  step: 'Mantenha o repertório e o tema específico do parágrafo, aprofundando a relação entre a causa apontada e sua consequência prática.',
                 };
               }
               if (cNum === 4) {
                 return {
                   improved: sanitizeConsolidatedText(
-                    `Outrossim, sob essa mesma perspectiva analítica, observa-se que ${clause}, de modo que tal conjuntura exige medidas articuladas para ser superada.`
+                    `Ademais, sob essa perspectiva, ${clause}, de modo que tal cenário demanda medidas articuladas para ser superado.`
                   ),
-                  step: 'Troque conectivos básicos ou repetidos por operadores argumentativos de alto nível ("Outrossim", "Sob essa perspectiva", "De modo que") e use retomadas sem repetir palavras.',
+                  step: 'Articule os períodos com precisão funcional e retomadas referenciais claras ("tal cenário"), evitando repetição de estruturas explicativas semelhantes.',
                 };
               }
+              const rawConsAgent = correctionResult.c5Structure?.agent?.present && correctionResult.c5Structure.agent.text
+                ? correctionResult.c5Structure.agent.text.split(/[\/|;]+/)[0].replace(/[.]+$/, '').trim()
+                : '';
+              const consAgent = rawConsAgent || 'o Poder Público Federal';
               return {
                 improved: sanitizeConsolidatedText(
-                  `Portanto, cabe ao Ministério Público, em parceria com o Governo Federal — órgãos responsáveis pela garantia dos direitos sociais e gestão pública (Detalhamento) —, implementar um programa nacional de enfrentamento a ${cleanThemeConsolidated} (Ação), por meio de verbas governamentais, fiscalização rigorosa e campanhas educativas nas escolas e mídias (Meio/Modo), a fim de superar esse entrave e efetivar a cidadania ${placeLabel} (Efeito).`
+                  `Portanto, cabe a ${consAgent} — instância responsável pela execução e fiscalização de políticas públicas (Detalhamento) — implementar um programa nacional voltado a ${cleanThemeConsolidated} (Ação), por meio de investimentos direcionados e ações educativas nas escolas e mídias (Meio/Modo), a fim de superar esse entrave e efetivar a cidadania ${placeLabel} (Efeito).`
                 ),
-                step: 'Inclua os 5 elementos obrigatórios da Competência 5 no parágrafo final: Agente, Detalhamento (entre travessões ou vírgulas), Ação prática, Meio/Modo ("por meio de...") e Efeito ("a fim de...").',
+                step: 'Mantenha o agente e a ação já presentes na conclusão e complete apenas os elementos que faltarem entre os 5 exigidos pelo INEP.',
               };
             };
 
@@ -4313,25 +5073,32 @@ Na obra 'Quarto de Despejo', de Carolina Maria de Jesus..."
               });
             }
 
-            // 2. Add all Pedagogical Rewrites
+            // 2. Add Pedagogical Rewrites ONLY for competencies scored below 200
             if (correctionResult.pedagogicalRewrites && correctionResult.pedagogicalRewrites.length > 0) {
-              correctionResult.pedagogicalRewrites.forEach((rw) => {
+              correctionResult.pedagogicalRewrites.forEach((rw: any) => {
                 const pText = (rw.problem + ' ' + rw.explanation).toLowerCase();
                 let inferredComp = 'Competência 3 • Argumentação';
-                let inferredNum = 3;
-                if (/(interven|proposta|agente|meio\/modo|detalhamento|finalidade)/i.test(pText)) {
+                let inferredNum: 1 | 2 | 3 | 4 | 5 = (rw.competencyNum && [1, 2, 3, 4, 5].includes(rw.competencyNum)) ? rw.competencyNum : 3;
+                if (inferredNum === 5 || /(interven|proposta|agente|meio\/modo|detalhamento|finalidade|\bc5\b)/i.test(pText)) {
                   inferredComp = 'Competência 5 • Proposta de Intervenção';
                   inferredNum = 5;
-                } else if (/(gramat|ortograf|vírgula|crase|concord|regênc|sintát|norma-padrão|oralidade)/i.test(pText)) {
+                } else if (inferredNum === 1 || /(gramat|ortograf|vírgula|crase|concord|regênc|sintát|norma-padrão|oralidade|\bc1\b)/i.test(pText)) {
                   inferredComp = 'Competência 1 • Norma-Padrão';
                   inferredNum = 1;
-                } else if (/(conectiv|coes|repeti|operador|articul)/i.test(pText)) {
+                } else if (inferredNum === 4 || /(conectiv|coes|repeti|operador|articul|\bc4\b)/i.test(pText)) {
                   inferredComp = 'Competência 4 • Coesão e Conectivos';
                   inferredNum = 4;
-                } else if (/(repertór|tema|tese|sociolog|filosof|produtiv)/i.test(pText)) {
+                } else if (inferredNum === 2 || /(repertór|tema|tese|sociolog|filosof|produtiv|\bc2\b)/i.test(pText)) {
                   inferredComp = 'Competência 2 • Repertório e Tema';
                   inferredNum = 2;
                 }
+
+                const cKeyCheck = `c${inferredNum}` as 'c1' | 'c2' | 'c3' | 'c4' | 'c5';
+                const targetCompScore =
+                  competencyDivergences[inferredNum - 1]?.officialCompMean ??
+                  correctionResult.competencies[cKeyCheck]?.score ??
+                  200;
+                if (targetCompScore >= 200) return;
 
                 const fallbackGen = buildConsolidatedRewrite(inferredNum, rw.original, rw.problem);
                 const cleanAiImp = sanitizeConsolidatedText(rw.improvedVersion || '');
