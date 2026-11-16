@@ -561,7 +561,7 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
       {/* Top Header Card with Chat Sessions & Clear Controls */}
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="p-2 bg-indigo-50 dark:bg-indigo-950/80 rounded-2xl border border-indigo-100 dark:border-indigo-900 shrink-0">
+          <div className="flex items-center justify-center shrink-0">
             <EnemasterMascot size="md" variant="avatar" mood="scholar" />
           </div>
           <div>
@@ -935,10 +935,10 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
               >
                 {/* Avatar */}
                 <div
-                  className={`w-9 h-9 rounded-2xl flex items-center justify-center text-xs font-bold shrink-0 shadow-xs ${
+                  className={`w-9 h-9 rounded-2xl flex items-center justify-center text-xs font-bold shrink-0 ${
                     isUser
-                      ? 'bg-slate-900 dark:bg-indigo-600 text-white'
-                      : 'bg-indigo-700 text-white p-0.5'
+                      ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
+                      : ''
                   }`}
                 >
                   {isUser ? <User className="w-4 h-4" /> : <EnemasterMascot size="sm" variant="avatar" mood="scholar" />}
@@ -1081,7 +1081,7 @@ export const ProfessorChatView: React.FC<ProfessorChatViewProps> = ({
           {/* Loading Indicator */}
           {isLoading && (
             <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <div className="w-9 h-9 flex items-center justify-center shrink-0">
                 <EnemasterMascot size="sm" variant="avatar" mood="thinking" />
               </div>
               <div className="p-4 rounded-3xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300 flex items-center gap-2.5 shadow-2xs">

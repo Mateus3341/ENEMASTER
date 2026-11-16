@@ -124,10 +124,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Modal Header */}
         <div className="flex items-center gap-3 mb-6">
-          <div className="p-2 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200/80 dark:border-indigo-800/80 shadow-2xs">
-            <EnemasterLogoIcon size={34} />
+          <div className="flex items-center justify-center shrink-0 w-11 h-11">
+            <EnemasterLogoIcon className="w-full h-full" />
           </div>
-          <div>
+          <div className="flex flex-col justify-center">
             <div className="flex items-center leading-none tracking-tight">
               <span className="font-black text-slate-950 dark:text-white text-xl">ENE</span>
               <span className="font-black text-transparent bg-clip-text bg-[linear-gradient(90deg,#020617_0%,#020617_50%,#4f46e5_50%,#6366f1_100%)] dark:bg-[linear-gradient(90deg,#ffffff_0%,#ffffff_50%,#22d3ee_50%,#67e8f9_100%)] text-xl">M</span>

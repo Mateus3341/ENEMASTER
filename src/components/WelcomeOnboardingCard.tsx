@@ -111,7 +111,7 @@ export const WelcomeOnboardingCard: React.FC<WelcomeOnboardingCardProps> = ({
 
         {/* Right CTA Mascot Box */}
         <div className="w-full lg:w-80 bg-white/10 backdrop-blur-md rounded-3xl p-5 border border-white/20 flex flex-col items-center text-center shrink-0 space-y-4">
-          <div className="p-2 rounded-2xl bg-white/10 shadow-inner">
+          <div className="flex items-center justify-center">
             <EnemasterMascot size="lg" variant="hero" mood="scholar" />
           </div>
 

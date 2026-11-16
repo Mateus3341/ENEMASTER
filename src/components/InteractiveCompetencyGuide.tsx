@@ -963,7 +963,7 @@ export const InteractiveCompetencyGuide: React.FC<InteractiveCompetencyGuideProp
 
             {/* Mascot Avatar & Speech Bubble */}
             <div className="flex items-center gap-4 pt-1">
-              <div className="p-2 rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 shadow-inner shrink-0">
+              <div className="flex items-center justify-center shrink-0">
                 <EnemasterMascot size="lg" mood={activeLevel.mascotMood} />
               </div>
               <div>

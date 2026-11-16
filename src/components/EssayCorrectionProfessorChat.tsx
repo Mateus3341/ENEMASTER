@@ -19,6 +19,26 @@ import {
 import { RichChatMarkdown, normalizeChatMarkdown, hasChatTable } from './RichChatMarkdown';
 import { EssayCorrectionResult, ProfessorMessage } from '../types';
 
+export const MESTRE_CORVUS_SRC = '/assets/aistudio/Gemini_Generated_Image_e93iaye93iaye93i_d756079d.png';
+
+const MestreCorvusMascot: React.FC<{ size?: 'sm' | 'md'; className?: string }> = ({
+  size = 'md',
+  className = ''
+}) => {
+  const sizeClasses = size === 'sm' ? 'w-9 h-9' : 'w-12 h-12';
+  return (
+    <div className={`${sizeClasses} relative inline-flex items-center justify-center select-none shrink-0 transition-transform duration-300 hover:scale-105 ${className}`}>
+      <img
+        src={MESTRE_CORVUS_SRC}
+        alt="Mestre Corvus"
+        className="w-full h-full object-contain object-center select-none pointer-events-none block drop-shadow-sm"
+        loading="eager"
+        decoding="async"
+      />
+    </div>
+  );
+};
+
 interface EssayCorrectionProfessorChatProps {
   correctionResult: EssayCorrectionResult;
   onNavigateToFullChat?: () => void;
@@ -32,7 +52,7 @@ export const EssayCorrectionProfessorChat: React.FC<EssayCorrectionProfessorChat
     {
       id: `welcome-${Date.now()}`,
       role: 'assistant',
-      content: `### Olá! Sou o Professor AI de Redação do ENEM! 🎓\n\nEstou com a sua redação **"${correctionResult.theme}"** em mãos, junto à avaliação oficial da banca (Nota: **${correctionResult.totalScore}/1000**).\n\nEstou focado **exclusivamente no seu texto** e nos seus 4 parágrafos. Posso:\n- ✍️ **Reescrever parágrafos inteiros** no padrão Nota 1000 preservando suas ideias\n- 🎯 **Ajustar sua proposta de intervenção (C5)** garantindo todos os 5 elementos válidos\n- 💡 **Sugerir repertórios legitimados (C2)** e conectivos estratégicos (C4)\n- 🔍 **Explicar cada desconto de nota** e como eliminá-lo nos próximos treinos\n\nEscolha uma das **Melhorias Diretas** abaixo ou digite sua dúvida específica:`,
+      content: `### Olá! Sou o Mestre Corvus, seu Professor AI de Redação do ENEM! 🎓\n\nEstou com a sua redação **"${correctionResult.theme}"** em mãos, junto à avaliação oficial da banca (Nota: **${correctionResult.totalScore}/1000**).\n\nEstou focado **exclusivamente no seu texto** e nos seus 4 parágrafos. Posso:\n- ✍️ **Reescrever parágrafos inteiros** no padrão Nota 1000 preservando suas ideias\n- 🎯 **Ajustar sua proposta de intervenção (C5)** garantindo todos os 5 elementos válidos\n- 💡 **Sugerir repertórios legitimados (C2)** e conectivos estratégicos (C4)\n- 🔍 **Explicar cada desconto de nota** e como eliminá-lo nos próximos treinos\n\nEscolha uma das **Melhorias Diretas** abaixo ou digite sua dúvida específica:`,
       timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
       suggestedFollowUps: [
         'Como reescrever a introdução para deixar a tese mais explícita?',
@@ -116,6 +136,7 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
         body: JSON.stringify({
           message: messageText,
           persona,
+          assistantIdentity: 'corvus',
           history: historyPayload,
           enableSearch: false,
           modelMode: 'pro',
@@ -169,7 +190,7 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
       {
         id: `welcome-${Date.now()}`,
         role: 'assistant',
-        content: `### Conversa Reiniciada! 🦉\n\nEstou com os dados completos da sua redação sobre **"${correctionResult.theme}"** prontos. O que você deseja aprimorar no texto agora?`,
+        content: `### Conversa Reiniciada! 🎓\n\nSou o **Mestre Corvus** e estou com os dados completos da sua redação sobre **"${correctionResult.theme}"** prontos. O que você deseja aprimorar no texto agora?`,
         timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         suggestedFollowUps: [
           'Reescreva meu D1 com argumento de autoridade',
@@ -208,13 +229,13 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
       {/* Header with Essay Scoped Context */}
       <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-slate-900 text-white p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-500/30 border border-indigo-400/40 flex items-center justify-center shrink-0 shadow-inner">
-            <GraduationCap className="w-6 h-6 text-amber-300" />
+          <div className="w-12 h-12 flex items-center justify-center shrink-0">
+            <MestreCorvusMascot size="md" />
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-extrabold text-base sm:text-lg tracking-tight text-white flex items-center gap-1.5">
-                <span>Professor AI • Mentor da Sua Redação</span>
+                <span>Mestre Corvus • Professor AI da Sua Redação</span>
               </h3>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                 Contexto Carregado
@@ -333,8 +354,8 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
               className={`flex gap-3 ${isAssistant ? 'justify-start' : 'justify-end'}`}
             >
               {isAssistant && (
-                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 mt-1 shadow-xs">
-                  <GraduationCap className="w-4 h-4" />
+                <div className="w-9 h-9 flex items-center justify-center shrink-0 mt-0.5">
+                  <MestreCorvusMascot size="sm" />
                 </div>
               )}
 
@@ -412,14 +433,14 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
 
         {isLoading && (
           <div className="flex gap-3 justify-start items-center">
-            <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <GraduationCap className="w-4 h-4 animate-bounce" />
+            <div className="w-9 h-9 flex items-center justify-center shrink-0 animate-bounce">
+              <MestreCorvusMascot size="sm" />
             </div>
             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-tl-xs flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
               <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
               <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse [animation-delay:0.2s]" />
               <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse [animation-delay:0.4s]" />
-              <span className="ml-1 font-medium">Professor analisando trechos da sua redação...</span>
+              <span className="ml-1 font-medium">Mestre Corvus analisando trechos da sua redação...</span>
             </div>
           </div>
         )}

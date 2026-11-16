@@ -135,10 +135,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest, sta
       {/* Top Header Bar */}
       <header className="max-w-6xl w-full mx-auto flex items-center justify-between py-2 relative z-10">
         <div className="flex items-center gap-3">
-          <div className="p-1.5 rounded-2xl bg-white/10 border border-white/20 shadow-xs">
-            <EnemasterLogoIcon size={36} />
+          <div className="flex items-center justify-center shrink-0 w-11 h-11 sm:w-13 sm:h-13">
+            <EnemasterLogoIcon className="w-full h-full" />
           </div>
-          <div className="flex flex-col">
+          <div className="flex flex-col justify-center">
             <div className="flex items-center gap-2 leading-none">
               <span className="inline-flex items-center text-2xl sm:text-3xl font-black tracking-tight">
                 <span className="text-white">ENE</span>
@@ -170,9 +170,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest, sta
           {/* Left Column: Value Proposition, Mascot & Badges */}
           <div className="lg:col-span-6 flex flex-col items-center lg:items-start text-center lg:text-left space-y-6">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 shadow-xl relative group">
-                <EnemasterMascot size="md" variant="hero" mood="scholar" />
-              </div>
+              <EnemasterMascot size="md" variant="hero" mood="scholar" />
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-400/30 text-xs font-bold">
                 <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
                 <span>Mestre Corujito • IA Especialista</span>

@@ -33,6 +33,8 @@ interface EnemasterMascotProps {
   onClick?: () => void;
 }
 
+export const MESTRE_CORUJITO_SRC = '/assets/aistudio/Gemini_Generated_Image_oq7imhoq7imhoq7i_819d01bf.png';
+
 export const EnemasterMascot: React.FC<EnemasterMascotProps> = ({
   variant = 'hero',
   mood = 'happy',
@@ -51,124 +53,21 @@ export const EnemasterMascot: React.FC<EnemasterMascotProps> = ({
   };
 
   return (
-    <div className={`relative inline-flex items-center justify-center select-none ${className}`} onClick={onClick}>
-      {/* Mascot SVG */}
-      <div className={`${sizeClasses[size]} relative transition-transform duration-300 hover:scale-105`}>
-        <svg 
-          viewBox="0 0 120 120" 
-          fill="none" 
-          xmlns="http://www.w3.org/2000/svg"
-          className="w-full h-full drop-shadow-md"
-        >
-          {/* Defs for gradients & filters */}
-          <defs>
-            <linearGradient id="bodyGrad" x1="60" y1="25" x2="60" y2="105" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#4338CA" />
-              <stop offset="0.5" stopColor="#6366F1" />
-              <stop offset="1" stopColor="#3730A3" />
-            </linearGradient>
-
-            <linearGradient id="bellyGrad" x1="60" y1="55" x2="60" y2="98" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#FEF08A" />
-              <stop offset="1" stopColor="#FDE047" />
-            </linearGradient>
-
-            <linearGradient id="capGrad" x1="60" y1="10" x2="60" y2="35" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#1E1B4B" />
-              <stop offset="1" stopColor="#0F172A" />
-            </linearGradient>
-
-            <linearGradient id="goldGrad" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#FBBF24" />
-              <stop offset="1" stopColor="#D97706" />
-            </linearGradient>
-
-            <linearGradient id="wingGrad" x1="0" y1="0" x2="30" y2="50" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#3730A3" />
-              <stop offset="1" stopColor="#312E81" />
-            </linearGradient>
-          </defs>
-
-          {/* Ears / Tuft Feathers */}
-          <path d="M36 40 L24 22 C28 32 34 38 38 42 Z" fill="#3730A3" />
-          <path d="M84 40 L96 22 C92 32 86 38 82 42 Z" fill="#3730A3" />
-
-          {/* Body */}
-          <ellipse cx="60" cy="68" rx="38" ry="36" fill="url(#bodyGrad)" />
-
-          {/* Wings */}
-          <path d="M22 60 C18 72 24 88 32 92 C28 84 26 72 26 62 Z" fill="url(#wingGrad)" />
-          <path d="M98 60 C102 72 96 88 88 92 C92 84 94 72 94 62 Z" fill="url(#wingGrad)" />
-
-          {/* Belly */}
-          <ellipse cx="60" cy="74" rx="24" ry="22" fill="url(#bellyGrad)" />
-          
-          {/* Feather markings on belly */}
-          <path d="M52 68 Q60 72 68 68" stroke="#CA8A04" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-          <path d="M48 76 Q60 81 72 76" stroke="#CA8A04" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-          <path d="M54 84 Q60 88 66 84" stroke="#CA8A04" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-
-          {/* Big Owl Eye Patches */}
-          <circle cx="45" cy="54" r="16" fill="#FFFFFF" />
-          <circle cx="75" cy="54" r="16" fill="#FFFFFF" />
-
-          {/* Eye Outline / Golden Scholarly Glasses */}
-          <circle cx="45" cy="54" r="15" stroke="url(#goldGrad)" strokeWidth="3" fill="none" />
-          <circle cx="75" cy="54" r="15" stroke="url(#goldGrad)" strokeWidth="3" fill="none" />
-          <path d="M60 54 L60 52" stroke="url(#goldGrad)" strokeWidth="3" strokeLinecap="round" />
-          <path d="M58 53 Q60 50 62 53" stroke="url(#goldGrad)" strokeWidth="3" strokeLinecap="round" fill="none" />
-
-          {/* Irises & Pupils */}
-          <circle cx="46" cy="54" r="9" fill="#0F172A" />
-          <circle cx="74" cy="54" r="9" fill="#0F172A" />
-
-          {/* Eye Sparkles */}
-          <circle cx="43" cy="51" r="3.5" fill="#FFFFFF" />
-          <circle cx="48" cy="57" r="1.5" fill="#FFFFFF" />
-          <circle cx="71" cy="51" r="3.5" fill="#FFFFFF" />
-          <circle cx="76" cy="57" r="1.5" fill="#FFFFFF" />
-
-          {/* Beak */}
-          <polygon points="60,60 54,67 66,67" fill="url(#goldGrad)" />
-          <polygon points="60,72 55,67 65,67" fill="#D97706" />
-
-          {/* Cute Rosy Cheeks */}
-          <ellipse cx="32" cy="62" rx="4" ry="2.5" fill="#F43F5E" opacity="0.35" />
-          <ellipse cx="88" cy="62" rx="4" ry="2.5" fill="#F43F5E" opacity="0.35" />
-
-          {/* Graduation Cap (Capelo) */}
-          <g>
-            {/* Cap Base */}
-            <path d="M48 26 C48 24 72 24 72 26 L70 32 C70 34 50 34 50 32 Z" fill="#1E1B4B" />
-            {/* Diamond Board */}
-            <polygon points="60,10 94,22 60,32 26,22" fill="url(#capGrad)" stroke="#312E81" strokeWidth="1" />
-            <polygon points="60,11 91,22 60,30 29,22" fill="#1E1B4B" />
-            {/* Button */}
-            <circle cx="60" cy="21" r="2.5" fill="url(#goldGrad)" />
-            {/* Golden Tassel / Cord */}
-            <path d="M60 21 Q76 22 80 32 Q82 38 84 44" stroke="#FBBF24" strokeWidth="2" fill="none" strokeLinecap="round" />
-            <polygon points="84,43 81,49 87,49" fill="#F59E0B" />
-          </g>
-
-          {/* Golden Feather Quill on Wing (Mascot holding a quill) */}
-          <g transform="translate(80, 52) rotate(15)">
-            <path d="M4 0 C12 -6 20 -2 22 14 C16 12 12 10 6 8 L0 26 L2 6 Z" fill="url(#goldGrad)" opacity="0.95" />
-            <path d="M6 0 L0 26" stroke="#B45309" strokeWidth="1" />
-          </g>
-
-          {/* Feet / Paws */}
-          <ellipse cx="48" cy="103" rx="6" ry="3.5" fill="#D97706" />
-          <ellipse cx="72" cy="103" rx="6" ry="3.5" fill="#D97706" />
-          <circle cx="44" cy="104" r="2.5" fill="#F59E0B" />
-          <circle cx="52" cy="104" r="2.5" fill="#F59E0B" />
-          <circle cx="68" cy="104" r="2.5" fill="#F59E0B" />
-          <circle cx="76" cy="104" r="2.5" fill="#F59E0B" />
-        </svg>
+    <div className={`relative inline-flex items-center justify-center select-none shrink-0 ${className}`} onClick={onClick}>
+      {/* Mascot Image (Transparent Centered PNG) */}
+      <div className={`${sizeClasses[size]} relative flex items-center justify-center transition-transform duration-300 hover:scale-105`}>
+        <img
+          src={MESTRE_CORUJITO_SRC}
+          alt="Mestre Corujito"
+          className="w-full h-full object-contain object-center select-none pointer-events-none block drop-shadow-sm"
+          loading="eager"
+          decoding="async"
+        />
 
         {/* Small floating sparkles badge */}
         {mood === 'celebrating' && (
-          <div className="absolute -top-2 -right-2 w-6 h-6 bg-amber-400 text-amber-950 rounded-full flex items-center justify-center shadow-sm animate-bounce">
-            <Sparkles className="w-3.5 h-3.5 fill-amber-300" />
+          <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-amber-400 text-amber-950 rounded-full flex items-center justify-center shadow-sm animate-bounce">
+            <Sparkles className="w-3 h-3 fill-amber-300" />
           </div>
         )}
       </div>
@@ -179,7 +78,7 @@ export const EnemasterMascot: React.FC<EnemasterMascotProps> = ({
           <div className="absolute top-1/2 -left-2 transform -translate-y-1/2 w-0 h-0 border-t-6 border-t-transparent border-b-6 border-b-transparent border-r-8 border-r-white"></div>
           <div className="flex items-center gap-1.5 text-indigo-600 font-extrabold text-[11px] uppercase tracking-wider mb-0.5">
             <Sparkles className="w-3 h-3 text-amber-500" />
-            <span>Mestre Enemaster</span>
+            <span>Mestre Corujito</span>
           </div>
           <p className="text-xs sm:text-sm font-semibold text-slate-800 leading-snug">
             {customMessage || "Rumo à Redação Nota 1000! Treine hoje e domine as 5 competências do INEP."}

@@ -209,7 +209,7 @@ export const GlossaryView: React.FC<GlossaryViewProps> = ({
       {/* Top Banner with Mascot & Quick Stats */}
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-6 transition-colors">
         <div className="flex items-start sm:items-center gap-4">
-          <div className="p-3 bg-indigo-50 dark:bg-indigo-950/80 rounded-2xl border border-indigo-100 dark:border-indigo-900 shrink-0">
+          <div className="flex items-center justify-center shrink-0">
             <EnemasterMascot size="lg" variant="avatar" mood="scholar" />
           </div>
 

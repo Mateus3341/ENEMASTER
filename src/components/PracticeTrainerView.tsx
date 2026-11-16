@@ -760,7 +760,7 @@ export const PracticeTrainerView: React.FC = () => {
                 <div className="p-5 sm:p-6 rounded-2xl bg-emerald-50/90 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/80 space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                     <div className="flex items-center gap-3 shrink-0">
-                      <div className="p-1.5 rounded-2xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 shadow-2xs">
+                      <div className="flex items-center justify-center shrink-0">
                         <EnemasterMascot size="md" variant="avatar" mood="celebrating" />
                       </div>
                       <div className="sm:hidden">
@@ -808,7 +808,7 @@ export const PracticeTrainerView: React.FC = () => {
                   {/* Mascot Mentor Header */}
                   <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                     <div className="flex items-center gap-3 shrink-0">
-                      <div className="p-1.5 rounded-2xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 shadow-2xs">
+                      <div className="flex items-center justify-center shrink-0">
                         <EnemasterMascot size="md" variant="avatar" mood="scholar" />
                       </div>
                       <div className="sm:hidden">

@@ -4,9 +4,10 @@
   "description": "Plataforma completa de correção criteriosa, gerador de temas INEP, ensino das 5 competências e redações Nota 1000.",
   "icons": [
     {
-      "src": "/app-favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
+      "src": "/assets/aistudio/Gemini_Generated_Image_xpiiawxpiiawxpii_7fe8fdf9.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ],
   "start_url": "/",

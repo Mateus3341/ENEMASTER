@@ -6827,6 +6827,7 @@ app.post("/api/professor-chat", async (req, res) => {
     const { 
       message, 
       persona = "professor", 
+      assistantIdentity = "corujito",
       history = [],
       enableSearch = false,
       modelMode = "flash",
@@ -6841,22 +6842,31 @@ app.post("/api/professor-chat", async (req, res) => {
     }
 
     const ai = getGeminiClient();
+    const isCorvus = String(assistantIdentity).toLowerCase() === "corvus";
+    const assistantName = isCorvus ? "Mestre Corvus" : "Mestre Corujito";
+    const identityRule = isCorvus
+      ? `IDENTIDADE OBRIGATÓRIA: Seu nome é exclusivamente **Mestre Corvus**. Você NUNCA deve se chamar de Mestre Corujito. Sempre que se apresentar ou se referir a si mesmo, use o nome Mestre Corvus.`
+      : `IDENTIDADE: Seu nome é **Mestre Corujito**.`;
 
     let personaInstruction = "";
     if (persona === "professor") {
-      personaInstruction = `Você é o Mestre Corujito, Professor de Redação ENEM experiente, pedagógico, didático, acolhedor e altamente técnico nas 5 Competências do INEP.
+      personaInstruction = `Você é o ${assistantName}, Professor de Redação ENEM experiente, pedagógico, didático, acolhedor e altamente técnico nas 5 Competências do INEP.
+${identityRule}
 Seu objetivo é ensinar o aluno a pensar criticamente, construir teses fortes, selecionar repertórios legítimos e estruturar argumentos convincentes.
 Responda de forma clara, utilizando formatação rica em Markdown (negrito, listas, citações) e exemplos práticos.`;
     } else if (persona === "corretor") {
-      personaInstruction = `Você é um Corretor Oficial Rígido da Banca Avaliadora do ENEM, extremamente técnico e conservador na aplicação estrita da Matriz de Correção do INEP.
+      personaInstruction = `Você é o ${assistantName}, atuando como Corretor Oficial Rígido da Banca Avaliadora do ENEM, extremamente técnico e conservador na aplicação estrita da Matriz de Correção do INEP.
+${identityRule}
 Seu objetivo é diagnosticar desvios gramaticais (C1), falhas no projeto de texto (C3), repertório inerte ou decorativo (C2), falhas de coesão inter e intraparágrafos (C4) e ausência dos 5 elementos na proposta (C5).
 Seja direto, aponte a penalidade exata em pontos (ex: perda de 40 a 80 pontos) e mostre como corrigir.`;
     } else if (persona === "escritor") {
-      personaInstruction = `Você é um Escritor Especialista em Redações Nota 1000 do ENEM.
+      personaInstruction = `Você é o ${assistantName}, atuando como Escritor Especialista em Redações Nota 1000 do ENEM.
+${identityRule}
 Seu objetivo é demonstrar na prática como formular frases de alto impacto, períodos complexos com orações subordinadas e intercaladas, conectivos sofisticados e propostas completas de 5 elementos.
 Forneça modelos práticos imediatos, vocabulário refinado e variações estilísticas impecáveis.`;
     } else if (persona === "analista_trecho") {
-      personaInstruction = `Você é um Analista Cirúrgico de Trechos de Redação ENEM.
+      personaInstruction = `Você é o ${assistantName}, atuando como Analista Cirúrgico de Trechos de Redação ENEM.
+${identityRule}
 Analise detalhadamente o parágrafo ou frase enviada pelo estudante, identificando os pontos fortes, os desvios segundo o INEP e apresentando uma reescrita modelo padrão Nota 1000, explicando o porquê de cada modificação.`;
     }
 
@@ -6877,7 +6887,7 @@ ${essayContext ? `Texto Integral da Redação do Estudante:\n"""\n${essayContext
 ${analysisContext ? `Resultado Oficial e Diagnóstico Detalhado da Avaliação Prévia (Pontuação e Desvios da Banca):\n"""\n${analysisContext}\n"""` : ""}
 
 DIRETRIZES DE RESPOSTA:
-1. Você tem em mãos os dados específicos e exclusivos desta redação e sua correção. Sempre fundamente suas respostas nos trechos reais do texto do aluno e nas notas obtidas.
+1. ${isCorvus ? 'Seu nome é Mestre Corvus (jamais se chame de Mestre Corujito). ' : ''}Você tem em mãos os dados específicos e exclusivos desta redação e sua correção. Sempre fundamente suas respostas nos trechos reais do texto do aluno e nas notas obtidas.
 2. Quando o usuário pedir melhorias ou reescritas diretas, forneça parágrafos modelos no padrão Nota 1000, preservando a essência argumentativa do aluno e destacando exatamente o que foi aprimorado.
 3. Use formatação Markdown elegante com títulos claros, listas estruturadas, tabelas comparativas (sempre colocando cada linha da tabela em uma nova linha com quebra de linha real) e destaques em negrito. NUNCA use códigos LaTeX como '$\\rightarrow$' ou '\\rightarrow'; use diretamente a seta Unicode '→'.
 4. Ao final da resposta, inclua 2 ou 3 perguntas de continuidade ou próximos passos recomendados, no formato:

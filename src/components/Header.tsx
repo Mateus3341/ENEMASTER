@@ -33,15 +33,15 @@ export const Header: React.FC<HeaderProps> = ({
           <div 
             id="brand-logo-btn"
             onClick={() => setActiveTab('dashboard')} 
-            className="flex items-center gap-1.5 sm:gap-3.5 cursor-pointer group select-none min-w-0 shrink"
+            className="flex items-center gap-2 sm:gap-3 cursor-pointer group select-none min-w-0 shrink"
           >
-            {/* New Official Logo Emblem */}
-            <div className="relative p-0.5 sm:p-1 rounded-xl sm:rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 shadow-xs group-hover:scale-105 group-hover:border-indigo-300 dark:group-hover:border-indigo-600 transition-all flex items-center justify-center shrink-0 w-8 h-8 sm:w-12 sm:h-12">
-              <EnemasterLogoIcon className="w-6 h-6 sm:w-10 sm:h-10" />
+            {/* New Official Logo Emblem (Transparent PNG aligned to center) */}
+            <div className="relative flex items-center justify-center shrink-0 w-10 h-10 sm:w-13 sm:h-13 group-hover:scale-105 transition-transform duration-200">
+              <EnemasterLogoIcon className="w-full h-full" />
             </div>
 
             {/* Typography & Slogan */}
-            <div className="flex flex-col min-w-0">
+            <div className="flex flex-col justify-center min-w-0">
               <div className="flex items-center gap-1 sm:gap-2">
                 <h1 className="text-base sm:text-2xl lg:text-3xl font-black tracking-tight flex items-center leading-none whitespace-nowrap">
                   <span className="font-black text-slate-950 dark:text-white drop-shadow-xs">ENE</span>
