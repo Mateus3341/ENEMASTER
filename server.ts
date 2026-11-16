@@ -2850,15 +2850,15 @@ app.post("/api/grade-essay", async (req, res) => {
       ? `[REDAÇÃO DO BANCO OFICIAL NOTA 1000 DO INEP DETECTADA]
 Este texto corresponde a uma amostra oficial homologada com Nota 1000 nas cartilhas do MEC/INEP.
 Reconheça o cumprimento integral dos 5 critérios de Nível 5 (200 pontos em C1, C2, C3, C4 e C5, totalizando 1000 pontos em consenso unânime dos dois avaliadores).`
-      : `[REDAÇÃO DE ESTUDANTE / CANDIDATO — RIGOR REALISTA DO INEP]
-Esta é uma redação inédita enviada para avaliação. AVALIE COM MÁXIMO RIGOR TÉCNICO E CONSERVADORISMO DA BANCA EXAMINADORA DO ENEM.
-- NÃO dê nota 1000 com facilidade. A nota 1000 é uma excepcionalidade estatística (menos de 0,001% dos candidatos).
-- Para redações muito boas e excelentes de estudantes, a nota deve se situar de forma realista e criteriosa nas faixas de 920, 940, 960 ou 980 pontos.
-- PERFIS OBRIGATÓRIOS E DISTINTOS DOS DOIS AVALIADORES (NUNCA DÊ NOTAS IDÊNTICAS NOS DOIS AVALIADORES QUANDO A NOTA FINAL ESTIVER ENTRE 40 E 980):
+      : `[REDAÇÃO DE ESTUDANTE / CANDIDATO — RIGOR REALISTA DO INEP COM ACESSO JUSTO À NOTA 1000]
+Esta é uma redação inédita enviada para avaliação. AVALIE COM MÁXIMO RIGOR TÉCNICO DA BANCA EXAMINADORA DO ENEM, MAS RECONHEÇA A NOTA 1000 QUANDO MERECIDA.
+- NÃO dê nota 1000 com facilidade, mas NÃO bloqueie a nota 1000 se a redação do aluno cumprir integralmente os 5 Portões de Excelência (C1 sem desvios e com sintaxe complexa/vocabulário formal preciso; C2 com tema completo e repertório produtivo em D1/D2; C3 com causa estrutural profunda e consequência crítica em D1 e D2; C4 com coesão fluida sem repetições; C5 com os 5 elementos canônicos e detalhamento específico autêntico). Nesse caso de excelência plena nas 5 competências, AMBOS os avaliadores ('evaluatorA' e 'evaluatorB') podem e devem atribuir 200 pontos nas 5 competências (Nota 1000 em consenso unânime).
+- Para redações muito boas e excelentes que apresentem alguma limitação pontual comprovada em 1 ou mais competências, situe a nota de forma realista e criteriosa nas faixas de 920, 940, 960 ou 980 pontos.
+- PERFIS OBRIGATÓRIOS E DISTINTOS DOS DOIS AVALIADORES (QUANDO A NOTA FINAL ESTIVER ENTRE 40 E 980):
   * AVALIADOR 1 ('evaluatorA' — Perfil Normativo, Sintático e Coesivo): é altamente exigente com C1 (precisão vocabular, ausência de oralidade/clichês vagos, pontuação e sintaxe complexa) e C4 (fluidez da progressão, repetição de estruturas sintáticas e retomada de referentes). Em contrapartida, faz uma leitura funcional/mais favorável nos eixos macroestruturais (C2, C3 e C5), respeitando os tetos oficiais do INEP.
   * AVALIADOR 2 ('evaluatorB' — Perfil Estrutural, Temático e Interventivo): é altamente exigente com C2 (produtividade real do repertório em D1/D2), C3 (profundidade de causa estrutural + consequência crítica em D1 e D2, além de mera exposição) e C5 (autenticidade do detalhamento não repetitivo). Em contrapartida, faz uma leitura funcional/mais tolerante na forma linguística (C1 e C4) quando não há erros graves.
-  * REGRA DE DIVERGÊNCIA NATURAL: Em qualquer redação que não seja Nota Zero global nem Benchmark Oficial Nota 1000, 'evaluatorA' e 'evaluatorB' DEVEM refletir seus perfis distintos (ex.: A < B em C1/C4; B < A em C2/C3/C5), gerando diferença natural de 40 pts nas competências limítrofes (médias 140 ou 180) e totais finais diferentes (discrepância por competência <= 80 e total <= 100), com 'totalScore' e 'competencies.*.score' iguais à média aritmética exata entre A e B.
-- Exija evidência irrefutável para cada 200 pts. Se houver qualquer detalhe passível de aperfeiçoamento, calibre para 160 ou 180.`;
+  * REGRA DE DIVERGÊNCIA NATURAL (PARA NOTAS DE 40 A 980): Em qualquer redação que não seja Nota Zero global nem atinja excelência plena nas 5 competências (1000 pontos), 'evaluatorA' e 'evaluatorB' DEVEM refletir seus perfis distintos (ex.: A < B em C1/C4; B < A em C2/C3/C5), gerando diferença natural de 40 pts nas competências limítrofes (médias 140 ou 180) e totais finais diferentes (discrepância por competência <= 80 e total <= 100), com 'totalScore' e 'competencies.*.score' iguais à média aritmética exata entre A e B.
+- Exija evidência irrefutável para cada 200 pts. Se houver qualquer detalhe passível de aperfeiçoamento comprovado no texto, calibre para 160 ou 180; se não houver nenhuma falha e os 5 portões forem cumpridos, reconheça os 200 pontos.`;
 
     const systemInstruction = `Você é um avaliador e professor oficial sênior da Redação do ENEM (INEP/MEC), extremamente criterioso, técnico e justo.
 Sua correção baseia-se RIGOROSAMENTE na Matriz de Referência Oficial e na Cartilha do Participante do ENEM/INEP.
@@ -4272,6 +4272,39 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       }
     }
 
+    const isStudentAuthorialNota1000 = Boolean(
+      !isOfficialBenchmark &&
+      !isWholeEssayZero &&
+      !isTangenciamento &&
+      !isHumanRightsViolationC5 &&
+      passedCount === 5 &&
+      devCount === 0 &&
+      !hasOralOrVagueMarks &&
+      hasComplexSyntaxC1 &&
+      !hasSyntaxFault &&
+      hasVerifiedDevRepertoire &&
+      !c2HasUnderExploredOrMentionOnly &&
+      c3MeetsDeepExcellence &&
+      !c3HasRepetitionOrSuperficiality &&
+      !c4HasFunctionalOrProgressionFlaw &&
+      findAnaphoricMesmoExcerpts(essayText).length === 0 &&
+      has5Elements &&
+      c5DetailingAuthentic &&
+      c1MaxCap === 200 &&
+      c2MaxCap === 200 &&
+      c3MaxCap === 200 &&
+      c4MaxCap === 200 &&
+      c5MaxCap === 200 &&
+      (!serverReconcile || (
+        serverReconcile.concessionDetails.every((cd) => cd.reconciledScore >= cd.previousScore && cd.reconciledScore >= 180) &&
+        serverReconcile.reconciledScores.c1 >= 180 &&
+        serverReconcile.reconciledScores.c2 >= 180 &&
+        serverReconcile.reconciledScores.c3 >= 180 &&
+        serverReconcile.reconciledScores.c4 >= 180 &&
+        serverReconcile.reconciledScores.c5 >= 180
+      ))
+    );
+
     let curveTier: 'Excelência Máxima (1000)' | 'Excelência Rara (980)' | 'Alto Nível Superior (960)' | 'Alto Nível Consistente (940)' | 'Alto Nível Inicial (920)' | 'Faixa 900' | 'Padrão Regular (<900)' = 'Padrão Regular (<900)';
     let percentileEstimate = 'Faixa regular';
     let rigorVerdict = 'Pontuação regular validada sob a Matriz do INEP.';
@@ -4286,6 +4319,16 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
       evalA_c1 = 200; evalA_c2 = 200; evalA_c3 = 200; evalA_c4 = 200; evalA_c5 = 200;
       evalB_c1 = 200; evalB_c2 = 200; evalB_c3 = 200; evalB_c4 = 200; evalB_c5 = 200;
       finalTotal = 1000;
+    } else if (isStudentAuthorialNota1000) {
+      curveTier = 'Excelência Máxima (1000)';
+      percentileEstimate = 'Top 0.001% dos candidatos do ENEM (Nota 1000 Autoral)';
+      rigorVerdict = 'Redação autoral de excelência máxima: cumpriu rigorosamente todos os 5 Portões de Excelência e a Auditoria de Consistência sem nenhuma falha validada. Consenso unânime máximo (1000 pts).';
+      scoreGateSummary = 'Todos os 5 pilares de excelência (C1 a C5) foram comprovados com evidências textuais e zero desvios, conquistando a Nota 1000.';
+      c1s = 200; c2s = 200; c3s = 200; c4s = 200; c5s = 200;
+      evalA_c1 = 200; evalA_c2 = 200; evalA_c3 = 200; evalA_c4 = 200; evalA_c5 = 200;
+      evalB_c1 = 200; evalB_c2 = 200; evalB_c3 = 200; evalB_c4 = 200; evalB_c5 = 200;
+      finalTotal = 1000;
+      penaltiesApplied.length = 0;
     } else if (isWholeEssayZero) {
       curveTier = 'Padrão Regular (<900)';
       percentileEstimate = 'Nota Zero Oficial (Anulação INEP)';
@@ -4338,7 +4381,7 @@ Retorne o diagnóstico completo estritamente no esquema JSON solicitado.`;
     const calibratedDual = calibrateDualEvaluatorProfiles({
       rawA: { c1: evalA_c1, c2: evalA_c2, c3: evalA_c3, c4: evalA_c4, c5: evalA_c5 },
       rawB: { c1: evalB_c1, c2: evalB_c2, c3: evalB_c3, c4: evalB_c4, c5: evalB_c5 },
-      isOfficialBenchmark,
+      isOfficialBenchmark: isOfficialBenchmark || isStudentAuthorialNota1000,
       isWholeEssayZero,
       isTangenciamento,
       isHumanRightsViolationC5,
