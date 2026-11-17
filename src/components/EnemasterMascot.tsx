@@ -34,6 +34,7 @@ interface EnemasterMascotProps {
 }
 
 export const MESTRE_CORUJITO_SRC = '/assets/aistudio/Gemini_Generated_Image_oq7imhoq7imhoq7i_819d01bf.png';
+export const MESTRE_CORVUS_SRC = '/assets/aistudio/Gemini_Generated_Image_e93iaye93iaye93i_d756079d.png';
 
 export const EnemasterMascot: React.FC<EnemasterMascotProps> = ({
   variant = 'hero',
@@ -92,7 +93,13 @@ export const EnemasterMascot: React.FC<EnemasterMascotProps> = ({
 // =========================================================================
 // Interactive Floating Helper Widget - Dicas Gerais, Aleatórias e Infinitas
 // =========================================================================
-export const EnemasterFloatingMascot: React.FC = () => {
+interface EnemasterFloatingMascotProps {
+  activeTab?: string;
+}
+
+export const EnemasterFloatingMascot: React.FC<EnemasterFloatingMascotProps> = ({
+  activeTab: currentAppTab = 'dashboard'
+}) => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [currentTip, setCurrentTip] = useState<OfficialTip>(() => {
@@ -115,6 +122,42 @@ export const EnemasterFloatingMascot: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'tips' | 'favorites'>('tips');
   const autoPlayRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track smooth transformation animation when entering/leaving the 'correction' tab
+  const isCorrectionMode = currentAppTab === 'correction';
+  const prevAppTabRef = useRef<string>(currentAppTab);
+  const [isTransforming, setIsTransforming] = useState<boolean>(false);
+  const [showRoleShiftBanner, setShowRoleShiftBanner] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (prevAppTabRef.current !== currentAppTab) {
+      const enteredCorrection = currentAppTab === 'correction';
+      const leftCorrection = prevAppTabRef.current === 'correction' && currentAppTab !== 'correction';
+      prevAppTabRef.current = currentAppTab;
+
+      if (enteredCorrection || leftCorrection) {
+        setIsTransforming(true);
+        if (enteredCorrection) {
+          setShowRoleShiftBanner(true);
+        } else {
+          setShowRoleShiftBanner(false);
+        }
+
+        const morphTimer = setTimeout(() => {
+          setIsTransforming(false);
+        }, 900);
+
+        const bannerTimer = setTimeout(() => {
+          setShowRoleShiftBanner(false);
+        }, 4200);
+
+        return () => {
+          clearTimeout(morphTimer);
+          clearTimeout(bannerTimer);
+        };
+      }
+    }
+  }, [currentAppTab]);
 
   // Filter pool based on selected category
   const filteredTips = useMemo(() => {
@@ -272,19 +315,33 @@ export const EnemasterFloatingMascot: React.FC = () => {
             <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
             
             <div className="flex items-center gap-3 relative z-10">
-              <div className="p-1 bg-white/10 rounded-2xl backdrop-blur-md border border-white/20">
-                <EnemasterMascot size="sm" variant="avatar" mood="scholar" />
+              <div className="relative w-10 h-10 flex items-center justify-center shrink-0">
+                <img
+                  src={isCorrectionMode ? MESTRE_CORVUS_SRC : MESTRE_CORUJITO_SRC}
+                  alt={isCorrectionMode ? 'Mestre Corvus' : 'Mestre Corujito'}
+                  className={`w-9 h-9 object-contain object-center drop-shadow-sm transition-all duration-500 ${
+                    isTransforming ? 'scale-110 rotate-12 brightness-125' : 'scale-100 rotate-0'
+                  }`}
+                />
               </div>
               <div>
                 <div className="flex items-center gap-1.5">
-                  <h3 className="text-sm font-black tracking-tight text-white flex items-center gap-1">
-                    <span>Mestre Enemaster</span>
+                  <h3 className="text-sm font-black tracking-tight text-white flex items-center gap-1 transition-all duration-300">
+                    <span>{isCorrectionMode ? 'Mestre Corvus' : 'Mestre Corujito'}</span>
                   </h3>
-                  <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-400 text-indigo-950 font-black tracking-wider uppercase shadow-xs">
-                    INEP Oficial
+                  <span className={`text-[9px] px-2 py-0.5 rounded-full font-black tracking-wider uppercase shadow-xs transition-colors duration-300 ${
+                    isCorrectionMode
+                      ? 'bg-cyan-400 text-slate-950'
+                      : 'bg-amber-400 text-indigo-950'
+                  }`}>
+                    {isCorrectionMode ? 'Mentor de Correção' : 'INEP Oficial'}
                   </span>
                 </div>
-                <p className="text-[11px] text-indigo-200 font-medium">Dicas Oficiais, Aleatórias & Infinitas</p>
+                <p className="text-[11px] text-indigo-200 font-medium">
+                  {isCorrectionMode
+                    ? 'Modo Auditoria & Chat de Feedback Ativo'
+                    : 'Dicas Oficiais, Aleatórias & Infinitas'}
+                </p>
               </div>
             </div>
 
@@ -601,20 +658,107 @@ export const EnemasterFloatingMascot: React.FC = () => {
         </div>
       )}
 
-      {/* Floating Mascot Button */}
+      {/* Role Shift Transformation Toast when entering Correction Mode */}
+      {showRoleShiftBanner && !isOpen && (
+        <div
+          onClick={() => {
+            setShowRoleShiftBanner(false);
+            const chatEl = document.getElementById('essay-correction-professor-chat-section');
+            if (chatEl) {
+              chatEl.scrollIntoView({ behavior: 'smooth' });
+            }
+          }}
+          className="mb-3 max-w-[290px] sm:max-w-xs bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white px-3.5 py-2.5 rounded-2xl border border-cyan-400/50 shadow-xl shadow-cyan-500/20 flex items-center gap-3 cursor-pointer transition-all duration-500 animate-fade-in hover:border-cyan-300"
+        >
+          <div className="relative w-9 h-9 shrink-0 flex items-center justify-center">
+            <span className="absolute inset-0 rounded-full bg-cyan-400/25 animate-ping" />
+            <img
+              src={MESTRE_CORVUS_SRC}
+              alt="Mestre Corvus"
+              className="w-8 h-8 object-contain object-center relative z-10 drop-shadow-sm"
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-cyan-300">
+              <Sparkles className="w-3 h-3 text-cyan-300 animate-spin" />
+              <span>Transformação de Papel</span>
+            </div>
+            <p className="text-[11px] font-bold text-white leading-tight truncate">
+              Mestre Corvus assumiu o Feedback!
+            </p>
+            <p className="text-[10px] text-indigo-200 leading-tight">
+              Mentor cirúrgico ativo na visão de correção
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Mascot Button with Smooth Morph Transition */}
       <button
         id="enemaster-floating-mascot-btn"
         onClick={() => setIsOpen(!isOpen)}
-        className="group relative flex items-center justify-center p-2 bg-white hover:bg-slate-50 rounded-full border-2 border-indigo-300 hover:border-indigo-500 shadow-xl shadow-indigo-500/25 hover:shadow-indigo-500/40 transition-all duration-300 transform hover:scale-105 active:scale-95 cursor-pointer"
-        title="Dicas Oficiais, Aleatórias e Infinitas de Redação"
+        className={`group relative flex items-center justify-center p-2 rounded-full border-2 transition-all duration-500 transform hover:scale-105 active:scale-95 cursor-pointer ${
+          isCorrectionMode
+            ? 'bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 border-cyan-400/80 hover:border-cyan-300 shadow-xl shadow-cyan-500/30 hover:shadow-cyan-400/50'
+            : 'bg-white hover:bg-slate-50 border-indigo-300 hover:border-indigo-500 shadow-xl shadow-indigo-500/25 hover:shadow-indigo-500/40'
+        } ${
+          isTransforming ? 'scale-115 ring-4 ring-cyan-400/60 shadow-2xl shadow-cyan-400/60' : ''
+        }`}
+        title={
+          isCorrectionMode
+            ? 'Mestre Corvus • Modo Correção e Dicas Oficiais'
+            : 'Mestre Corujito • Dicas Oficiais, Aleatórias e Infinitas de Redação'
+        }
       >
-        <EnemasterMascot size="md" variant="avatar" mood={isOpen ? 'celebrating' : 'scholar'} />
+        {/* Energy burst aura during transformation */}
+        {isTransforming && (
+          <span className="absolute -inset-1.5 rounded-full bg-gradient-to-r from-cyan-400 via-indigo-500 to-purple-500 opacity-60 blur-md animate-pulse pointer-events-none" />
+        )}
+
+        {/* Dual-layer crossfade & spin-morph container */}
+        <div className="w-12 h-12 relative flex items-center justify-center overflow-visible">
+          {/* Mestre Corujito Layer */}
+          <img
+            src={MESTRE_CORUJITO_SRC}
+            alt="Mestre Corujito"
+            className={`w-full h-full object-contain object-center select-none pointer-events-none block drop-shadow-sm transition-all duration-500 ease-out ${
+              isCorrectionMode
+                ? 'opacity-0 scale-50 -rotate-180'
+                : isTransforming
+                ? 'opacity-100 scale-110 rotate-12'
+                : 'opacity-100 scale-100 rotate-0'
+            }`}
+            loading="eager"
+            decoding="async"
+          />
+
+          {/* Mestre Corvus Layer (Morphs in on Correction Tab) */}
+          <img
+            src={MESTRE_CORVUS_SRC}
+            alt="Mestre Corvus"
+            className={`w-full h-full object-contain object-center select-none pointer-events-none block drop-shadow-sm absolute inset-0 transition-all duration-500 ease-out ${
+              isCorrectionMode
+                ? isTransforming
+                  ? 'opacity-100 scale-115 rotate-0 brightness-110'
+                  : 'opacity-100 scale-100 rotate-0'
+                : 'opacity-0 scale-50 rotate-180'
+            }`}
+            loading="eager"
+            decoding="async"
+          />
+        </div>
         
         {/* Active glowing badge */}
         <span className="absolute -top-1 -right-1 flex h-4 w-4">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-4 w-4 bg-amber-500 border-2 border-white items-center justify-center text-[8px] font-black text-amber-950">
-            💡
+          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+            isCorrectionMode ? 'bg-cyan-400' : 'bg-amber-400'
+          }`}></span>
+          <span className={`relative inline-flex rounded-full h-4 w-4 border-2 border-white items-center justify-center text-[8px] font-black transition-colors duration-300 ${
+            isCorrectionMode
+              ? 'bg-cyan-400 text-slate-950'
+              : 'bg-amber-500 text-amber-950'
+          }`}>
+            {isCorrectionMode ? '⚡' : '💡'}
           </span>
         </span>
       </button>

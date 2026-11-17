@@ -607,7 +607,7 @@ export default function App() {
       </main>
 
       {/* Floating Interactive Mascot Widget */}
-      <EnemasterFloatingMascot />
+      <EnemasterFloatingMascot activeTab={activeTab} />
 
       {/* Dedicated Mobile Bottom Navigation Dock */}
       <MobileBottomNav 

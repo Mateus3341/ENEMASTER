@@ -21,17 +21,21 @@ import { EssayCorrectionResult, ProfessorMessage } from '../types';
 
 export const MESTRE_CORVUS_SRC = '/assets/aistudio/Gemini_Generated_Image_e93iaye93iaye93i_d756079d.png';
 
-const MestreCorvusMascot: React.FC<{ size?: 'sm' | 'md'; className?: string }> = ({
+const MestreCorvusMascot: React.FC<{ size?: 'sm' | 'md'; animatedEntrance?: boolean; className?: string }> = ({
   size = 'md',
+  animatedEntrance = false,
   className = ''
 }) => {
   const sizeClasses = size === 'sm' ? 'w-9 h-9' : 'w-12 h-12';
   return (
-    <div className={`${sizeClasses} relative inline-flex items-center justify-center select-none shrink-0 transition-transform duration-300 hover:scale-105 ${className}`}>
+    <div className={`${sizeClasses} relative inline-flex items-center justify-center select-none shrink-0 transition-all duration-500 hover:scale-110 ${className}`}>
+      {animatedEntrance && (
+        <span className="absolute -inset-1 rounded-full bg-gradient-to-tr from-cyan-400/40 via-indigo-400/30 to-purple-500/40 blur-xs animate-pulse pointer-events-none" />
+      )}
       <img
         src={MESTRE_CORVUS_SRC}
         alt="Mestre Corvus"
-        className="w-full h-full object-contain object-center select-none pointer-events-none block drop-shadow-sm"
+        className="w-full h-full object-contain object-center select-none pointer-events-none block drop-shadow-sm relative z-10"
         loading="eager"
         decoding="async"
       />
@@ -229,14 +233,18 @@ ${correctionResult.actionPlanToImprove && correctionResult.actionPlanToImprove.l
       {/* Header with Essay Scoped Context */}
       <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-slate-900 text-white p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 flex items-center justify-center shrink-0">
-            <MestreCorvusMascot size="md" />
+          <div className="w-12 h-12 flex items-center justify-center shrink-0 animate-fade-in">
+            <MestreCorvusMascot size="md" animatedEntrance />
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-extrabold text-base sm:text-lg tracking-tight text-white flex items-center gap-1.5">
                 <span>Mestre Corvus • Professor AI da Sua Redação</span>
               </h3>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 flex items-center gap-1 shadow-2xs">
+                <Sparkles className="w-2.5 h-2.5 text-cyan-300 animate-pulse" />
+                <span>Mentor de Correção Ativo</span>
+              </span>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                 Contexto Carregado
               </span>
